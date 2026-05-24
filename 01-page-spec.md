@@ -1,0 +1,275 @@
+# Art Discovery Platform — Page Spec (v1)
+
+## Design principles
+
+- Minimal, white-space heavy aesthetic. Gallery-like, not store-like.
+- Server-rendered public pages (SEO). Client-rendered authenticated surfaces.
+- URL-driven state for anything shareable (modals, filters, collections).
+- Anonymous browsing everywhere. Auth prompt only at save/inquire moments.
+- Consistent patterns: one modal style, one card, one grid, one toast.
+- Defer features aggressively. V1 proves the discovery experience.
+
+## Global layout
+
+- Persistent top nav (sticky): logo (left), search bar (center, always present), Collections (right, icon when signed in, hidden when not), Profile/Sign-in (right).
+- Footer: minimal — About, For Artists, Privacy, Terms.
+- No sidebar globally. Filters on search pages live in a collapsible panel above the results grid.
+- Light mode only for v1. Dark mode deferred.
+- Responsive breakpoints: mobile (<640px), tablet (640–1024px), desktop (>1024px).
+
+## URL structure
+
+| Path | Purpose |
+|---|---|
+| `/` | Homepage |
+| `/search?q=...&filters=...` | Search results (text) |
+| `/search?image=<upload_id>&modifiers=...` | Visual search results |
+| `/neighborhoods` | Index of all semantic neighborhoods |
+| `/neighborhoods/[slug]` | Single neighborhood view |
+| `/artists/[slug]` | Artist portfolio |
+| `/artworks/[id]` | Artwork detail (opens as modal overlay on top of previous page; direct-load renders full page) |
+| `/collections` | User's collections index |
+| `/collections/[id]` | Single collection view |
+| `/c/[shareId]` | Public shared collection |
+| `/settings` | User settings |
+| `/studio` | Artist dashboard (default tab: portfolio) |
+| `/studio/analytics` | Artist analytics |
+| `/studio/settings` | Artist settings |
+| `/onboarding` | Artist onboarding flow (stepped) |
+| `/claim/[token]` | Pre-built portfolio claim |
+| `/admin/submissions` | Admin: artist submission queue |
+| `/sign-in`, `/sign-up` | Clerk-handled auth pages |
+
+## Page-by-page
+
+### Homepage (`/`)
+
+**Purpose:** Immediate entry to discovery. Search-first, with semantic neighborhoods as browsable context.
+
+**Layout (top to bottom):**
+1. Hero search block: centered, generous vertical padding. Large search input with placeholder "Search artworks, artists, or drop an image." Camera icon inside the input on the right, opens image upload flow. No other text in the hero — just the search.
+2. Semantic neighborhoods section: heading "Explore neighborhoods" with a quiet subheading. Grid of 6 neighborhood cards (2 rows × 3 on desktop, 1 column on mobile). Each card: 3 representative thumbnails arranged asymmetrically, neighborhood name, short LLM-generated description (1 line, ~10 words). Link to `/neighborhoods` at the bottom — "See all neighborhoods →".
+3. Recent additions section: heading "Recently added." Grid of 12 most recently published artworks (4 columns desktop). Same card component as elsewhere.
+4. Footer.
+
+**Interactions:**
+- Typing in search and pressing enter → navigates to `/search?q=<text>`.
+- Clicking camera icon → opens image upload modal. After upload + optional modifier selection → navigates to `/search?image=<id>&modifiers=...`.
+- Clicking a neighborhood card → navigates to `/neighborhoods/[slug]`.
+- Clicking an artwork card → opens artwork detail modal (URL updates to `/artworks/[id]`).
+
+**Data needed:** 6 curated or top-ranked neighborhoods (with 3 representative artworks each), 12 most recent artworks.
+
+### Search results (`/search`)
+
+**Purpose:** Refinement and retrieval. Accepts text, image, or both.
+
+**Layout:**
+1. Top nav (search bar reflects current query).
+2. Query context bar: shows what was searched ("Showing results for 'moody coastal'" or "Results similar to [uploaded image thumbnail] + 'warmer'"). Includes a "Clear" link and a small "Edit query" affordance.
+3. Filters row: collapsed by default, expandable. Pills for: Medium, Price, Size, Orientation, Availability, Color. Clicking a pill opens an inline dropdown with options. Applied filters show as removable chips below. Sort dropdown far right: Relevance (default), Newest, Price ↑, Price ↓.
+4. Visual search only: modifier buttons row above results — "Moodier", "Warmer", "Cooler", "More minimal", "More textured", "More graphic". Clicking toggles modifier, re-runs search. Selected modifiers highlighted.
+5. Results grid: 4 columns desktop, 3 tablet, 2 mobile. Infinite scroll. Each card: image (aspect-ratio preserved), artist name (small), title (if present). Hover reveals save-to-collection icon.
+6. Empty state: "No artworks match this search. Try fewer filters, or explore a neighborhood →" with 3 neighborhood cards below.
+
+**Interactions:**
+- Filter changes update URL query params and re-fetch.
+- Sort changes update URL query params and re-fetch.
+- Click artwork → modal (URL to `/artworks/[id]`).
+- Save icon → if signed in, opens save-to-collection modal; if not, opens sign-in modal with redirect preserving action.
+
+**Data needed:** ranked artwork list (paginated, cursor-based), facet counts per filter option.
+
+### Semantic neighborhoods index (`/neighborhoods`)
+
+**Purpose:** Discover the full set of neighborhoods.
+
+**Layout:**
+1. Page title "Neighborhoods" with a one-line explanation ("Clusters of visually and conceptually related work.").
+2. Grid of all neighborhood cards (same design as homepage). 3 columns desktop, 2 tablet, 1 mobile.
+
+**Data needed:** full neighborhood list with representative thumbnails.
+
+### Single semantic neighborhood (`/neighborhoods/[slug]`)
+
+**Purpose:** Browse one curated cluster.
+
+**Layout:**
+1. Header: neighborhood name (large, serif if the design system goes serif for display), LLM-generated description (2–3 sentences), representative image strip (6 thumbnails) across the top.
+2. Filters row: same as search (Medium, Price, Size, Orientation, Availability, Sort). No text query here.
+3. Results grid: same component as search results. Infinite scroll.
+
+**Interactions:** identical to search results.
+
+**Data needed:** neighborhood metadata, ranked artwork list within cluster.
+
+### Artwork detail (modal + `/artworks/[id]`)
+
+**Purpose:** Full view of a single work, with pathways to similar and to the artist.
+
+**Layout (modal):**
+- Two-column on desktop: image left (large, zoomable on click), details right. Single-column on mobile: image on top, details below.
+- Details column: title, artist name (clickable → artist portfolio), year, medium, dimensions, price + availability (or "Price on inquiry"), description (artist's own words), primary CTA "Inquire" button, secondary "Save to collection" icon.
+- Below the main block: "More like this" section with 8 artworks (horizontal scroll on mobile, 4-column grid on desktop).
+
+**Layout (direct-load at `/artworks/[id]`):**
+- Same structure as modal but in a normal page layout with the top nav above.
+- A "Back" affordance is contextual — if the user arrived via a modal from another page, closing returns to that page. Direct-load shows a normal nav.
+
+**Interactions:**
+- Modal opens via client-side navigation (pushes `/artworks/[id]` to URL). Close returns to previous URL.
+- Image click → zoomed overlay.
+- Save → opens save-to-collection modal (with "create new collection" inline option, see Collections modal spec).
+- Inquire → opens inquiry modal (see below).
+- Clicking "More like this" artwork → swaps modal to that artwork.
+- Clicking artist name → navigates to artist portfolio (closes modal).
+
+**Data needed:** full artwork data, top 8 similar artworks.
+
+### Inquiry modal
+
+**Purpose:** Send a message to the artist.
+
+**Layout:** Short form. Name (pre-filled if signed in), email (pre-filled), message textarea, optional budget range dropdown, submit button. Explanation text: "This goes directly to [Artist Name]. You'll hear back from them directly — we don't take a cut."
+
+**Routing logic:** Backend reads artist's `inquiry_preferences` — direct email (most common), on-platform inbox, or external URL redirect. UI is the same; backend handles delivery.
+
+### Save-to-collection modal
+
+**Purpose:** Let signed-in user save an artwork.
+
+**Layout:**
+- List of user's existing collections with checkboxes. Click a collection to add/remove the artwork.
+- Below the list: "+ New collection" inline input. Typing a name and pressing enter creates the collection and adds the artwork. Toast confirms.
+
+**If not signed in:** Replaces with a sign-in prompt — "Sign in to save artworks" with Clerk auth trigger. After sign-in, the action completes automatically.
+
+### Artist portfolio (`/artists/[slug]`)
+
+**Purpose:** An artist's gallery-like public page. Links out to their own site.
+
+**Layout:**
+1. Header: artist name (large), location (small, muted), short bio (2–3 lines), links row (website, Instagram, other socials — each as a small icon+label), commissioning status badge if accepting.
+2. Artist statement section: expandable "Read more" if long. Skipped if empty.
+3. Artworks grid: 4 columns desktop, infinite scroll. Same card component as search. Default sort newest-first. Optional tabs: "All", "Available". (No medium tabs for v1 — keeps it simple.)
+4. "More like this artist" section at the bottom: heading "Similar artists," 6 artist cards (small avatar, name, 3 thumbnail strip, location). Clicking → artist page.
+
+**Interactions:**
+- Clicking an artwork opens the same artwork modal as everywhere else.
+- Clicking an external link → opens in new tab, logs `artist_link_clicked_out` event.
+
+**Data needed:** artist profile, paginated artworks, 6 similar artists.
+
+### Collections index (`/collections`)
+
+**Purpose:** User's saved collections.
+
+**Layout:**
+1. Page title "Your collections."
+2. "+ New collection" button (top right).
+3. Grid of collection cards: cover image (first artwork's image, or asymmetric grid of up to 4 thumbnails), collection name, artwork count, privacy indicator (private/public icon). 3 columns desktop.
+4. Empty state: "You haven't saved any artworks yet. Explore → [link to homepage]."
+
+**Data needed:** user's collections with cover art and counts.
+
+### Single collection (`/collections/[id]`)
+
+**Purpose:** View one collection.
+
+**Layout:**
+1. Header: collection name (editable inline via click-to-edit), description (editable), artwork count, privacy toggle (private/public), share link if public, delete button (icon, confirms).
+2. Artworks grid (4 columns desktop). Drag-to-reorder on desktop (deferred to v1.1 — for v1, just show in saved-order).
+3. Clicking an artwork opens the detail modal.
+
+**Deferred to v1.1:** notes per artwork within a collection, reorder UI. Schema supports it; UI doesn't yet.
+
+**Data needed:** collection metadata, artworks in collection.
+
+### Public shared collection (`/c/[shareId]`)
+
+Same as single collection but read-only, no edit affordances, no save/delete. Header shows "Collection by [User]" with link to user's public profile if one exists (v1: no public user profile page, so just show display name as text).
+
+### User settings (`/settings`)
+
+**Purpose:** Minimal account management.
+
+**Layout:** Single page, sections stacked:
+1. Profile: display name, avatar upload.
+2. Account: email (read-only, managed by Clerk), change password (link to Clerk flow).
+3. Data: "Export my data" button (emails a JSON dump — v1.1), "Delete account" button (confirms twice).
+
+V1: skip email preferences entirely (no newsletters to opt in/out of).
+
+### Artist onboarding (`/onboarding`)
+
+**Purpose:** Stepped flow. Single page, progressive disclosure — each step expands below the previous.
+
+**Steps:**
+1. **Welcome / claim.** If arriving from claim link: shows the pre-built portfolio preview, "This is what we built for you. Ready to claim it?" with a "Claim and edit" button and a quiet "No thanks, take it down" link. Email verification if needed (Clerk magic link).
+2. **Import.** "Where can we find more of your work?" Input for website URL, optional Instagram handle. "Import" button. Shows import progress. User can skip with "Add work manually instead."
+3. **Bio.** Pre-filled from scrape. Editable textarea. Location, website, socials — editable fields.
+4. **Per-artwork metadata (LLM-assisted).** For each imported artwork (capped at 10 for onboarding; rest handled in /studio later):
+   - Image on left.
+   - Conversational prompt: "Tell me about this piece — medium, size, what you were thinking about."
+   - User types freeform. LLM extracts → fills structured fields below (title, medium, dimensions, year, tags, price). User reviews and edits.
+   - "Skip the chat, fill the form" link swaps to a pure form view (for artists who prefer it).
+   - "Next artwork" / "Skip this one" controls.
+5. **Artist statement.** "What are you trying to do with your work?" Freeform. Optional "Help me polish this" button → LLM rewrites, user accepts or keeps original.
+6. **Commissioning.** "Do you accept commissions?" Yes/No. If yes: commission types (tags), typical price range, brief note field.
+7. **Inquiry routing.** Radio: direct email (default, pre-filled), on-platform inbox, external URL.
+8. **Preview + publish.** Shows the full portfolio as it will appear. "Publish" button, "Save as draft" secondary.
+
+**Post-publish:** redirect to `/studio`.
+
+**Data stored:** progress saved between steps — user can leave and return.
+
+### Artist studio (`/studio`, `/studio/analytics`, `/studio/settings`)
+
+**Purpose:** Single "Studio" surface with tabs.
+
+**Tabs:** Portfolio (default), Analytics, Settings.
+
+**Portfolio tab (`/studio`):**
+- "+ Add artwork" button (top right). Opens the conversational intake flow as a modal for a single artwork.
+- Grid of all artworks with status badges (published/draft). Each has edit (opens same modal pre-filled) and delete actions.
+- Bulk upload supported: drag 10 images in, each gets a row in a queue, user can fill minimal info or use LLM chat per-image.
+- Filter: "All / Published / Draft."
+
+**Analytics tab (`/studio/analytics`):**
+- Top row: 4 stat cards — Views, Saves, Click-outs, Inquiries (last 30 days, with % change vs previous 30).
+- Line chart: views over time (last 90 days, daily).
+- Top artworks table: artwork thumbnail, title, views, saves, click-outs, inquiries. Sortable columns.
+- Referrer breakdown: simple list (Search, Homepage, Neighborhood, Other Artist, Direct).
+
+**Settings tab (`/studio/settings`):**
+- Bio, location, website, socials.
+- Artist statement (with LLM polish button).
+- Commissioning preferences.
+- Inquiry routing.
+- Portfolio visibility: Published / Unpublished (not deleted — temporarily hidden).
+- Account: link to /settings for user-level stuff.
+
+### Admin submissions (`/admin/submissions`)
+
+**Purpose:** Minimal review queue.
+
+**Layout:**
+1. Table: submission date, artist name, email, status (pending/approved/rejected), source (direct signup / claim link), action column.
+2. Clicking a row opens a detail panel (sidebar slide-in): artist's submitted data, imported images, quick approve/reject buttons with optional note.
+3. Top filter: status (pending default).
+
+**Admin access:** gated by role flag on user. V1 has a single admin (you).
+
+## Components referenced across pages
+
+All the above reduces to a small, reusable component set, listed in the component library doc.
+
+## Questions explicitly deferred
+
+- Editorial / weekly email — not built.
+- Public user profile pages — not built.
+- Dark mode — not built.
+- Drag-to-reorder in collections — schema supports, UI deferred.
+- Notes per saved artwork — schema supports, UI deferred.
+- Multi-currency — pick USD or GBP for v1 based on your preference, skip conversion.
+- PWA / mobile app — responsive web only.
