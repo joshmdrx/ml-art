@@ -1,0 +1,84 @@
+# Local-dev infrastructure for the art discovery platform.
+#
+# Brings up:
+#   - Postgres with pgvector preinstalled
+#   - MinIO (S3-compatible) with two buckets pre-created
+#   - Mailhog (SMTP sink + UI on http://localhost:8025)
+#
+# Run: docker compose -f docker-compose.dev.yml up
+# Tear down: docker compose -f docker-compose.dev.yml down
+# Tear down + wipe data: docker compose -f docker-compose.dev.yml down -v
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ml-art-postgres
+    environment:
+      POSTGRES_USER: ml_art
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: ml_art_dev
+      # Encourage UTC inside the container so timestamptz semantics are predictable.
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      # Mapped to 5433 on host to avoid clashing with any existing local
+      # Postgres on 5432. Update DATABASE_URL accordingly.
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ml_art -d ml_art_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: ml-art-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: dev
+      MINIO_ROOT_PASSWORD: devpassword
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot init container: waits for MinIO, then ensures our buckets exist.
+  # Idempotent — safe to re-run.
+  minio_init:
+    image: minio/mc:latest
+    container_name: ml-art-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        mc alias set local http://minio:9000 dev devpassword
+        mc mb --ignore-existing local/artworks
+        mc mb --ignore-existing local/uploads
+        mc anonymous set download local/artworks
+        echo "buckets ready: artworks, uploads"
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: ml-art-mailhog
+    ports:
+      # Host SMTP remapped to 2025 — port 1025 is commonly in use locally.
+      # The Rust API talks to mailhog over the docker network on 1025 still;
+      # only the host-side port differs.
+      - "2025:1025"  # SMTP
+      - "8025:8025"  # web UI
+
+volumes:
+  postgres_data:
+  minio_data:
