@@ -85,6 +85,13 @@ human will fix it.
 - **Server-side data fetching uses `lib/api.ts` helpers.** They handle
   Bearer + anon_id forwarding and consistent error shape. Don't `fetch`
   the API directly from page components.
+- **Client components must call server actions, never `lib/api.ts`
+  directly.** `lib/api.ts::apiFetch` dynamically imports
+  `@clerk/nextjs/server`, which Next.js refuses to bundle into a
+  client component (`'server-only' cannot be imported from a Client
+  Component module`). If a client component needs data, wrap the
+  `lib/api` call in a server action (see `loadArtworkForEdit` in
+  `actions/studio.ts` for the pattern).
 - **Write paths go through server actions** (`web/src/app/actions/*.ts`),
   not client-side fetch. Keeps Clerk tokens server-side.
 - **Errors call `reportError(err, context)`** from `lib/reportError.ts`,

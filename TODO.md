@@ -65,8 +65,8 @@ if the item was dropped, with a one-line reason.
 
 ### `T-011` Artist studio (`/studio/*` endpoints + pages)
 - ✅ **Phase 1 (landed):** artwork CRUD API + `/v1/studio/me`, ownership-by-artist boundary
-- ✅ **Phase 2 (landed):** `/v1/studio/settings` PATCH + `/studio/settings` page (bio, statement, location, website, visibility toggle). Public surfaces now respect `artists.status='active'` so the Unpublish toggle is honest
-- Phase 3: `/studio` portfolio page (grid + add/edit modal, no LLM)
+- ✅ **Phase 2 (landed):** `/v1/studio/settings` + `/studio/settings` page + public-surface `ar.status='active'` filter
+- ✅ **Phase 3 (landed):** `/studio` portfolio page — grid with status filter pills (All / Drafts / Published), create+edit modal w/ image management, delete with confirmation. LLM-assisted intake is `T-012`
 - Phase 4: `/v1/studio/inquiries` GET + `/studio/analytics` stub (full analytics blocked on events-table writes — separate gap)
 - Phase 5: Bulk image upload (depends on `T-010` `POST /v1/uploads/image`)
 

@@ -3,6 +3,85 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-05-27 — Studio portfolio page (T-011 Phase 3)
+
+Third slice. `/studio` is now a real page — artists can see their full
+portfolio, filter by status, create / edit / delete artworks, and
+manage images via a modal. No LLM (`T-012`) and no bulk upload (`T-010`)
+yet.
+
+- **`/studio` page (server-rendered)**
+  - Signed-out → /sign-in?redirect_url=/studio
+  - Signed-in non-artist → empty state (same shape as `/studio/settings`)
+  - Signed-in artist → header w/ status, grid of artworks, status
+    filter pills, "+ New artwork" button. Settings link top-right
+  - Status filter is URL-driven (`?status=draft|published|archived`)
+    so refreshes / back-navigation land on the same view
+
+- **`StudioPortfolio` client component**
+  - Grid of `ArtworkCard`s — thumbnail or "no image" placeholder,
+    title, medium, status badge (Draft / Published / Archived). Edit
+    button on each card opens the modal in edit mode
+  - "All / Drafts / Published" filter pills (toolbar role, aria-pressed)
+  - Empty state for `all` shows "Your portfolio is empty" + a primary
+    "+ New artwork" CTA; for `draft`/`published` views, a hint to
+    switch back to All
+
+- **`ArtworkEditModal` — single component for create + edit**
+  - `target` prop: `"new"` = create form, `<uuid>` = edit mode (loads
+    detail lazily via the new `loadArtworkForEdit` server action)
+  - Full field set: title, medium, description, year created, price,
+    currency, availability, external URL, status. Status select is
+    disabled during create (forced 'draft') and active after save
+  - Image manager appears below the form once the artwork exists:
+    grid of current images with "Primary" badge + per-image Remove,
+    plus an "Add" input that accepts an s3_key. Adding an image
+    triggers the inline `process_image` (T-036) embedding pipeline
+    on the API side. The s3_key affordance is explicit-but-temporary
+    — `T-010` will mint validated keys server-side
+  - Delete button on edit; confirm() prompt; closes the modal on success
+  - Create flow stays in the modal after save so the user can add an
+    image to the freshly-created row without a page transition
+
+- **New server actions** (`app/actions/studio.ts`)
+  - `loadArtworkForEdit(id)` — wraps `getStudioArtwork` for client use.
+    Required because `lib/api.ts` transitively imports
+    `@clerk/nextjs/server` (server-only) via `apiFetch`; the Phase 3
+    build broke when the modal imported the lib function directly
+  - `createArtwork`, `patchArtwork`, `deleteArtwork`,
+    `addArtworkImage`, `removeArtworkImage` — all revalidate
+    `/studio` + the public `/artworks/:id` so changes reflect
+    immediately
+
+- **`lib/api.ts` additions**
+  - `StudioArtworkSummary`, `StudioArtworkDetail`, `StudioImage`,
+    `CreateArtworkBody`, `PatchArtworkBody` types
+  - `listMyArtworks`, `getStudioArtwork`, `createStudioArtwork`,
+    `patchStudioArtwork`, `deleteStudioArtwork`,
+    `addStudioArtworkImage`, `removeStudioArtworkImage` clients
+
+- **Tests**
+  - 1 new Playwright spec — `18-studio-portfolio-signed-in.spec.ts` —
+    empty-state smoke for the non-artist test user. Happy-path
+    create/edit/delete is exercised at the Rust integration tier
+    against alice-test (28 studio tests, unchanged this phase)
+  - Vitest 20 unchanged
+  - Playwright **25** (was 24)
+
+- **Verified**
+  - `cargo clippy --workspace --all-targets -- -D warnings` ✅
+  - `cargo fmt --check` ✅
+  - `pnpm exec tsc --noEmit` ✅ / `pnpm exec eslint .` ✅
+  - Rust 109 unchanged (no API changes this phase)
+  - Live `/studio` page reachable; new-user flow exercised manually
+    against alice-test via Bearer-driven studio API calls
+
+- **Lessons folded back**
+  - Client components must call server actions, not `lib/api.ts`
+    functions directly — caught the hard way when the first Playwright
+    run died with `'server-only' cannot be imported from a Client
+    Component module`. Added a CONTRIBUTING.md note in the next sweep
+
 ## 2026-05-27 — Studio settings + public-surface visibility honesty (T-011 Phase 2)
 
 The second slice of the studio. Settings API + page, and — load-bearing
