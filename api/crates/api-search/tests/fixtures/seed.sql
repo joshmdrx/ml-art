@@ -1,0 +1,127 @@
+-- Test fixture for api-search integration tests.
+--
+-- Loaded by `#[sqlx::test(fixtures("seed"))]`. Migrations run before this,
+-- so all extensions and tables exist. Known UUIDs let tests assert specific
+-- relationships.
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Users (1; used for collections / inquiries in later tests)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+INSERT INTO users (id, clerk_user_id, email, display_name) VALUES
+  ('99999999-9999-9999-9999-999999999999', 'user_test_99', 'test@example.com', 'Test User'),
+  -- alice + bob: used by the collections tests to assert ownership boundaries
+  ('88888888-8888-8888-8888-888888888888', 'user_test_alice', 'alice@example.com', 'Alice'),
+  ('77777777-7777-7777-7777-777777777777', 'user_test_bob',   'bob@example.com',   'Bob');
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Artists (3)
+--   alice: London/GB, active
+--   bruno: Berlin/DE, active
+--   carmen: no location, active
+-- ─────────────────────────────────────────────────────────────────────────────
+
+INSERT INTO artists (
+    id, slug, display_name, bio, location, city, country, lat, lng, geocoded_at,
+    inquiry_preferences, status
+) VALUES
+  ('aaa11111-1111-1111-1111-111111111111', 'alice-test', 'Alice Test',
+   'Painter based in London.', 'London, GB', 'London', 'GB', 51.5074, -0.1278, now(),
+   '{"type":"platform"}'::jsonb, 'active'),
+  ('aaa22222-2222-2222-2222-222222222222', 'bruno-test', 'Bruno Test',
+   'Sculptor based in Berlin.', 'Berlin, DE', 'Berlin', 'DE', 52.5200, 13.4050, now(),
+   '{"type":"platform"}'::jsonb, 'active'),
+  ('aaa33333-3333-3333-3333-333333333333', 'carmen-test', 'Carmen Test',
+   'Printmaker; location private.', NULL, NULL, NULL, NULL, NULL, NULL,
+   '{"type":"platform"}'::jsonb, 'active');
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Artworks (6 — 5 published, 1 draft)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+INSERT INTO artworks (
+    id, artist_id, title, description, medium, price_cents, currency,
+    availability, status, is_demo, published_at
+) VALUES
+  -- Alice
+  ('bbb11111-1111-1111-1111-111111111111',
+   'aaa11111-1111-1111-1111-111111111111',
+   'Blue Morning', 'A quiet study in cobalt.', 'Painting',
+   100000, 'USD', 'available', 'published', false, now() - interval '5 days'),
+  ('bbb22222-2222-2222-2222-222222222222',
+   'aaa11111-1111-1111-1111-111111111111',
+   'Crimson Field', 'Warm-palette composition.', 'Painting',
+   250000, 'USD', 'available', 'published', false, now() - interval '4 days'),
+  -- Bruno
+  ('bbb33333-3333-3333-3333-333333333333',
+   'aaa22222-2222-2222-2222-222222222222',
+   'Stone Form I', 'Carved limestone.', 'Sculpture',
+   NULL, 'EUR', 'inquire', 'published', false, now() - interval '3 days'),
+  ('bbb44444-4444-4444-4444-444444444444',
+   'aaa22222-2222-2222-2222-222222222222',
+   'Stone Form II', NULL, 'Sculpture',
+   500000, 'EUR', 'sold', 'published', false, now() - interval '2 days'),
+  -- Carmen
+  ('bbb55555-5555-5555-5555-555555555555',
+   'aaa33333-3333-3333-3333-333333333333',
+   'Linocut Study', 'Black and white print.', 'Print',
+   80000, 'USD', 'available', 'published', false, now() - interval '1 day'),
+  -- Draft — must NOT appear in any public query
+  ('bbb66666-6666-6666-6666-666666666666',
+   'aaa33333-3333-3333-3333-333333333333',
+   'Hidden Sketch', NULL, 'Print',
+   NULL, 'USD', 'available', 'draft', false, NULL);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Artwork images (1 per published artwork; the draft has none)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+INSERT INTO artwork_images (
+    artwork_id, s3_key, width, height, is_primary, display_order, moderation_status
+) VALUES
+  ('bbb11111-1111-1111-1111-111111111111', 'test/alice/1.jpg', 1200, 900, true, 0, 'approved'),
+  ('bbb22222-2222-2222-2222-222222222222', 'test/alice/2.jpg', 1200, 900, true, 0, 'approved'),
+  ('bbb33333-3333-3333-3333-333333333333', 'test/bruno/1.jpg',  900, 1200, true, 0, 'approved'),
+  ('bbb44444-4444-4444-4444-444444444444', 'test/bruno/2.jpg',  900, 1200, true, 0, 'approved'),
+  ('bbb55555-5555-5555-5555-555555555555', 'test/carmen/1.jpg', 1000, 1000, true, 0, 'approved');
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Embeddings (1024-dim, 1.0 at distinct positions so similarities are well-defined)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+INSERT INTO artwork_embeddings (artwork_id, model_name, model_version, embedding)
+SELECT
+    artwork_id,
+    'jinaai/jina-clip-v2',
+    'local',
+    (
+        SELECT array_agg(CASE WHEN j = pos THEN 1.0::real ELSE 0::real END ORDER BY j)
+        FROM generate_series(0, 1023) j
+    )::vector(1024)
+FROM (VALUES
+    ('bbb11111-1111-1111-1111-111111111111'::uuid, 0),
+    ('bbb22222-2222-2222-2222-222222222222'::uuid, 1),
+    ('bbb33333-3333-3333-3333-333333333333'::uuid, 2),
+    ('bbb44444-4444-4444-4444-444444444444'::uuid, 3),
+    ('bbb55555-5555-5555-5555-555555555555'::uuid, 4)
+) AS v(artwork_id, pos);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Neighborhood (1)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+INSERT INTO neighborhoods (
+    id, slug, name, description, kind,
+    representative_artwork_ids, artwork_count, is_featured, display_order
+) VALUES
+  ('ccc11111-1111-1111-1111-111111111111', 'test-vibes', 'Test Vibes',
+   'A test neighborhood spanning Alice and Bruno.', 'curated',
+   ARRAY['bbb11111-1111-1111-1111-111111111111'::uuid,
+         'bbb22222-2222-2222-2222-222222222222'::uuid,
+         'bbb33333-3333-3333-3333-333333333333'::uuid],
+   3, true, 0);
+
+INSERT INTO neighborhood_artworks (neighborhood_id, artwork_id) VALUES
+  ('ccc11111-1111-1111-1111-111111111111', 'bbb11111-1111-1111-1111-111111111111'),
+  ('ccc11111-1111-1111-1111-111111111111', 'bbb22222-2222-2222-2222-222222222222'),
+  ('ccc11111-1111-1111-1111-111111111111', 'bbb33333-3333-3333-3333-333333333333');
