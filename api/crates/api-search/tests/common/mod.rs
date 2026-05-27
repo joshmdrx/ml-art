@@ -153,6 +153,28 @@ pub fn app_with_fixed_vector(pool: Pool, vec: pgvector::Vector) -> Router {
     }))
 }
 
+/// Build the Axum router with BOTH the fixed-vector embedder AND
+/// `JwtVerifier::for_tests()`. Studio tests that exercise image-add
+/// (which calls `process_image` inline) need the embedder enabled,
+/// but those same endpoints require auth. The two flavors of
+/// `app_with_*` helper aren't composable, so this is the third.
+pub fn app_with_auth_and_fixed_vector(pool: Pool, vec: pgvector::Vector) -> Router {
+    let cfg = Config::for_tests(String::new());
+    let embedder = Embedder::with_fixed_vector(
+        pool.clone(),
+        cfg.embedding_model_name.clone(),
+        cfg.embedding_model_version.clone(),
+        vec,
+    );
+    let jwt_verifier = JwtVerifier::for_tests();
+    build_app(Arc::new(AppState {
+        pool,
+        embedder,
+        jwt_verifier,
+        cfg,
+    }))
+}
+
 /// Build a standalone `Embedder` with `with_fixed_vector`. For pipeline
 /// tests (`process_image`) that don't need the whole Axum router.
 pub fn embedder_with_fixed_vector(pool: Pool, vec: pgvector::Vector) -> Embedder {
@@ -195,6 +217,27 @@ pub async fn get_status(app: Router, uri: &str) -> (StatusCode, Vec<u8>) {
         .oneshot(
             Request::builder()
                 .uri(uri)
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("router oneshot");
+    let status = resp.status();
+    let bytes = to_bytes(resp.into_body(), 4 * 1024 * 1024)
+        .await
+        .expect("read body");
+    (status, bytes.to_vec())
+}
+
+/// `get_status` plus a Bearer token. Used when an authed endpoint is
+/// expected to fail (404 / 401) and we don't want to commit to a JSON
+/// shape for the error body.
+pub async fn get_status_authed(app: Router, uri: &str, bearer: &str) -> (StatusCode, Vec<u8>) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header("Authorization", format!("Bearer {bearer}"))
                 .body(Body::empty())
                 .expect("build request"),
         )

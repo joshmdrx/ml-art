@@ -8,6 +8,7 @@ pub mod inquiries;
 pub mod me;
 pub mod neighborhoods;
 pub mod search;
+pub mod studio;
 
 use axum::{
     extract::State,
@@ -85,6 +86,26 @@ pub fn build_app(state: Arc<AppState>) -> Router {
             post(inquiries::create).layer(from_fn_with_state(limiters.clone(), inquiry_limit)),
         )
         .route("/v1/inquiries/verify/:token", get(inquiries::verify))
+        // ── Studio (artist-only authed surface). T-011.
+        .route("/v1/studio/me", get(studio::me::current_artist))
+        .route(
+            "/v1/studio/artworks",
+            get(studio::artworks::list).post(studio::artworks::create),
+        )
+        .route(
+            "/v1/studio/artworks/:id",
+            get(studio::artworks::detail)
+                .patch(studio::artworks::patch)
+                .delete(studio::artworks::delete),
+        )
+        .route(
+            "/v1/studio/artworks/:id/images",
+            post(studio::artworks::add_image),
+        )
+        .route(
+            "/v1/studio/artworks/:id/images/:image_id",
+            delete(studio::artworks::remove_image),
+        )
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }

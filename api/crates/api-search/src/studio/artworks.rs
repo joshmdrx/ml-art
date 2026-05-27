@@ -1,0 +1,660 @@
+//! `/v1/studio/artworks/*` — the authenticated artist's own portfolio.
+//!
+//! Endpoints:
+//!   - `GET    /v1/studio/artworks?status=draft|published|all`
+//!   - `POST   /v1/studio/artworks`
+//!   - `GET    /v1/studio/artworks/:id`
+//!   - `PATCH  /v1/studio/artworks/:id`
+//!   - `DELETE /v1/studio/artworks/:id`             (soft-delete)
+//!   - `POST   /v1/studio/artworks/:id/images`
+//!   - `DELETE /v1/studio/artworks/:id/images/:image_id`
+//!
+//! Ownership: every handler resolves the caller's artist via
+//! `studio::current_artist_id`, then filters all SQL on
+//! `artworks.artist_id = $artist`. Cross-artist access returns 404.
+//!
+//! Image add invokes `artwork_embeddings::process_image` for the
+//! primary image (T-036). For now the handler accepts a raw `s3_key`
+//! from the caller — `T-010` (upload endpoint) lands the validated
+//! upload flow that mints those keys server-side.
+
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    Json,
+};
+use chrono::{DateTime, Utc};
+use ml_art_core::{artwork_embeddings, error::ApiError, images::url_for_s3_key, models::Paginated};
+use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
+use std::sync::Arc;
+use uuid::Uuid;
+
+use crate::extractors::AuthedUser;
+use crate::studio::current_artist_id;
+use crate::AppState;
+
+const MAX_TITLE_LEN: usize = 200;
+const MAX_DESC_LEN: usize = 8_000;
+const VALID_AVAILABILITY: &[&str] = &["available", "sold", "not_for_sale", "inquire"];
+const VALID_STATUS: &[&str] = &["draft", "published", "archived"];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wire shapes
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct StudioArtworkSummary {
+    pub id: Uuid,
+    pub title: Option<String>,
+    pub status: String,
+    pub medium: Option<String>,
+    pub price_cents: Option<i64>,
+    pub currency: String,
+    pub availability: String,
+    /// Primary image URL if one exists, otherwise `None`. Drafts can be
+    /// imageless (artist is still writing copy).
+    pub primary_image_url: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub published_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StudioArtworkDetail {
+    #[serde(flatten)]
+    pub summary: StudioArtworkSummary,
+    pub description: Option<String>,
+    pub year_created: Option<i32>,
+    pub dimensions: Option<serde_json::Value>,
+    pub external_url: Option<String>,
+    pub images: Vec<StudioImage>,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct StudioImage {
+    pub id: Uuid,
+    pub s3_key: String,
+    pub url: String,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub is_primary: bool,
+    pub display_order: i32,
+    pub moderation_status: String,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /v1/studio/artworks
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ListQuery {
+    /// `draft`, `published`, `archived`, or `all` (default). Anything
+    /// else is treated as `all` to keep the surface tolerant.
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+pub async fn list(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListQuery>,
+    AuthedUser(user): AuthedUser,
+) -> Result<Json<Paginated<StudioArtworkSummary>>, ApiError> {
+    let artist_id = current_artist_id(&state.pool, &user).await?;
+
+    let status_filter = params.status.as_deref().and_then(|s| match s {
+        "draft" | "published" | "archived" => Some(s.to_string()),
+        _ => None, // includes "all" and any unknown value
+    });
+
+    let rows: Vec<ArtworkRow> = sqlx::query_as(
+        r#"
+        SELECT
+            a.id, a.title, a.status, a.medium,
+            a.price_cents, a.currency, a.availability,
+            ai.s3_key AS primary_s3_key,
+            a.created_at, a.updated_at, a.published_at
+        FROM artworks a
+        LEFT JOIN artwork_images ai
+               ON ai.artwork_id = a.id AND ai.is_primary
+        WHERE a.artist_id = $1
+          AND a.deleted_at IS NULL
+          AND ($2::text IS NULL OR a.status = $2)
+        ORDER BY a.updated_at DESC
+        "#,
+    )
+    .bind(artist_id)
+    .bind(status_filter)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let items: Vec<StudioArtworkSummary> = rows.into_iter().map(ArtworkRow::into_summary).collect();
+    Ok(Json(Paginated {
+        items,
+        next_cursor: None,
+    }))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /v1/studio/artworks
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct CreateArtwork {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub year_created: Option<i32>,
+    #[serde(default)]
+    pub medium: Option<String>,
+    #[serde(default)]
+    pub dimensions: Option<serde_json::Value>,
+    #[serde(default)]
+    pub price_cents: Option<i64>,
+    #[serde(default)]
+    pub currency: Option<String>,
+    /// Defaults to `available`.
+    #[serde(default)]
+    pub availability: Option<String>,
+    #[serde(default)]
+    pub external_url: Option<String>,
+}
+
+pub async fn create(
+    State(state): State<Arc<AppState>>,
+    AuthedUser(user): AuthedUser,
+    Json(body): Json<CreateArtwork>,
+) -> Result<(StatusCode, Json<StudioArtworkSummary>), ApiError> {
+    let artist_id = current_artist_id(&state.pool, &user).await?;
+
+    let title = body.title.as_deref().map(str::trim);
+    if let Some(t) = title {
+        if t.len() > MAX_TITLE_LEN {
+            return Err(ApiError::BadRequest(format!(
+                "title exceeds {MAX_TITLE_LEN}-char limit"
+            )));
+        }
+    }
+    let description = body.description.as_deref().map(str::trim);
+    if let Some(d) = description {
+        if d.len() > MAX_DESC_LEN {
+            return Err(ApiError::BadRequest(format!(
+                "description exceeds {MAX_DESC_LEN}-char limit"
+            )));
+        }
+    }
+    let availability = body.availability.as_deref().unwrap_or("available");
+    if !VALID_AVAILABILITY.contains(&availability) {
+        return Err(ApiError::BadRequest(format!(
+            "invalid availability `{availability}`"
+        )));
+    }
+    let currency = body.currency.as_deref().unwrap_or("USD");
+
+    let row: ArtworkRow = sqlx::query_as(
+        r#"
+        INSERT INTO artworks (
+            artist_id, title, description, year_created, medium,
+            dimensions, price_cents, currency, availability,
+            external_url, status
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'draft')
+        RETURNING
+            id, title, status, medium, price_cents, currency, availability,
+            NULL::text AS primary_s3_key,
+            created_at, updated_at, published_at
+        "#,
+    )
+    .bind(artist_id)
+    .bind(title)
+    .bind(description)
+    .bind(body.year_created)
+    .bind(body.medium.as_deref())
+    .bind(&body.dimensions)
+    .bind(body.price_cents)
+    .bind(currency)
+    .bind(availability)
+    .bind(body.external_url.as_deref())
+    .fetch_one(&state.pool)
+    .await?;
+
+    Ok((StatusCode::CREATED, Json(row.into_summary())))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /v1/studio/artworks/:id
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub async fn detail(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    AuthedUser(user): AuthedUser,
+) -> Result<Json<StudioArtworkDetail>, ApiError> {
+    let artist_id = current_artist_id(&state.pool, &user).await?;
+
+    let row: Option<ArtworkDetailRow> = sqlx::query_as(
+        r#"
+        SELECT
+            a.id, a.title, a.status, a.medium,
+            a.price_cents, a.currency, a.availability,
+            a.description, a.year_created, a.dimensions, a.external_url,
+            a.created_at, a.updated_at, a.published_at
+        FROM artworks a
+        WHERE a.id = $1
+          AND a.artist_id = $2
+          AND a.deleted_at IS NULL
+        "#,
+    )
+    .bind(id)
+    .bind(artist_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let row = row.ok_or(ApiError::NotFound)?;
+
+    let images = fetch_images(&state.pool, id).await?;
+
+    Ok(Json(row.into_detail(images)))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /v1/studio/artworks/:id
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct PatchArtwork {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year_created: Option<Option<i32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub medium: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dimensions: Option<Option<serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_cents: Option<Option<i64>>,
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default)]
+    pub availability: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_url: Option<Option<String>>,
+    /// `draft` ↔ `published` ↔ `archived`. Setting `published` from
+    /// `draft` stamps `published_at = now()` (handled in SQL via COALESCE).
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+pub async fn patch(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    AuthedUser(user): AuthedUser,
+    Json(body): Json<PatchArtwork>,
+) -> Result<Json<StudioArtworkSummary>, ApiError> {
+    let artist_id = current_artist_id(&state.pool, &user).await?;
+
+    if let Some(Some(t)) = &body.title {
+        if t.trim().len() > MAX_TITLE_LEN {
+            return Err(ApiError::BadRequest(format!(
+                "title exceeds {MAX_TITLE_LEN}-char limit"
+            )));
+        }
+    }
+    if let Some(s) = &body.status {
+        if !VALID_STATUS.contains(&s.as_str()) {
+            return Err(ApiError::BadRequest(format!("invalid status `{s}`")));
+        }
+    }
+    if let Some(a) = &body.availability {
+        if !VALID_AVAILABILITY.contains(&a.as_str()) {
+            return Err(ApiError::BadRequest(format!("invalid availability `{a}`")));
+        }
+    }
+
+    // Bool-flag-per-Option<Option<_>> pattern lets the caller explicitly
+    // set a field to NULL by passing JSON `null`, vs not touching it by
+    // omitting the key. Same shape as `me/collections::patch`.
+    let row: Option<ArtworkRow> = sqlx::query_as(
+        r#"
+        UPDATE artworks SET
+            title         = CASE WHEN $3::boolean THEN $4 ELSE title END,
+            description   = CASE WHEN $5::boolean THEN $6 ELSE description END,
+            year_created  = CASE WHEN $7::boolean THEN $8::int ELSE year_created END,
+            medium        = CASE WHEN $9::boolean THEN $10 ELSE medium END,
+            dimensions    = CASE WHEN $11::boolean THEN $12::jsonb ELSE dimensions END,
+            price_cents   = CASE WHEN $13::boolean THEN $14::bigint ELSE price_cents END,
+            currency      = COALESCE($15, currency),
+            availability  = COALESCE($16, availability),
+            external_url  = CASE WHEN $17::boolean THEN $18 ELSE external_url END,
+            status        = COALESCE($19, status),
+            published_at  = CASE
+                                WHEN $19 = 'published' AND published_at IS NULL
+                                THEN now()
+                                ELSE published_at
+                            END,
+            updated_at    = now()
+        WHERE id = $1
+          AND artist_id = $2
+          AND deleted_at IS NULL
+        RETURNING
+            id, title, status, medium, price_cents, currency, availability,
+            (SELECT s3_key FROM artwork_images
+              WHERE artwork_id = artworks.id AND is_primary) AS primary_s3_key,
+            created_at, updated_at, published_at
+        "#,
+    )
+    .bind(id)
+    .bind(artist_id)
+    .bind(body.title.is_some())
+    .bind(body.title.flatten().map(|s| s.trim().to_string()))
+    .bind(body.description.is_some())
+    .bind(body.description.flatten().map(|s| s.trim().to_string()))
+    .bind(body.year_created.is_some())
+    .bind(body.year_created.flatten())
+    .bind(body.medium.is_some())
+    .bind(body.medium.flatten())
+    .bind(body.dimensions.is_some())
+    .bind(body.dimensions.flatten())
+    .bind(body.price_cents.is_some())
+    .bind(body.price_cents.flatten())
+    .bind(body.currency.as_deref())
+    .bind(body.availability.as_deref())
+    .bind(body.external_url.is_some())
+    .bind(body.external_url.flatten())
+    .bind(body.status.as_deref())
+    .fetch_optional(&state.pool)
+    .await?;
+
+    let row = row.ok_or(ApiError::NotFound)?;
+    Ok(Json(row.into_summary()))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /v1/studio/artworks/:id   (soft-delete)
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub async fn delete(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    AuthedUser(user): AuthedUser,
+) -> Result<StatusCode, ApiError> {
+    let artist_id = current_artist_id(&state.pool, &user).await?;
+    let res = sqlx::query(
+        r#"
+        UPDATE artworks SET deleted_at = now()
+        WHERE id = $1
+          AND artist_id = $2
+          AND deleted_at IS NULL
+        "#,
+    )
+    .bind(id)
+    .bind(artist_id)
+    .execute(&state.pool)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(ApiError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /v1/studio/artworks/:id/images
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct AddImage {
+    /// S3/MinIO key, e.g. `uploads/<uuid>.jpg`. Validation that this key
+    /// was actually minted by our upload endpoint waits on T-010.
+    pub s3_key: String,
+    #[serde(default)]
+    pub is_primary: Option<bool>,
+    #[serde(default)]
+    pub display_order: Option<i32>,
+    #[serde(default)]
+    pub width: Option<i32>,
+    #[serde(default)]
+    pub height: Option<i32>,
+}
+
+pub async fn add_image(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    AuthedUser(user): AuthedUser,
+    Json(body): Json<AddImage>,
+) -> Result<(StatusCode, Json<StudioImage>), ApiError> {
+    let artist_id = current_artist_id(&state.pool, &user).await?;
+
+    // Confirm the artwork exists and is owned by this artist before
+    // writing anything.
+    let owned: Option<(Uuid,)> = sqlx::query_as(
+        r#"SELECT id FROM artworks
+           WHERE id = $1 AND artist_id = $2 AND deleted_at IS NULL"#,
+    )
+    .bind(id)
+    .bind(artist_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    if owned.is_none() {
+        return Err(ApiError::NotFound);
+    }
+
+    let s3_key = body.s3_key.trim();
+    if s3_key.is_empty() {
+        return Err(ApiError::BadRequest("s3_key must not be empty".into()));
+    }
+
+    // First image lands as primary unless the caller says otherwise; any
+    // other image defaults to non-primary. The DB has a partial UNIQUE
+    // index `(artwork_id) WHERE is_primary` so a conflicting "make this
+    // primary too" would fail at INSERT time; callers must demote the
+    // existing primary first (PATCH workflow, future ticket).
+    let existing_primary: Option<(Uuid,)> = sqlx::query_as(
+        r#"SELECT id FROM artwork_images
+           WHERE artwork_id = $1 AND is_primary"#,
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let is_primary = body.is_primary.unwrap_or(existing_primary.is_none());
+    if is_primary && existing_primary.is_some() {
+        return Err(ApiError::BadRequest(
+            "primary image already set; demote it first".into(),
+        ));
+    }
+
+    let display_order = body.display_order.unwrap_or(0);
+
+    let row: ImageRow = sqlx::query_as(
+        r#"
+        INSERT INTO artwork_images
+            (artwork_id, s3_key, width, height, is_primary, display_order)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING
+            id, s3_key, width, height, is_primary, display_order, moderation_status
+        "#,
+    )
+    .bind(id)
+    .bind(s3_key)
+    .bind(body.width)
+    .bind(body.height)
+    .bind(is_primary)
+    .bind(display_order)
+    .fetch_one(&state.pool)
+    .await?;
+
+    // Whenever the *primary* image lands, generate the artwork embedding
+    // so vector search can find the work. Non-primary images don't
+    // change the artwork's vector representation. This is the inline
+    // call to T-036's `process_image` — when Rekognition gating lands
+    // we lift this into an async job (`T-008`).
+    if is_primary && state.embedder.enabled() {
+        let image_url = url_for_s3_key(s3_key);
+        artwork_embeddings::process_image(&state.pool, &state.embedder, id, &image_url)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("embed failed: {e}")))?;
+    }
+
+    Ok((StatusCode::CREATED, Json(row.into_studio_image())))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /v1/studio/artworks/:id/images/:image_id
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub async fn remove_image(
+    State(state): State<Arc<AppState>>,
+    Path((id, image_id)): Path<(Uuid, Uuid)>,
+    AuthedUser(user): AuthedUser,
+) -> Result<StatusCode, ApiError> {
+    let artist_id = current_artist_id(&state.pool, &user).await?;
+
+    // Delete only if the parent artwork is owned by this artist.
+    let res = sqlx::query(
+        r#"
+        DELETE FROM artwork_images ai
+        USING artworks a
+        WHERE ai.id = $1
+          AND a.id = ai.artwork_id
+          AND a.artist_id = $2
+          AND a.deleted_at IS NULL
+          AND ai.artwork_id = $3
+        "#,
+    )
+    .bind(image_id)
+    .bind(artist_id)
+    .bind(id)
+    .execute(&state.pool)
+    .await?;
+
+    if res.rows_affected() == 0 {
+        return Err(ApiError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers + row types
+// ─────────────────────────────────────────────────────────────────────────────
+
+async fn fetch_images(pool: &sqlx::PgPool, artwork_id: Uuid) -> Result<Vec<StudioImage>, ApiError> {
+    let rows: Vec<ImageRow> = sqlx::query_as(
+        r#"
+        SELECT id, s3_key, width, height, is_primary, display_order, moderation_status
+        FROM artwork_images
+        WHERE artwork_id = $1
+        ORDER BY is_primary DESC, display_order ASC
+        "#,
+    )
+    .bind(artwork_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(ImageRow::into_studio_image).collect())
+}
+
+#[derive(FromRow)]
+struct ArtworkRow {
+    id: Uuid,
+    title: Option<String>,
+    status: String,
+    medium: Option<String>,
+    price_cents: Option<i64>,
+    currency: String,
+    availability: String,
+    primary_s3_key: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    published_at: Option<DateTime<Utc>>,
+}
+
+impl ArtworkRow {
+    fn into_summary(self) -> StudioArtworkSummary {
+        StudioArtworkSummary {
+            id: self.id,
+            title: self.title,
+            status: self.status,
+            medium: self.medium,
+            price_cents: self.price_cents,
+            currency: self.currency,
+            availability: self.availability,
+            primary_image_url: self.primary_s3_key.map(|k| url_for_s3_key(&k)),
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            published_at: self.published_at,
+        }
+    }
+}
+
+#[derive(FromRow)]
+struct ArtworkDetailRow {
+    id: Uuid,
+    title: Option<String>,
+    status: String,
+    medium: Option<String>,
+    price_cents: Option<i64>,
+    currency: String,
+    availability: String,
+    description: Option<String>,
+    year_created: Option<i32>,
+    dimensions: Option<serde_json::Value>,
+    external_url: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    published_at: Option<DateTime<Utc>>,
+}
+
+impl ArtworkDetailRow {
+    fn into_detail(self, images: Vec<StudioImage>) -> StudioArtworkDetail {
+        // Derive `primary_image_url` from the images list so callers can
+        // render the summary section without rummaging through `images`.
+        let primary_image_url = images.iter().find(|i| i.is_primary).map(|i| i.url.clone());
+        StudioArtworkDetail {
+            summary: StudioArtworkSummary {
+                id: self.id,
+                title: self.title,
+                status: self.status,
+                medium: self.medium,
+                price_cents: self.price_cents,
+                currency: self.currency,
+                availability: self.availability,
+                primary_image_url,
+                created_at: self.created_at,
+                updated_at: self.updated_at,
+                published_at: self.published_at,
+            },
+            description: self.description,
+            year_created: self.year_created,
+            dimensions: self.dimensions,
+            external_url: self.external_url,
+            images,
+        }
+    }
+}
+
+#[derive(FromRow)]
+struct ImageRow {
+    id: Uuid,
+    s3_key: String,
+    width: Option<i32>,
+    height: Option<i32>,
+    is_primary: bool,
+    display_order: i32,
+    moderation_status: String,
+}
+
+impl ImageRow {
+    fn into_studio_image(self) -> StudioImage {
+        StudioImage {
+            url: url_for_s3_key(&self.s3_key),
+            id: self.id,
+            s3_key: self.s3_key,
+            width: self.width,
+            height: self.height,
+            is_primary: self.is_primary,
+            display_order: self.display_order,
+            moderation_status: self.moderation_status,
+        }
+    }
+}

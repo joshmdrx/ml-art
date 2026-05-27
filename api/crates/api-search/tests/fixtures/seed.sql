@@ -8,11 +8,13 @@
 -- Users (1; used for collections / inquiries in later tests)
 -- ─────────────────────────────────────────────────────────────────────────────
 
-INSERT INTO users (id, clerk_user_id, email, display_name) VALUES
-  ('99999999-9999-9999-9999-999999999999', 'user_test_99', 'test@example.com', 'Test User'),
-  -- alice + bob: used by the collections tests to assert ownership boundaries
-  ('88888888-8888-8888-8888-888888888888', 'user_test_alice', 'alice@example.com', 'Alice'),
-  ('77777777-7777-7777-7777-777777777777', 'user_test_bob',   'bob@example.com',   'Bob');
+INSERT INTO users (id, clerk_user_id, email, display_name, is_artist) VALUES
+  ('99999999-9999-9999-9999-999999999999', 'user_test_99', 'test@example.com', 'Test User', false),
+  -- alice + bob: used by the collections tests to assert ownership boundaries.
+  -- Alice is also an artist (linked below); bob is intentionally NOT — the
+  -- /v1/studio/* tests rely on bob hitting the "no artist for this user" 404.
+  ('88888888-8888-8888-8888-888888888888', 'user_test_alice', 'alice@example.com', 'Alice', true),
+  ('77777777-7777-7777-7777-777777777777', 'user_test_bob',   'bob@example.com',   'Bob',   false);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Artists (3)
@@ -22,16 +24,21 @@ INSERT INTO users (id, clerk_user_id, email, display_name) VALUES
 -- ─────────────────────────────────────────────────────────────────────────────
 
 INSERT INTO artists (
-    id, slug, display_name, bio, location, city, country, lat, lng, geocoded_at,
+    id, user_id, slug, display_name, bio, location, city, country, lat, lng, geocoded_at,
     inquiry_preferences, status
 ) VALUES
-  ('aaa11111-1111-1111-1111-111111111111', 'alice-test', 'Alice Test',
+  -- alice-test linked to user_test_alice so studio endpoints resolve.
+  ('aaa11111-1111-1111-1111-111111111111',
+   '88888888-8888-8888-8888-888888888888',
+   'alice-test', 'Alice Test',
    'Painter based in London.', 'London, GB', 'London', 'GB', 51.5074, -0.1278, now(),
    '{"type":"platform"}'::jsonb, 'active'),
-  ('aaa22222-2222-2222-2222-222222222222', 'bruno-test', 'Bruno Test',
+  -- bruno-test + carmen-test have no Clerk user (demo-style). Tests use them
+  -- to assert that an artist's user can't reach into another artist's data.
+  ('aaa22222-2222-2222-2222-222222222222', NULL, 'bruno-test', 'Bruno Test',
    'Sculptor based in Berlin.', 'Berlin, DE', 'Berlin', 'DE', 52.5200, 13.4050, now(),
    '{"type":"platform"}'::jsonb, 'active'),
-  ('aaa33333-3333-3333-3333-333333333333', 'carmen-test', 'Carmen Test',
+  ('aaa33333-3333-3333-3333-333333333333', NULL, 'carmen-test', 'Carmen Test',
    'Printmaker; location private.', NULL, NULL, NULL, NULL, NULL, NULL,
    '{"type":"platform"}'::jsonb, 'active');
 

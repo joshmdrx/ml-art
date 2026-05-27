@@ -3,6 +3,85 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-05-27 — Studio API: artwork CRUD + ownership (T-011 Phase 1)
+
+First slice of the artist studio. API only — pages land in Phases 2-4.
+The structural piece is: `users.is_artist` + `artists.user_id` were
+schema-defined but unused; this turns them into the load-bearing
+ownership boundary every `/v1/studio/*` endpoint enforces.
+
+- **New endpoints**
+  - `GET    /v1/studio/me` — returns the artist linked to the caller
+    (404 for collectors / non-artist users — same shape leak-prevention
+    pattern as the rest of `/v1/me/*`)
+  - `GET    /v1/studio/artworks?status=draft|published|archived|all` —
+    list this artist's portfolio (incl. drafts)
+  - `POST   /v1/studio/artworks` — create (defaults to `status='draft'`)
+  - `GET    /v1/studio/artworks/:id` — full detail w/ images
+  - `PATCH  /v1/studio/artworks/:id` — partial update; status
+    `draft → published` transition stamps `published_at` in SQL
+  - `DELETE /v1/studio/artworks/:id` — soft-delete via `deleted_at`
+  - `POST   /v1/studio/artworks/:id/images` — add image by `s3_key`.
+    First image lands as primary by default. Primary image add inline-
+    calls `artwork_embeddings::process_image` (T-036) so vector search
+    finds the work immediately. Rekognition gating + async-job lift
+    are `T-008` + a future ticket
+  - `DELETE /v1/studio/artworks/:id/images/:image_id` — remove image
+
+- **Ownership pattern**
+  - New `studio::current_artist_id(pool, user)` helper — the single
+    place where `AuthedUser → artists.user_id → artist_id` resolves.
+    Returns `NotFound` if the user has no linked artist. Every studio
+    handler calls this first
+  - All SQL joins through `artworks.artist_id = $artist_id` so
+    cross-artist access (Alice editing Bruno's artwork) returns 404,
+    same shape as the collections `me/*` pattern
+
+- **New types** (`studio::artworks`)
+  - `StudioArtworkSummary` — list-response row, includes `status` and
+    `primary_image_url` (drafts can be imageless)
+  - `StudioArtworkDetail` — `summary` + `description / year_created /
+    dimensions / external_url / images[]`. The detail view powering
+    the future edit modal
+  - `StudioImage` — `id / s3_key / url / width / height / is_primary /
+    display_order / moderation_status`. Public images endpoints don't
+    surface `moderation_status` but studio does, so artists see why
+    something's hidden
+
+- **Database**
+  - Migration `0010_studio_user_artist_link.sql` — partial unique index
+    `artists (user_id) WHERE user_id IS NOT NULL`. NULL `user_id` (the
+    WikiArt seed) explicitly allowed; live users are 1:1 with artists
+  - Test fixture `seed.sql` — alice user gets `is_artist=true` +
+    `artist.user_id` link to `aaa11111…`. Bob stays a non-artist for
+    the 404 tests. Dev DB also updated via direct `psql -f`
+
+- **Tests** — 21 new integration tests in `studio_test.rs`
+  - `/v1/studio/me`: returns-linked-artist, 404-for-non-artist,
+    401-without-auth
+  - GET list: only-my-artworks, includes-drafts, status-filter,
+    404-for-non-artist
+  - POST create: defaults-to-draft, rejects-bad-availability,
+    404-for-non-artist
+  - PATCH: updates-title, status-published-stamps-published_at,
+    rejects-bad-status, alice-cannot-patch-brunos
+  - DELETE: soft-deletes (idempotent), 2nd delete is 404
+  - Images: first-is-primary-and-embeds (via T-036),
+    rejects-second-primary, remove, remove-cross-artist-404
+  - Detail: returns-images, 404-for-cross-artist
+
+- **New test helper** `app_with_auth_and_fixed_vector(pool, vec)` —
+  the third `app_*` variant; combines `JwtVerifier::for_tests()` with
+  `Embedder::with_fixed_vector`. Studio image-add tests need both
+
+- **Verified**
+  - `cargo clippy --workspace --all-targets -- -D warnings` ✅
+  - `cargo fmt --check` ✅
+  - Rust **102** tests (was 81) — +21 studio integration
+  - Vitest 20, Playwright 22 unchanged, full Playwright sweep still green
+  - Live `/v1/studio/me` returns 401 unauthed; live `/v1/health` ok;
+    migration 0010 applied to dev DB
+
 ## 2026-05-27 — Embedding pipeline for new artworks (T-036, T-024)
 
 Closes the structural gap the audit identified: until now nothing in the
