@@ -64,8 +64,8 @@ if the item was dropped, with a one-line reason.
 ## Later (large pieces of v1)
 
 ### `T-011` Artist studio (`/studio/*` endpoints + pages)
-- ✅ **Phase 1 (landed):** artwork CRUD API (`GET/POST /v1/studio/artworks`, `GET/PATCH/DELETE /v1/studio/artworks/:id`, image add/remove), `/v1/studio/me`. Ownership-by-artist 404-not-403 boundary. Primary image landing inline-calls `process_image` (T-036).
-- Phase 2: `/v1/studio/settings` PATCH + `/studio/settings` page (bio, statement, links, commissioning, inquiry routing, visibility)
+- ✅ **Phase 1 (landed):** artwork CRUD API + `/v1/studio/me`, ownership-by-artist boundary
+- ✅ **Phase 2 (landed):** `/v1/studio/settings` PATCH + `/studio/settings` page (bio, statement, location, website, visibility toggle). Public surfaces now respect `artists.status='active'` so the Unpublish toggle is honest
 - Phase 3: `/studio` portfolio page (grid + add/edit modal, no LLM)
 - Phase 4: `/v1/studio/inquiries` GET + `/studio/analytics` stub (full analytics blocked on events-table writes — separate gap)
 - Phase 5: Bulk image upload (depends on `T-010` `POST /v1/uploads/image`)

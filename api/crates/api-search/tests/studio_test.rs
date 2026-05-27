@@ -488,3 +488,155 @@ async fn studio_artworks_detail_404s_for_cross_artist(pool: PgPool) {
     .await;
     assert_eq!(status, 404);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /v1/studio/settings
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Debug)]
+struct ArtistSettings {
+    bio: Option<String>,
+    artist_statement: Option<String>,
+    location: Option<String>,
+    city: Option<String>,
+    website_url: Option<String>,
+    status: String,
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_settings_patch_updates_bio_and_statement(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+    let body = json!({
+        "bio": "Painter exploring weather in oils.",
+        "artist_statement": "Light is the only subject.",
+    })
+    .to_string();
+    let (status, bytes) =
+        send_authed(app, "PATCH", "/v1/studio/settings", ALICE, Some(&body)).await;
+    assert_eq!(status, 200);
+    let updated: ArtistSettings = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        updated.bio.as_deref(),
+        Some("Painter exploring weather in oils.")
+    );
+    assert_eq!(
+        updated.artist_statement.as_deref(),
+        Some("Light is the only subject.")
+    );
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_settings_patch_changing_location_clears_geocoded(pool: PgPool) {
+    // The seed pre-populates alice's city/country/lat/lng. Editing
+    // location must clear those so the async geocode job re-runs.
+    let app = app_with_test_auth(pool.clone());
+    let body = json!({"location": "Paris, FR"}).to_string();
+    let (status, _) = send_authed(app, "PATCH", "/v1/studio/settings", ALICE, Some(&body)).await;
+    assert_eq!(status, 200);
+
+    let (city, country, lat): (Option<String>, Option<String>, Option<f64>) =
+        sqlx::query_as("SELECT city, country, lat FROM artists WHERE slug = 'alice-test'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(city.is_none(), "city should be cleared on location change");
+    assert!(country.is_none(), "country should be cleared");
+    assert!(lat.is_none(), "lat should be cleared");
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_settings_patch_rejects_bad_status(pool: PgPool) {
+    // Self-serve only accepts 'active' / 'paused'. Anything else 400s
+    // — including 'pending' / 'rejected' (admin-controlled).
+    let app = app_with_test_auth(pool);
+    for bad in ["pending", "rejected", "deleted", ""] {
+        let body = json!({"status": bad}).to_string();
+        let (status, _) = send_authed(
+            app.clone(),
+            "PATCH",
+            "/v1/studio/settings",
+            ALICE,
+            Some(&body),
+        )
+        .await;
+        assert_eq!(status, 400, "status `{bad}` should be rejected");
+    }
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_settings_patch_rejects_non_http_url(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+    let body = json!({"website_url": "ftp://example.com"}).to_string();
+    let (status, _) = send_authed(app, "PATCH", "/v1/studio/settings", ALICE, Some(&body)).await;
+    assert_eq!(status, 400);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_settings_patch_404s_for_non_artist(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+    let body = json!({"bio": "I have no artist row"}).to_string();
+    let (status, _) = send_authed(app, "PATCH", "/v1/studio/settings", BOB, Some(&body)).await;
+    assert_eq!(status, 404);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public surface: status = 'paused' hides the artist from search
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn paused_artist_disappears_from_search(pool: PgPool) {
+    // Flip alice to 'paused' via the studio settings endpoint; confirm
+    // her artworks no longer surface in keyword search results.
+    let app = app_with_test_auth(pool.clone());
+    let body = json!({"status": "paused"}).to_string();
+    let (status, _) = send_authed(
+        app.clone(),
+        "PATCH",
+        "/v1/studio/settings",
+        ALICE,
+        Some(&body),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    // Alice's artworks include 'Blue Morning' — search for that
+    // title; it must not appear.
+    #[derive(Deserialize)]
+    struct Page {
+        items: Vec<Item>,
+    }
+    #[derive(Deserialize)]
+    struct Item {
+        title: Option<String>,
+    }
+    let (_, page): (_, Page) = common::get_json(app, "/v1/search?q=Blue+Morning").await;
+    let blue_morning = page
+        .items
+        .iter()
+        .any(|i| i.title.as_deref() == Some("Blue Morning"));
+    assert!(
+        !blue_morning,
+        "Blue Morning should not appear in search results once alice is paused"
+    );
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn paused_artist_artwork_detail_404s(pool: PgPool) {
+    // Same check at the artwork detail endpoint: paused artist's
+    // artwork must 404, not render.
+    let app = app_with_test_auth(pool);
+    let body = json!({"status": "paused"}).to_string();
+    let (status, _) = send_authed(
+        app.clone(),
+        "PATCH",
+        "/v1/studio/settings",
+        ALICE,
+        Some(&body),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let (status, _) =
+        common::get_status(app, &format!("/v1/artworks/{ARTWORK_BLUE_MORNING}")).await;
+    assert_eq!(status, 404);
+}

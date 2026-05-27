@@ -190,6 +190,7 @@ async fn run_hybrid(
         WHERE a.deleted_at IS NULL
           AND a.status = 'published'
           AND ar.deleted_at IS NULL
+          AND ar.status = 'active'
           AND (k.id IS NOT NULL OR s.id IS NOT NULL)
           {filters_sql}
         {order_sql}
@@ -241,6 +242,7 @@ async fn run_no_query(
         WHERE a.deleted_at IS NULL
           AND a.status = 'published'
           AND ar.deleted_at IS NULL
+          AND ar.status = 'active'
           {filters_sql}
         {order_sql}
         LIMIT ${limit_idx}

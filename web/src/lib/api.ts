@@ -114,6 +114,44 @@ export interface CollectionDetail {
   artworks: Paginated<ArtworkSummary>;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Studio — the authenticated artist's own surface (T-011)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** What `GET /v1/studio/me` returns. Used by the settings + portfolio pages. */
+export interface StudioArtist {
+  id: string;
+  slug: string;
+  display_name: string;
+  bio: string | null;
+  artist_statement: string | null;
+  location: string | null;
+  city: string | null;
+  country: string | null;
+  website_url: string | null;
+  socials: Record<string, unknown>;
+  commissioning_preferences: Record<string, unknown> | null;
+  inquiry_preferences: Record<string, unknown>;
+  /** `pending`, `active`, `paused`, `rejected`. Self-serve toggle only
+   * accepts `active` ↔ `paused`. */
+  status: "pending" | "active" | "paused" | "rejected";
+  created_at: string;
+  updated_at: string;
+}
+
+/** Body for `PATCH /v1/studio/settings`. Every field optional; omitting
+ * a key means "don't touch." Use `null` to clear a nullable string. */
+export interface StudioSettingsPatch {
+  bio?: string | null;
+  artist_statement?: string | null;
+  location?: string | null;
+  website_url?: string | null;
+  socials?: Record<string, unknown>;
+  commissioning_preferences?: Record<string, unknown> | null;
+  inquiry_preferences?: Record<string, unknown>;
+  status?: "active" | "paused";
+}
+
 export interface SearchParams {
   q?: string;
   medium?: string;
@@ -502,4 +540,43 @@ export function formatPrice(
   } catch {
     return `${major.toFixed(0)} ${currency}`;
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Studio (authed; artist-only)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Fetch the artist record for the current Clerk user. Returns `null` if
+ * the user isn't signed in (401) or has no artist row (404 from
+ * `current_artist_id`) — both cases collapse to "not an artist (yet)"
+ * from the UI's perspective. */
+export async function getStudioMe(
+  init?: RequestInit
+): Promise<StudioArtist | null> {
+  const res = await apiFetch("/v1/studio/me", init);
+  if (res.status === 401 || res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`studio/me ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as StudioArtist;
+}
+
+/** Patch the current artist's settings. Body keys are optional; only
+ * include the fields you intend to change. Returns the updated artist. */
+export async function updateStudioSettings(
+  body: StudioSettingsPatch,
+  init?: RequestInit
+): Promise<StudioArtist> {
+  const res = await apiFetch("/v1/studio/settings", {
+    ...init,
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`studio/settings ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as StudioArtist;
 }

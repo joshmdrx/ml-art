@@ -160,6 +160,7 @@ pub async fn detail(
           AND a.deleted_at IS NULL
           AND a.status = 'published'
           AND ar.deleted_at IS NULL
+          AND ar.status = 'active'
           {extra}
         ORDER BY na.distance_to_centroid ASC NULLS LAST, a.published_at DESC
         LIMIT $2

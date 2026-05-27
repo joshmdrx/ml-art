@@ -3,6 +3,71 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-05-27 — Studio settings + public-surface visibility honesty (T-011 Phase 2)
+
+The second slice of the studio. Settings API + page, and — load-bearing
+— a fix to make `artists.status='paused'` actually hide an artist's
+work from public surfaces. The "Unpublish portfolio" toggle is a lie
+without that fix.
+
+- **API: `PATCH /v1/studio/settings`**
+  - Editable: `bio` (max 4k), `artist_statement` (max 8k), `location`
+    (max 200), `website_url` (max 500, must be http(s)),
+    `socials`/`commissioning_preferences`/`inquiry_preferences` (jsonb),
+    `status` (self-serve toggle: `active` ↔ `paused` only)
+  - Changing `location` clears the geocoded shadow fields
+    (`city`/`country`/`lat`/`lng`/`geocoded_at`) so the future async
+    geocode job re-runs against the new value
+  - 404 for non-artist users (same ownership pattern as the rest of
+    `/v1/studio/*`); 400 with detail for length/URL/status violations
+
+- **Public-surface status filter (`artists.status = 'active'`)**
+  - Until now, only `inquiries.rs` filtered on artist status — search,
+    artwork detail, artwork similar, neighborhoods, and collections
+    detail all ignored it. Paused artists' work would have stayed
+    visible everywhere, making the Unpublish toggle silently broken
+  - Added `AND ar.status = 'active'` to all five public-facing query
+    sites (search RRF + nearest-sort branches, artwork detail, artwork
+    similar, neighborhoods detail, collections detail)
+  - Already-correct surfaces (artist profile, inquiry create) untouched
+
+- **Web: `/studio/settings` page**
+  - Server-renders `getStudioMe()`; redirects signed-out users to
+    `/sign-in?redirect_url=…`; renders "you're not set up as an artist"
+    empty state for signed-in non-artists
+  - New `StudioSettingsForm` client component — single-column form
+    (bio, statement, location, website) + a separate visibility toggle
+    section that persists independently. Diffs against `initial` so the
+    Save button only enables when something changed and only dirty
+    fields land in the PATCH body
+  - New server action `updateStudioSettings(body)` revalidates
+    `/studio/settings`, `/studio`, and the artist's public page so
+    Unpublish → public page 404 happens immediately
+  - New `getStudioMe()` + `updateStudioSettings()` in `lib/api.ts`
+  - New `StudioArtist` + `StudioSettingsPatch` types
+
+- **Tests**
+  - 7 new Rust integration tests in `studio_test.rs`:
+    `patch_updates_bio_and_statement`,
+    `patch_changing_location_clears_geocoded`,
+    `patch_rejects_bad_status` (covers `pending`/`rejected`/empty),
+    `patch_rejects_non_http_url`,
+    `patch_404s_for_non_artist`,
+    `paused_artist_disappears_from_search`,
+    `paused_artist_artwork_detail_404s`
+  - 2 new Playwright specs in `17-studio-settings-signed-in.spec.ts` —
+    empty-state for non-artist user + page-renders smoke. Happy-path
+    edits stay covered at the Rust integration tier (linking a
+    Clerk-test user to an artist row in Playwright is a future
+    test-fixture concern)
+
+- **Verified**
+  - `cargo clippy --workspace --all-targets -- -D warnings` ✅
+  - `cargo fmt --check` ✅
+  - Rust **109** tests (was 102) — +7 studio
+  - Vitest 20 unchanged, Playwright **24** (was 22)
+  - Full suite + live `/studio/settings` page reachable
+
 ## 2026-05-27 — Studio API: artwork CRUD + ownership (T-011 Phase 1)
 
 First slice of the artist studio. API only — pages land in Phases 2-4.

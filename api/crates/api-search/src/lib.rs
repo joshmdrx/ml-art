@@ -106,6 +106,10 @@ pub fn build_app(state: Arc<AppState>) -> Router {
             "/v1/studio/artworks/:id/images/:image_id",
             delete(studio::artworks::remove_image),
         )
+        .route(
+            "/v1/studio/settings",
+            axum::routing::patch(studio::settings::patch),
+        )
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }

@@ -51,6 +51,7 @@ pub async fn detail(
           AND a.deleted_at IS NULL
           AND a.status = 'published'
           AND ar.deleted_at IS NULL
+          AND ar.status = 'active'
         "#,
     )
     .bind(id)
@@ -138,6 +139,7 @@ pub async fn similar(
           AND a.deleted_at IS NULL
           AND a.status = 'published'
           AND ar.deleted_at IS NULL
+          AND ar.status = 'active'
           AND a.id != anchor.artwork_id
           {same_artist_clause}
         ORDER BY ae.embedding <=> anchor.embedding

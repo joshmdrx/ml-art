@@ -12,6 +12,7 @@
 
 pub mod artworks;
 pub mod me;
+pub mod settings;
 
 use ml_art_core::{auth::User, db::Pool, error::ApiError};
 use uuid::Uuid;
