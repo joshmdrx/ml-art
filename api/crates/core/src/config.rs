@@ -82,13 +82,10 @@ impl Config {
                 .unwrap_or(9000),
             embedding_model_name: env::var("EMBEDDING_MODEL_NAME")
                 .unwrap_or_else(|_| "jinaai/jina-clip-v2".to_string()),
-            // Defaults to "local" because v0 demo seeding ran the model
-            // locally via Python tooling (see ml/ml_art/embeddings/local_jina.py).
-            // In staging/prod we'll override via EMBEDDING_MODEL_VERSION=api when
-            // the JinaEmbedder HTTP client writes new rows. The label-unification
-            // migration is tracked as TODO(T-024).
+            // Unified label as of migration 0009 (T-024). Python local seed
+            // and Rust HTTP path both write `'v2'` for jinaai/jina-clip-v2.
             embedding_model_version: env::var("EMBEDDING_MODEL_VERSION")
-                .unwrap_or_else(|_| "local".to_string()),
+                .unwrap_or_else(|_| "v2".to_string()),
             jina_api_key: env::var("JINA_API_KEY").ok(),
             mapbox_token: env::var("MAPBOX_TOKEN").ok(),
             rekognition_enabled: env::var("REKOGNITION_ENABLED")
@@ -132,7 +129,7 @@ impl Config {
             database_url,
             port: 0,
             embedding_model_name: "jinaai/jina-clip-v2".to_string(),
-            embedding_model_version: "local".to_string(),
+            embedding_model_version: "v2".to_string(),
             jina_api_key: None,
             mapbox_token: None,
             rekognition_enabled: false,

@@ -89,11 +89,13 @@ INSERT INTO artwork_images (
 -- Embeddings (1024-dim, 1.0 at distinct positions so similarities are well-defined)
 -- ─────────────────────────────────────────────────────────────────────────────
 
+-- model_version='v2' matches the unified label set by migration 0009
+-- (T-024 fold-in). See `decisions.md` 2026-05-27.
 INSERT INTO artwork_embeddings (artwork_id, model_name, model_version, embedding)
 SELECT
     artwork_id,
     'jinaai/jina-clip-v2',
-    'local',
+    'v2',
     (
         SELECT array_agg(CASE WHEN j = pos THEN 1.0::real ELSE 0::real END ORDER BY j)
         FROM generate_series(0, 1023) j

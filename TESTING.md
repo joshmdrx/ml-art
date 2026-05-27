@@ -85,7 +85,7 @@ behavior in one go.
 
 The test-mode bypass is an explicit constructor (`for_tests()`), not env-gated — there's no way to enable it in a production binary without code changes. See `decisions.md` 2026-05-26 — test-mode JwtVerifier.
 
-**Acceptance:** comprehensive coverage of contract + ownership + validation; full suite under 30 seconds locally. Current count: **74 tests, ~6s** — 65 integration (health 1, anon_id 4, artist 4, artwork 6, collections 14, inquiries 9, neighborhoods 8, search 14, rate_limit 5) + 9 core unit (`middleware::rate_limit`). Rate-limit tests use the `app_with_rate_limit(pool, search_per_min, inquiry_per_hour)` helper which flips the bypass off and dials quotas low so denial happens within 3–4 calls (no clock-faking required).
+**Acceptance:** comprehensive coverage of contract + ownership + validation; full suite under 30 seconds locally. Current count: **81 tests, ~6s** — 70 integration (health 1, anon_id 4, artist 4, artwork 6, collections 14, inquiries 9, neighborhoods 8, search 14, rate_limit 5, artwork_embeddings 5) + 11 core unit (`middleware::rate_limit` 9 + `images` 2). Rate-limit tests use the `app_with_rate_limit(pool, search_per_min, inquiry_per_hour)` helper which flips the bypass off and dials quotas low so denial happens within 3–4 calls (no clock-faking required). Embedding-pipeline tests use `embedder_with_fixed_vector(pool, vec)` so `process_image` runs end-to-end without hitting Jina.
 
 ### Tier 2 — Playwright E2E (golden path)
 

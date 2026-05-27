@@ -78,7 +78,9 @@ class LocalJinaClipEmbedder:
 
     @property
     def model_version(self) -> str:
-        return "local"
+        # Unified with the Rust HTTP path as of migration 0009.
+        # See TODO(T-024) — model_version unification.
+        return "v2"
 
     @property
     def dimension(self) -> int:

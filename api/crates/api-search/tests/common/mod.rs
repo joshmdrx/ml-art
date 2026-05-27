@@ -136,7 +136,6 @@ pub fn app_with_rate_limit(pool: Pool, search_per_min: u32, inquiry_per_hour: u3
 
 /// Build the Axum router with an embedder that returns a fixed vector for
 /// every text query. Use this when the test needs the vector path to fire.
-#[allow(dead_code)]
 pub fn app_with_fixed_vector(pool: Pool, vec: pgvector::Vector) -> Router {
     let cfg = Config::for_tests(String::new());
     let embedder = Embedder::with_fixed_vector(
@@ -152,6 +151,18 @@ pub fn app_with_fixed_vector(pool: Pool, vec: pgvector::Vector) -> Router {
         jwt_verifier,
         cfg,
     }))
+}
+
+/// Build a standalone `Embedder` with `with_fixed_vector`. For pipeline
+/// tests (`process_image`) that don't need the whole Axum router.
+pub fn embedder_with_fixed_vector(pool: Pool, vec: pgvector::Vector) -> Embedder {
+    let cfg = Config::for_tests(String::new());
+    Embedder::with_fixed_vector(
+        pool,
+        cfg.embedding_model_name,
+        cfg.embedding_model_version,
+        vec,
+    )
 }
 
 /// Convenience: send a GET, return the (status, parsed-JSON) tuple.

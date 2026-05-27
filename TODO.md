@@ -11,16 +11,6 @@ if the item was dropped, with a one-line reason.
 
 ## Now (active build)
 
-### `T-036` Embedding pipeline for new artworks
-**Where:** `core::embedder` + new `core::artwork_embeddings::write`
-**Why:** seeded artworks have embeddings (Python local pass), but nothing in the production code path takes a freshly-created `artworks` row → calls Jina → writes `artwork_embeddings`. Blocks `T-011` (studio create) and `T-010` (upload-driven visual search) alike.
-**Acceptance:**
-- `Embedder::embed_image_from_url(url) -> Vector` + `with_fixed_vector` test variant
-- `core::artwork_embeddings::write(artwork_id, vector, pool)` with the model_version unification from `T-024` folded in (one-shot UPDATE migration `0009`)
-- High-level `process_new_artwork_image(artwork_id, url)` composing the two
-- Tests: unit (mock HTTP), integration (write+search round-trip)
-- Explicitly NOT building yet: Inngest job queue (studio calls inline at first), S3 upload endpoint (`T-010`), moderation gate (`T-008`)
-
 ### `T-032` Real inquiry delivery via Resend + Inngest
 **Where:** new Inngest function `inquiry.deliver`; Resend HTTP client in `core::email`
 **Acceptance:**
@@ -125,11 +115,6 @@ if the item was dropped, with a one-line reason.
 ### `T-019` Voyage multimodal embedder
 - Second `Embedder` impl for A/B
 - Trigger: only if there's a compelling reason to compare against Jina
-
-### `T-024` Unify `model_version` labels for the canonical embedding
-**Why:** Python local embedder writes `model_version='local'`; Rust HTTP client would write `model_version='api'` (even though they're the same model). Rust API defaults to `'local'` so it can read seed rows. This only matters when the HTTP client starts writing new rows.
-**Fix:** pick `'v2'`, set in both Python and Rust, one-shot `UPDATE artwork_embeddings SET model_version='v2' WHERE model_version IN ('local','api')`.
-**Folded into `T-036`** since that ticket starts writing new rows from Rust.
 
 ### `T-037` Cursor pagination on `/v1/search` (and friends)
 **Where:** `api-search::search` + the other endpoints that return `Paginated<T>` with `next_cursor: None`.

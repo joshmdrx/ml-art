@@ -3,6 +3,72 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-05-27 — Embedding pipeline for new artworks (T-036, T-024)
+
+Closes the structural gap the audit identified: until now nothing in the
+production code path took a freshly-created `artworks` row → called Jina
+→ wrote an `artwork_embeddings` row. Seeded artworks had embeddings
+(Python local pass at seed time) but anything new would be invisible to
+vector search. Studio create (`T-011`) and upload-driven visual search
+(`T-010`) both depend on this piece existing.
+
+- **`Embedder::embed_image_from_url(url)`** — calls Jina's image
+  endpoint with the `{image: "<url>"}` payload shape (URL works because
+  our images sit at MinIO `localhost:9000` in dev, CDN in prod —
+  fetchable by Jina's workers in both cases). Errors out when
+  `JINA_API_KEY` is unset (image embedding is required, not best-effort
+  like text). Test path: `with_fixed_vector` returns the canned vector
+  for the image branch too, parallel to `embed_text`.
+
+- **`core::artwork_embeddings` (new module)**
+  - `write(pool, artwork_id, model_name, model_version, vector)` — INSERT
+    ... ON CONFLICT upsert keyed on the composite PK. Re-embedding the
+    same artwork with the same model is idempotent; writing a *different*
+    `model_version` (future `'v3'`) adds a row alongside for safe A/B
+  - `process_image(pool, embedder, artwork_id, image_url)` — composes
+    embed + write. The single function studio create handlers will call.
+    The future `image.process` Inngest job + Rekognition moderation gate
+    sit either side of this function as scope grows
+
+- **`Embedder::model_name()` + `model_version()` accessors** —
+  `process_image` reads them off the embedder so callers don't have to
+  hold their own copy of the strings
+
+- **T-024 model_version unification folded in**
+  - New migration `db/migrations/0009_normalize_model_version.sql` —
+    one-shot UPDATE: `('local'|'api') → 'v2'` on both
+    `artwork_embeddings` (2000 rows in dev) and `query_embedding_cache`
+    (9 rows). Idempotent: re-running matches no rows
+  - Python `LocalJinaClipEmbedder` + `JinaClipEmbedder` both return
+    `'v2'` for `model_version` (were `'local'` / `'api'`)
+  - Rust `Config` default flipped to `'v2'`; same for
+    `Embedder::disabled` + `Config::for_tests`
+  - `api/.env` + `api/.env.example` updated to `EMBEDDING_MODEL_VERSION=v2`
+  - Test fixture `seed.sql` writes `'v2'`
+  - T-024 removed from TODO.md (folded here)
+
+- **Tests**
+  - 5 new integration tests in `tests/artwork_embeddings_test.rs`:
+    - `write_round_trips_through_pgvector` — exact f32 byte equality
+    - `write_is_idempotent_under_same_pk` — second write doesn't dup
+    - `write_with_different_version_creates_second_row` — A/B semantics
+    - `process_image_writes_a_row_with_v2_label` — end-to-end via the
+      fixed-vector embedder
+    - `process_image_makes_artwork_findable_via_similar` — creates a
+      fresh artwork, processes, hits `/v1/artworks/:id/similar` through
+      the full Axum stack, asserts the new row is in the result set
+  - New helper `embedder_with_fixed_vector(pool, vec)` in
+    `tests/common/mod.rs` for pipeline tests that don't want the router
+  - Tallies: Rust **81** (was 76). Vitest 20, Playwright 22 unchanged.
+
+- **`process_image` is sync-call today, not a job queue**
+  - Studio handlers (when `T-011` lands) call this inline at first
+  - When moderation lands (`T-008` Rekognition), it'll have to become
+    async since Rekognition is itself async — at that point we add a
+    `JobQueue` trait + an Inngest impl + a Tokio-spawn impl, and the
+    `process_image` contract stays the same
+  - Decision logged inline in the module doc
+
 ## 2026-05-27 — Code review pass: standards + refactors before T-011
 
 Audit, fixes, and convention-setting before the studio milestone doubles

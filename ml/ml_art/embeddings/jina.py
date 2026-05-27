@@ -44,8 +44,9 @@ class JinaEmbedder:
 
     @property
     def model_version(self) -> str:
-        # Jina versions are encoded in the model name (e.g. clip-v2).
-        return "api"
+        # Unified with the local PyTorch path as of migration 0009.
+        # See TODO(T-024) — model_version unification.
+        return "v2"
 
     @property
     def dimension(self) -> int:
