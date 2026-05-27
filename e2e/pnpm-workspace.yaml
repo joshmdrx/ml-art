@@ -1,0 +1,4 @@
+allowBuilds:
+  '@clerk/shared': true
+onlyBuiltDependencies:
+  - '@clerk/shared'

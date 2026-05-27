@@ -1,0 +1,166 @@
+name: e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "api/**"
+      - "web/**"
+      - "db/migrations/**"
+      - "e2e/**"
+      - ".github/workflows/e2e.yml"
+
+env:
+  DATABASE_URL: postgres://ml_art:dev@localhost:5432/ml_art_dev
+  S3_ENDPOINT: http://localhost:9000
+  AWS_ACCESS_KEY_ID: dev
+  AWS_SECRET_ACCESS_KEY: devpassword
+  AWS_REGION: us-east-1
+  JINA_API_KEY: ""
+  EMBEDDING_MODEL_NAME: jinaai/jina-clip-v2
+  EMBEDDING_MODEL_VERSION: local
+  NEXT_PUBLIC_API_BASE_URL: http://localhost:9100
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ml_art
+          POSTGRES_PASSWORD: dev
+          POSTGRES_DB: ml_art_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: dev
+          MINIO_ROOT_PASSWORD: devpassword
+          MINIO_DEFAULT_BUCKETS: "artworks:download,uploads"
+        ports:
+          - 9000:9000
+          - 9001:9001
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ─── tooling ─────────────────────────────────────────────────────
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: api
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      # ─── apply migrations + seed ─────────────────────────────────────
+      - name: Apply DB migrations
+        run: |
+          for f in db/migrations/*.sql; do
+            PGPASSWORD=dev psql -h localhost -U ml_art -d ml_art_dev -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      # We don't run the full WikiArt seed in CI — too slow and external.
+      # The Rust integration tests use their own fixtures; for E2E we
+      # apply a minimal SQL seed that gives /search and /neighborhoods
+      # enough rows to render.
+      - name: Apply E2E seed fixture
+        run: |
+          PGPASSWORD=dev psql -h localhost -U ml_art -d ml_art_dev \
+            -v ON_ERROR_STOP=1 \
+            -f api/crates/api-search/tests/fixtures/seed.sql
+
+      # ─── build + run API ─────────────────────────────────────────────
+      - name: Build api-search (release for faster cold start)
+        run: cargo build -p api-search --release
+        working-directory: api
+
+      - name: Start api-search
+        run: |
+          ./target/release/api-search > /tmp/api.log 2>&1 &
+          echo "API_PID=$!" >> "$GITHUB_ENV"
+        working-directory: api
+        env:
+          PORT: 9100
+
+      - name: Wait for API
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:9100/v1/health > /dev/null; then
+              echo "api up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "api never came up"; cat /tmp/api.log; exit 1
+
+      # ─── build + run web ─────────────────────────────────────────────
+      - name: Install web deps
+        run: pnpm install --frozen-lockfile
+        working-directory: web
+
+      - name: Build web
+        run: pnpm build
+        working-directory: web
+
+      - name: Start web
+        run: |
+          pnpm start > /tmp/web.log 2>&1 &
+          echo "WEB_PID=$!" >> "$GITHUB_ENV"
+        working-directory: web
+
+      - name: Wait for web
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000 > /dev/null; then
+              echo "web up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "web never came up"; cat /tmp/web.log; exit 1
+
+      # ─── playwright ──────────────────────────────────────────────────
+      - name: Install e2e deps
+        run: pnpm install --frozen-lockfile
+        working-directory: e2e
+
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium
+        working-directory: e2e
+
+      - name: Run Playwright
+        run: pnpm test
+        working-directory: e2e
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: e2e/playwright-report
+          retention-days: 7

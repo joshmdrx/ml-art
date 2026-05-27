@@ -1,0 +1,8 @@
+node_modules/
+test-results/
+playwright-report/
+.auth/
+
+# Clerk dev keys — local-only.
+.env
+.env.local
