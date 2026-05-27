@@ -1,5 +1,11 @@
 # Art Discovery Platform — Page Spec (v1)
 
+> **Aspirational.** Describes the intended v1 product, not necessarily
+> what's in the code today. Truth for shipped behavior lives in
+> [`CHANGELOG.md`](CHANGELOG.md); rationale for deviations lives in
+> [`decisions.md`](decisions.md). See `decisions.md` 2026-05-27 — Specs
+> are aspirational, CHANGELOG + decisions are truth.
+
 ## Design principles
 
 - Minimal, white-space heavy aesthetic. Gallery-like, not store-like.
@@ -36,9 +42,9 @@
 | `/studio/analytics` | Artist analytics |
 | `/studio/settings` | Artist settings |
 | `/onboarding` | Artist onboarding flow (stepped) |
-| `/claim/[token]` | Pre-built portfolio claim |
-| `/admin/submissions` | Admin: artist submission queue |
 | `/sign-in`, `/sign-up` | Clerk-handled auth pages |
+
+Note: pre-built portfolio claim flow (`/claim/[token]`) and admin submission queue (`/admin/submissions`) are deferred to v2 — see `99-deferred.md`. V1 onboards artists via direct outreach to a hand-picked group of 20–30.
 
 ## Page-by-page
 
@@ -48,7 +54,9 @@
 
 **Layout (top to bottom):**
 1. Hero search block: centered, generous vertical padding. Large search input with placeholder "Search artworks, artists, or drop an image." Camera icon inside the input on the right, opens image upload flow. No other text in the hero — just the search.
-2. Semantic neighborhoods section: heading "Explore neighborhoods" with a quiet subheading. Grid of 6 neighborhood cards (2 rows × 3 on desktop, 1 column on mobile). Each card: 3 representative thumbnails arranged asymmetrically, neighborhood name, short LLM-generated description (1 line, ~10 words). Link to `/neighborhoods` at the bottom — "See all neighborhoods →".
+2. Semantic neighborhoods section: heading "Explore neighborhoods" with a quiet subheading. Grid of 6 neighborhood cards (2 rows × 3 on desktop, 1 column on mobile). Each card: 3 representative thumbnails arranged asymmetrically, neighborhood name, short description (1 line, ~10 words). Link to `/neighborhoods` at the bottom — "See all neighborhoods →".
+
+   V1 note: neighborhoods are **manually curated** — name, description, and representative artworks set in an admin script or DB seed. Algorithmic clustering (HDBSCAN + LLM labeling) waits until the corpus is large enough to cluster meaningfully (~thousands of artworks). See `99-deferred.md`.
 3. Recent additions section: heading "Recently added." Grid of 12 most recently published artworks (4 columns desktop). Same card component as elsewhere.
 4. Footer.
 
@@ -58,7 +66,9 @@
 - Clicking a neighborhood card → navigates to `/neighborhoods/[slug]`.
 - Clicking an artwork card → opens artwork detail modal (URL updates to `/artworks/[id]`).
 
-**Data needed:** 6 curated or top-ranked neighborhoods (with 3 representative artworks each), 12 most recent artworks.
+**Cold-start UX (logged-out / new user):** no personalized recommendations exist yet — the homepage is the same for everyone (curated neighborhoods + recent additions). Personalization surfaces only appear once the user has accumulated enough behavioral signal to compute a taste embedding.
+
+**Data needed:** 6 curated neighborhoods (with 3 representative artworks each), 12 most recent artworks.
 
 ### Search results (`/search`)
 
@@ -67,7 +77,7 @@
 **Layout:**
 1. Top nav (search bar reflects current query).
 2. Query context bar: shows what was searched ("Showing results for 'moody coastal'" or "Results similar to [uploaded image thumbnail] + 'warmer'"). Includes a "Clear" link and a small "Edit query" affordance.
-3. Filters row: collapsed by default, expandable. Pills for: Medium, Price, Size, Orientation, Availability, Color. Clicking a pill opens an inline dropdown with options. Applied filters show as removable chips below. Sort dropdown far right: Relevance (default), Newest, Price ↑, Price ↓.
+3. Filters row: collapsed by default, expandable. Pills for: Medium, Price, Size, Orientation, Availability, Color, **Location**. Clicking a pill opens an inline dropdown with options. The Location pill: text input ("Berlin", "London", "New York") with autocomplete from popular artist cities, plus a separate "Near me" toggle that uses browser geolocation (50km radius default, with a slider 5–250km). Applied filters show as removable chips below. Sort dropdown far right: Relevance (default), Newest, Price ↑, Price ↓, **Nearest** (only visible when Near-me is on).
 4. Visual search only: modifier buttons row above results — "Moodier", "Warmer", "Cooler", "More minimal", "More textured", "More graphic". Clicking toggles modifier, re-runs search. Selected modifiers highlighted.
 5. Results grid: 4 columns desktop, 3 tablet, 2 mobile. Infinite scroll. Each card: image (aspect-ratio preserved), artist name (small), title (if present). Hover reveals save-to-collection icon.
 6. Empty state: "No artworks match this search. Try fewer filters, or explore a neighborhood →" with 3 neighborhood cards below.
@@ -95,7 +105,7 @@
 **Purpose:** Browse one curated cluster.
 
 **Layout:**
-1. Header: neighborhood name (large, serif if the design system goes serif for display), LLM-generated description (2–3 sentences), representative image strip (6 thumbnails) across the top.
+1. Header: neighborhood name (large, serif if the design system goes serif for display), description (2–3 sentences, hand-written by curator in v1), representative image strip (6 thumbnails) across the top.
 2. Filters row: same as search (Medium, Price, Size, Orientation, Availability, Sort). No text query here.
 3. Results grid: same component as search results. Infinite scroll.
 
@@ -205,9 +215,9 @@ V1: skip email preferences entirely (no newsletters to opt in/out of).
 **Purpose:** Stepped flow. Single page, progressive disclosure — each step expands below the previous.
 
 **Steps:**
-1. **Welcome / claim.** If arriving from claim link: shows the pre-built portfolio preview, "This is what we built for you. Ready to claim it?" with a "Claim and edit" button and a quiet "No thanks, take it down" link. Email verification if needed (Clerk magic link).
-2. **Import.** "Where can we find more of your work?" Input for website URL, optional Instagram handle. "Import" button. Shows import progress. User can skip with "Add work manually instead."
-3. **Bio.** Pre-filled from scrape. Editable textarea. Location, website, socials — editable fields.
+1. **Welcome.** "Let's set up your portfolio." Email verification via Clerk magic link if not already authed.
+2. **Import.** "Where can we find your work?" Input for website URL (Instagram import deferred — TOS-restricted and unreliable). "Import" button. Shows import progress. User can skip with "Add work manually instead."
+3. **Bio.** Pre-filled from scrape if available, otherwise blank. Editable textarea. Location, website, socials — editable fields.
 4. **Per-artwork metadata (LLM-assisted).** For each imported artwork (capped at 10 for onboarding; rest handled in /studio later):
    - Image on left.
    - Conversational prompt: "Tell me about this piece — medium, size, what you were thinking about."
@@ -248,17 +258,6 @@ V1: skip email preferences entirely (no newsletters to opt in/out of).
 - Inquiry routing.
 - Portfolio visibility: Published / Unpublished (not deleted — temporarily hidden).
 - Account: link to /settings for user-level stuff.
-
-### Admin submissions (`/admin/submissions`)
-
-**Purpose:** Minimal review queue.
-
-**Layout:**
-1. Table: submission date, artist name, email, status (pending/approved/rejected), source (direct signup / claim link), action column.
-2. Clicking a row opens a detail panel (sidebar slide-in): artist's submitted data, imported images, quick approve/reject buttons with optional note.
-3. Top filter: status (pending default).
-
-**Admin access:** gated by role flag on user. V1 has a single admin (you).
 
 ## Components referenced across pages
 

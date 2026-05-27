@@ -1,0 +1,48 @@
+# Pre-commit hooks. Same checks CI runs, scoped to the files you touched.
+# See `decisions.md` 2026-05-27 — Pre-commit hooks for the rationale.
+#
+# Install once with: lefthook install
+# Bypass at your peril with: git commit --no-verify (CI will still catch it)
+
+pre-commit:
+  parallel: true
+  commands:
+    rust-fmt:
+      glob: "api/**/*.rs"
+      run: cd api && cargo fmt --all --check
+
+    rust-clippy:
+      glob: "api/**/*.rs"
+      # `--all-targets` mirrors CI; catches dead_code + style in test files too.
+      # Slow first run, fast after sccache-backed second.
+      run: cd api && cargo clippy --workspace --all-targets -- -D warnings
+
+    web-eslint:
+      glob: "web/src/**/*.{ts,tsx,js,jsx}"
+      run: cd web && pnpm exec eslint {staged_files} --max-warnings 0
+
+    web-typecheck:
+      # tsc has no per-file mode that catches cross-file errors; run once.
+      glob: "web/**/*.{ts,tsx}"
+      run: cd web && pnpm exec tsc --noEmit
+
+    # `TODO(T-NNN):` is the only sanctioned form. Reject bare `TODO:` /
+    # `FIXME:` introduced by this commit. See `decisions.md` 2026-05-27.
+    # The grep targets *added* lines only (the leading `+` in the diff),
+    # so existing legacy TODOs don't block work until they're touched.
+    todo-format:
+      run: |
+        set -e
+        BAD=$(git diff --cached --diff-filter=AM -U0 \
+          | grep -E '^\+' \
+          | grep -v '^\+\+\+' \
+          | grep -Ei '(TODO|FIXME)[^(]' \
+          | grep -Ev 'TODO\(T-[0-9]+\):' || true)
+        if [ -n "$BAD" ]; then
+          echo "Bare TODO/FIXME comments are not allowed."
+          echo "Use 'TODO(T-NNN): description' referencing a ticket in TODO.md."
+          echo
+          echo "Offending lines:"
+          echo "$BAD"
+          exit 1
+        fi

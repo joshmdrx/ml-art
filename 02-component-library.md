@@ -1,5 +1,11 @@
 # Art Discovery Platform — Component Library (v1)
 
+> **Aspirational.** Describes the intended v1 component surface, not
+> necessarily what's in the code today. Truth for shipped components
+> lives in [`CHANGELOG.md`](CHANGELOG.md) + the source itself. See
+> `decisions.md` 2026-05-27 — Specs are aspirational, CHANGELOG +
+> decisions are truth.
+
 ## Principles
 
 - Minimal surface area. Every new component must justify its existence.
@@ -7,7 +13,7 @@
 - Tailwind for styling; no CSS-in-JS. One design-token source of truth in `tailwind.config.ts`.
 - All components typed with TypeScript. Props explicit, no `any`.
 - Accessibility baked in — focus traps on modals, keyboard navigation on all interactive elements, ARIA where needed. WCAG AA.
-- No visual library dependencies where a primitive will do. Headless UI or Radix Primitives for complex a11y patterns (modals, dropdowns, tabs) — otherwise hand-rolled.
+- No visual library dependencies where a primitive will do. **Radix Primitives** for complex a11y patterns (modals, dropdowns, tabs, popovers) — better momentum, larger primitive set, used by shadcn ecosystem. Hand-rolled for anything simpler.
 
 ## Design tokens (Tailwind config)
 
@@ -46,7 +52,7 @@ Standard form inputs. Shared wrapper component `<FormField>` provides label, hel
 
 ### `<Modal>`
 
-Built on Radix Dialog or Headless UI Dialog for accessibility.
+Built on Radix Dialog.
 
 **Props:** `open`, `onClose`, `size: 'sm' | 'md' | 'lg' | 'full'`, `title` (optional), `children`, `dismissable` (default true).
 
@@ -55,6 +61,8 @@ Built on Radix Dialog or Headless UI Dialog for accessibility.
 - Scroll lock on body while open.
 - Mobile: slides up from bottom as a sheet; desktop: centered.
 - All modals (save-to-collection, inquiry, image upload, artwork detail, add-artwork) share this component.
+
+**Artwork-detail modal complexity note:** the pattern where `/artworks/[id]` opens as a modal overlay on top of the previous page (and direct-load renders as full page) uses **Next.js parallel routes + intercepting routes** (`@modal/(.)artworks/[id]`). This is powerful but a known source of edge-case bugs around back-button, refresh, deep-link share, and SSR/hydration. Budget extra time and write E2E coverage specifically for: open from search → close → URL restored, direct-load `/artworks/[id]` → renders full page, share `/artworks/[id]` link → friend lands on full page, browser back/forward through modal opens.
 
 ### `<Toast>` / `<ToastProvider>`
 

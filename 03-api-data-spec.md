@@ -1,12 +1,19 @@
 # Art Discovery Platform — API + Data Spec (v1)
 
+> **Aspirational.** Describes the intended v1 API surface, not
+> necessarily what's in the code today. Truth for shipped endpoints
+> lives in [`CHANGELOG.md`](CHANGELOG.md) + the Rust source itself. See
+> `decisions.md` 2026-05-27 — Specs are aspirational, CHANGELOG +
+> decisions are truth.
+
 ## Principles
 
 - REST-ish over HTTPS. JSON in/out. No GraphQL.
-- Zod schemas shared between Rust API contracts (via generated types) and Next.js client.
+- Rust types as source of truth; TS types generated via `ts-rs` for the client. Zod schemas on the client mirror them for runtime validation at boundaries.
 - Auth via Clerk JWTs in `Authorization: Bearer` header. API validates JWT, extracts `user_id`.
-- Anonymous requests carry `X-Anonymous-Id` header (UUID from first-party cookie).
+- Anonymous identity carried by a **signed, HTTP-only first-party cookie** (`anon_id`), set by Next.js middleware on first request. Never trust a client-supplied anonymous_id header or body field.
 - Every endpoint instrumented — request logged, event emitted on meaningful actions.
+- Rate-limited per-IP and per-identity via Upstash Redis (`@upstash/ratelimit`).
 - Cursor-based pagination (not offset).
 - Versioned under `/v1/` from day one.
 
@@ -14,8 +21,24 @@
 
 - Clerk handles all auth UI and session management.
 - API validates Clerk JWT on requests requiring auth.
-- `X-Anonymous-Id` header present on every request (including authed). Used for merging behavioral data.
-- On sign-in/up, client calls `POST /v1/me/merge-anonymous` with the anonymous_id to trigger server-side profile merge.
+- Anonymous identity: signed HMAC cookie `anon_id` (UUID v7), set by Next.js edge middleware on first request, HTTP-only, SameSite=Lax, 1-year expiry. API extracts and verifies the signature server-side; the unsigned UUID is what gets logged/joined to events.
+- On sign-in/up, client calls `POST /v1/me/merge-anonymous` (no body). Server reads the `anon_id` cookie, merges its behavioral data into the authed user account, then optionally rotates the cookie. Idempotent.
+
+## Rate limiting
+
+| Endpoint | Limit | Key |
+|---|---|---|
+| `POST /v1/artworks/:id/inquiries` | 3 / hour | IP + anon_id |
+| `POST /v1/uploads/image` | 20 / hour | IP + anon_id |
+| `GET /v1/search` | 60 / minute | anon_id |
+| `POST /v1/events` | 200 / minute | anon_id |
+| All other write endpoints | 30 / minute | user_id or IP |
+
+Implemented as middleware in the Rust API using a Redis-backed sliding window. 429 response uses RFC 7807 problem+json with `Retry-After` header.
+
+## Cookie consent
+
+EU visitors see a one-time consent banner before any non-essential cookies are set (PostHog identifier, etc.). Until consent is granted, events are buffered client-side and only flushed on accept. The `anon_id` cookie is treated as strictly-necessary (no consent required) since it underpins core anti-abuse and session continuity; this is documented in the privacy policy.
 
 ## Conventions
 
@@ -44,7 +67,9 @@ Query params:
 - `orientation` (portrait|landscape|square).
 - `availability` (available|all).
 - `color` (hex, optional) — nearest-color match.
-- `sort` (relevance|newest|price_asc|price_desc).
+- `location` (string, optional) — loose match against artist `city` or `country`. ILIKE on a normalized "city, country" string. e.g. `?location=berlin` matches "Berlin", "Berlin, Germany". One location term per query.
+- `near_lat`, `near_lng`, `near_radius_km` (optional, all three or none) — proximity filter. Computes great-circle distance via Haversine in SQL. Default radius 50km if `near_lat/lng` are set without `radius`.
+- `sort` (relevance|newest|price_asc|price_desc|nearest). `nearest` only valid with `near_lat/lng`.
 - `cursor` (opaque).
 - `limit` (default 24, max 48).
 
@@ -100,7 +125,14 @@ Body: multipart form-data with `file`.
 
 Response: `{ upload_id, preview_url }`.
 
-Behavior: validates file, stores in S3 under `uploads/` prefix, generates thumbnail. Embedding happens lazily when used in search. Uploads auto-expire after 24h if unused.
+Behavior:
+1. Validates file (type, size, dimensions).
+2. Stores in S3 under `uploads/` prefix.
+3. Enqueues two Inngest jobs in parallel: `image.moderate` (AWS Rekognition `DetectModerationLabels`) and `image.embed` (call Jina/Voyage).
+4. Response returns immediately with `upload_id` and a `preview_url`.
+5. If moderation rejects, the upload is marked `rejected` and any subsequent search using it returns a 422.
+6. Embedding is generated on-upload (not lazy) so the first search using this upload doesn't pay the embedding-API roundtrip in the user's critical path.
+7. Uploads auto-expire after 24h if unused.
 
 ### Collections (authed)
 
@@ -156,9 +188,9 @@ Body: `{ display_name?, avatar_url? }`.
 
 #### `POST /v1/me/merge-anonymous`
 
-Body: `{ anonymous_id }`.
+Body: none. Server reads the `anon_id` cookie.
 
-Behavior: merges anonymous behavioral data into user account. Idempotent.
+Behavior: merges anonymous behavioral data into user account. Idempotent. Cookie may be rotated post-merge.
 
 #### `DELETE /v1/me`
 
@@ -170,9 +202,17 @@ Deletes account. Requires re-auth confirmation via Clerk.
 
 Body: `{ name, email, message, budget_range? }`.
 
-Response: `{ status: 'sent' }`.
+Response: `{ status: 'pending_verification' | 'sent' }`.
 
-Behavior: looks up artist's inquiry_preferences, routes accordingly. Logs `inquiry_submitted` event.
+Behavior:
+- Rate-limited (see Rate limiting table).
+- **Signed-in users**: `email` is overridden with the verified Clerk email; inquiry routes immediately to the artist per their `inquiry_preferences`. Response `status: 'sent'`.
+- **Anonymous users**: inquiry is stored in `pending` state. A verification email is sent to `email` containing a tokenized confirm link. Only on click does the inquiry get delivered to the artist. Response `status: 'pending_verification'`. Prevents impersonation and reduces spam.
+- Logs `inquiry_submitted` event (anonymous) and `inquiry_delivered` event (after verification or directly for signed-in).
+
+#### `GET /v1/inquiries/verify/:token`
+
+Public, no auth. Confirms an anonymous inquiry. Marks delivered, triggers `inquiry.deliver` Inngest job.
 
 ### Artist onboarding
 
@@ -246,37 +286,9 @@ Response: inquiries received (if artist uses on-platform inbox).
 
 Body: bio, location, website, socials, artist_statement, commissioning_preferences, inquiry_preferences, visibility.
 
-### Pre-built portfolio claim
-
-#### `GET /v1/claim/:token`
-
-Response: pre-built portfolio data for preview. Public.
-
-#### `POST /v1/claim/:token/claim`
-
-Body: `{ email }`.
-
-Behavior: sends Clerk magic link to email. On verification, associates artist profile with new user account.
-
-#### `POST /v1/claim/:token/takedown`
-
-Body: `{ reason? }`.
-
-Behavior: takes down the pre-built portfolio. No auth required — token is the auth. Logs takedown in outreach_log.
-
 ### Admin
 
-#### `GET /v1/admin/submissions`
-
-Query: `status`, `cursor`.
-
-Response: paginated submissions.
-
-#### `POST /v1/admin/submissions/:id/approve`
-
-#### `POST /v1/admin/submissions/:id/reject`
-
-Body: `{ reason? }`.
+V1 admin is direct DB access — there is no admin UI. For 20–30 hand-picked artists in v0, a small set of internal CLI scripts (or `psql` invocations) handles approvals and edits. Pre-built portfolio claim flow is deferred — see `99-deferred.md`.
 
 ### Events
 
@@ -294,24 +306,34 @@ Behavior: validates, writes to events table. Used for client-side event tracking
 
 ```sql
 id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-user_id uuid REFERENCES users(id) NULL,  -- null for pre-built, set on claim
-slug text UNIQUE NOT NULL,
+user_id uuid REFERENCES users(id) NULL,
+slug text UNIQUE NOT NULL,  -- collision strategy: on insert, append -2, -3, ... until unique
 display_name text NOT NULL,
 bio text,
 artist_statement text,
-location text,
+location text,  -- free-text display, e.g. "Berlin, Germany". Editable by artist.
+city text,  -- structured city, populated by geocoder
+country text,  -- ISO 3166-1 alpha-2, populated by geocoder
+lat double precision,  -- nullable; populated by geocoder
+lng double precision,  -- nullable; populated by geocoder
+geocoded_at timestamptz,  -- last successful geocode
 website_url text,
 socials jsonb DEFAULT '{}',
 commissioning_preferences jsonb,  -- { accepts: bool, types: [], price_min, price_max, notes }
 inquiry_preferences jsonb NOT NULL,  -- { type: 'email'|'platform'|'external', email?, url? }
 status text NOT NULL DEFAULT 'pending',  -- pending, active, paused, rejected
-is_prebuilt boolean DEFAULT false,
 created_at timestamptz NOT NULL DEFAULT now(),
 updated_at timestamptz NOT NULL DEFAULT now(),
 deleted_at timestamptz
 
-INDEX (slug), INDEX (status), INDEX (user_id)
+INDEX (slug), INDEX (status), INDEX (user_id),
+INDEX (city), INDEX (country),
+INDEX (lat, lng) WHERE lat IS NOT NULL AND lng IS NOT NULL
 ```
+
+**Slug collisions:** on artist creation, generate slug from `display_name`. If taken, append `-2`, then `-3`, etc., until unique. Helper lives in the API; do not rely on UNIQUE constraint races — check-and-insert in a transaction.
+
+**Geocoding:** when `location` is set or changed, the `artist.geocode` Inngest job calls Mapbox forward-geocode, populates `city`, `country`, `lat`, `lng`, `geocoded_at`. Failures leave fields null; the artist is still searchable by name and artwork, just not by geography. Re-runs are idempotent.
 
 ### `artworks`
 
@@ -340,20 +362,26 @@ FULLTEXT INDEX on (title, description)  -- via tsvector column
 
 ### `artwork_images`
 
+One row per uploaded original. Variants (thumb / medium / full) are **not** stored as separate rows — they are generated on demand by an image proxy at the CDN edge.
+
 ```sql
 id uuid PRIMARY KEY,
 artwork_id uuid NOT NULL REFERENCES artworks(id) ON DELETE CASCADE,
-s3_key text NOT NULL,
-variant text NOT NULL,  -- thumb, medium, full, original
+s3_key text NOT NULL,  -- the original
 width integer,
 height integer,
-is_primary boolean DEFAULT false,
+is_primary boolean NOT NULL DEFAULT false,
 display_order integer NOT NULL DEFAULT 0,
+moderation_status text NOT NULL DEFAULT 'pending',  -- pending, approved, rejected
 created_at timestamptz DEFAULT now()
 
 INDEX (artwork_id, display_order)
-UNIQUE (artwork_id, variant) WHERE is_primary  -- one primary per variant
+UNIQUE INDEX one_primary_per_artwork ON artwork_images (artwork_id) WHERE is_primary = true
 ```
+
+**Image variants** are served via CloudFront in front of an image transform layer (imgproxy on Lambda, or AWS Serverless Image Handler). URL pattern: `https://img.example.com/<size>/<s3_key>`. The CDN caches by URL — no DB rows per variant, no resize jobs at upload, deterministic transforms.
+
+**Cascade vs soft-delete**: `artworks` is soft-deleted (`deleted_at`), so this `ON DELETE CASCADE` only fires if an artwork is hard-deleted (which we don't do via the API — only direct DB / admin script). See **Delete model** below for the consistent policy.
 
 ### `artwork_embeddings`
 
@@ -387,20 +415,6 @@ tag_id uuid REFERENCES tags(id),
 PRIMARY KEY (artwork_id, tag_id)
 ```
 
-### `artwork_submissions`
-
-```sql
-id uuid PRIMARY KEY,
-artist_id uuid REFERENCES artists(id),
-submitted_by_user_id uuid REFERENCES users(id),
-payload jsonb NOT NULL,  -- the submitted data
-status text NOT NULL DEFAULT 'pending',
-reviewed_by uuid REFERENCES users(id),
-review_note text,
-created_at timestamptz DEFAULT now(),
-reviewed_at timestamptz
-```
-
 ### `import_sources`
 
 ```sql
@@ -410,32 +424,6 @@ source_url text NOT NULL,
 source_type text,  -- 'website', 'instagram', 'manual'
 scraped_at timestamptz,
 metadata jsonb
-```
-
-### `artist_claim_tokens`
-
-```sql
-token text PRIMARY KEY,  -- URL-safe random
-artist_id uuid NOT NULL REFERENCES artists(id),
-created_at timestamptz DEFAULT now(),
-expires_at timestamptz,
-claimed_at timestamptz,
-takedown_at timestamptz,
-takedown_reason text
-```
-
-### `outreach_log`
-
-```sql
-id uuid PRIMARY KEY,
-artist_id uuid REFERENCES artists(id),
-contacted_at timestamptz,
-channel text,  -- 'email', 'instagram_dm', 'manual'
-recipient text,
-message_template text,
-response_status text,  -- 'no_response', 'claimed', 'declined', 'takedown'
-response_at timestamptz,
-notes text
 ```
 
 ### `llm_extraction_artifacts`
@@ -582,10 +570,40 @@ id uuid PRIMARY KEY,
 s3_key text NOT NULL,
 anonymous_id uuid,
 user_id uuid,
-embedding vector(1024),  -- populated lazily
+embedding vector(1024),  -- populated by image.embed Inngest job at upload time
+moderation_status text NOT NULL DEFAULT 'pending',  -- pending, approved, rejected
 created_at timestamptz DEFAULT now(),
 expires_at timestamptz  -- 24h default
 ```
+
+### `eval_set`
+
+Hand-curated ground-truth pairs for search/recommendation quality. Run periodically via the `eval.run` Inngest job; results posted to an admin dashboard (CLI in v1).
+
+```sql
+id uuid PRIMARY KEY,
+query_type text NOT NULL,  -- 'text', 'image', 'image+modifier'
+query_text text,
+query_image_s3_key text,
+modifiers text[],
+expected_artwork_ids uuid[] NOT NULL,  -- ranked, ideal order
+notes text,
+created_at timestamptz DEFAULT now()
+```
+
+Target metric: NDCG@10 on the eval set. Track over time; a release that drops NDCG@10 by more than 5% is blocked from rolling to prod until reviewed.
+
+---
+
+## Delete model
+
+Consistent policy:
+
+- **Soft-delete** (`deleted_at` set, row preserved): `artists`, `artworks`, `user_collections`, `users`.
+- **Hard-delete** (row removed): `artwork_images`, `collection_artworks`, `artwork_tags`, `artwork_embeddings`, `uploads`, transient rows.
+- All public read queries filter `deleted_at IS NULL` on soft-delete tables.
+- `ON DELETE CASCADE` foreign keys only fire if a parent row is hard-deleted. The API never hard-deletes parents; admin scripts may, and the cascade is the safety net.
+- A separate `purge` Inngest job runs monthly: hard-deletes any soft-deleted row older than 30 days, cascading through dependents.
 
 ---
 
@@ -622,42 +640,39 @@ Core types:
 
 ## Inngest jobs
 
-- `artwork.embedding.generate` — triggered on artwork publish. Fetches image, calls embedding API, upserts into artwork_embeddings.
-- `artist.import.run` — scrapes artist website/Instagram, downloads images, creates artwork drafts.
-- `user_profile.refresh` — rebuilds taste embedding and aggregates from recent events.
-- `neighborhoods.recompute` — weekly, runs HDBSCAN clustering over all published artwork embeddings, labels with LLM, updates neighborhoods table.
-- `inquiry.deliver` — routes inquiry to artist per their preferences.
-- `claim.email` — sends claim magic link.
-- `eval.run` — scheduled run of the hand-curated eval set, posts metrics to admin dashboard.
+- `artist.geocode` — triggered on artist `location` change. Calls Mapbox forward-geocode, populates `city`, `country`, `lat`, `lng`, `geocoded_at`. Idempotent; null on failure.
+- `image.moderate` — calls AWS Rekognition `DetectModerationLabels` on a new image (artwork or visual-search upload). Sets `moderation_status`. Blocks publish/search use if rejected.
+- `image.embed` — fetches image, calls embedding API (Jina/Voyage), upserts into `artwork_embeddings` or `uploads.embedding`. Runs in parallel with `image.moderate`; results only used if moderation approves.
+- `artist.import.run` — scrapes artist website, downloads images, creates artwork drafts. Instagram import deferred.
+- `user_profile.refresh` — rebuilds taste embedding and aggregates from recent events. Cold-start: no profile until N (≥10) qualifying interactions; before that, users see the default homepage.
+- `inquiry.deliver` — routes verified inquiry to artist per their preferences.
+- `purge` — monthly hard-delete of soft-deleted rows older than 30 days.
+- `eval.run` — scheduled run of the hand-curated eval set, computes NDCG@10, persists to a results table.
 
 ---
 
 ## Third-party services
 
-| Service | Purpose | Free tier |
+| Service | Purpose | Free / dev tier |
 |---|---|---|
-| Neon | Postgres + pgvector | Generous, enough for v1 |
-| Clerk | Auth | 10k MAU |
-| Vercel | Frontend + Next.js API | Hobby tier covers v1 |
-| AWS | Lambda, S3, CloudFront, API Gateway | Pay-as-you-go, near-zero at v1 traffic |
-| Inngest | Background jobs | 50k runs/month |
-| PostHog | Analytics | 1M events/month |
-| Axiom | Logs + metrics | 500GB/month |
+| Neon | Postgres + pgvector | Free tier covers v1 dev; ~$20/mo at modest prod use |
+| Clerk | Auth (hosted) | Free up to 10k MAU |
+| AWS | Lambda, API Gateway, S3, CloudFront, Rekognition | Pay-as-you-go, near-zero at v1 traffic |
+| Inngest | Background jobs | 50k runs/month free |
+| Upstash | Redis (rate limiting) | 10k commands/day free |
+| PostHog | Product analytics | 1M events/month free |
+| Axiom or CloudWatch | Logs + metrics | Axiom 500GB/mo free; CloudWatch built-in |
 | Jina / Voyage | Multimodal embeddings | Pay-per-call, cheap at v1 |
 | Anthropic / OpenAI | LLM for intake + query rewriting | Pay-per-call |
-| Resend | Transactional email | 3k/month |
+| Mapbox | Geocoding (forward, artist location) | 100k requests/month free |
+| Resend | Transactional email | 3k/month free |
+
+See `04-stack-and-infra.md` for deployment topology.
 
 ---
 
 ## What's deferred from API/data
 
-- Public user profile pages (no endpoint for `/users/:username`).
-- Saved searches / alerts.
-- Notifications system.
-- Multi-currency conversion.
-- Artist-to-artist messaging.
-- Collaborative collections.
-- Marketplace transaction handling.
-- Review / rating endpoints.
+See `99-deferred.md` for the full backlog. Includes: pre-built portfolio claim flow + scraping pipeline + outreach log + claim tokens; admin submission queue UI; algorithmic neighborhoods (HDBSCAN + LLM labeling); public user profiles; saved searches / alerts; notifications system; multi-currency conversion; artist-to-artist messaging; collaborative collections; marketplace transactions; reviews/ratings.
 
 All schema extensions for these can be added without breaking v1 contracts.
