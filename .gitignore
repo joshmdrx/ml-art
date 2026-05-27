@@ -1,0 +1,27 @@
+# Repo-wide ignores. Per-subdir `.gitignore` files cover language-specific
+# artifacts (node_modules, .next, target/, .venv/, .env*).
+
+# macOS / OS cruft
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Lefthook local state (the binary itself, dev-installed)
+lefthook-local.yml
+
+# Misc tmp
+*.log
+.tmp/
+
+# Belt-and-braces: never commit secrets even if a subdir gitignore missed
+.env
+.env.local
+.env.*.local
