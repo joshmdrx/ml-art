@@ -2,7 +2,9 @@
 //! can be exercised by integration tests.
 
 use api_search::{build_app, AppState};
-use ml_art_core::{auth::JwtVerifier, config::Config, embedder::Embedder};
+use ml_art_core::{
+    auth::JwtVerifier, config::Config, embedder::Embedder, object_store::ObjectStore,
+};
 use std::sync::Arc;
 
 #[tokio::main]
@@ -21,11 +23,21 @@ async fn main() -> anyhow::Result<()> {
         cfg.clerk_jwks_url.clone(),
         cfg.clerk_secret_key.clone(),
     );
+    let object_store = ObjectStore::new(
+        cfg.uploads_bucket.clone(),
+        cfg.uploads_public_url_prefix.clone(),
+        cfg.s3_endpoint_url.clone(),
+        cfg.s3_region.clone(),
+        cfg.s3_access_key.clone(),
+        cfg.s3_secret_key.clone(),
+    )
+    .await;
     let state = Arc::new(AppState {
         pool,
         embedder,
         jwt_verifier,
         cfg: cfg.clone(),
+        object_store,
     });
     let app = build_app(state);
 

@@ -9,6 +9,7 @@ pub mod me;
 pub mod neighborhoods;
 pub mod search;
 pub mod studio;
+pub mod uploads;
 
 use axum::{
     extract::State,
@@ -23,6 +24,7 @@ use ml_art_core::{
     embedder::Embedder,
     error::ApiError,
     middleware::{inquiry_limit, search_limit, RateLimiters},
+    object_store::ObjectStore,
 };
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
@@ -33,6 +35,9 @@ pub struct AppState {
     pub embedder: Embedder,
     pub jwt_verifier: JwtVerifier,
     pub cfg: Config,
+    /// Backend for the `uploads/` bucket. Real S3/MinIO in dev + prod;
+    /// in-memory stub via `ObjectStore::for_tests` for integration tests.
+    pub object_store: ObjectStore,
 }
 
 /// Build the full Axum router for this binary. Used by both the runtime
@@ -109,6 +114,15 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route(
             "/v1/studio/settings",
             axum::routing::patch(studio::settings::patch),
+        )
+        // ── Uploads (visual-search entry point). T-010 Phase A.
+        // Limit per `03-api-data-spec.md`: 20/hr per key. Reuses the
+        // inquiry-limit policy since both are write-heavy + per-user
+        // (a separate `uploads_limit` policy + Config knob lands when
+        // we have signal that 20/hr is the wrong shape).
+        .route(
+            "/v1/uploads/image",
+            post(uploads::create).layer(from_fn_with_state(limiters.clone(), inquiry_limit)),
         )
         .with_state(state)
         .layer(TraceLayer::new_for_http())

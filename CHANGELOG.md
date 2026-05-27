@@ -3,6 +3,84 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-05-27 — Image upload endpoint (T-010 Phase A)
+
+Visual-search entry point. `POST /v1/uploads/image` accepts a multipart
+image, validates it, PUTs to the `uploads/` bucket (MinIO in dev, S3 in
+prod), writes a `uploads` row, and embeds inline via the T-036 pipeline
+so the vector is ready before the first search using it.
+
+- **Handler `api-search::uploads`**
+  - Multipart parse via `axum::extract::Multipart` (new `multipart`
+    feature on the axum workspace dep)
+  - 10MB body cap; content-type allowlist for jpeg/png/webp; rejects
+    empty bodies + missing `image` field
+  - Identity: signed-in user → `user_id`, otherwise `anonymous_id` from
+    `X-Anonymous-Id`. Both routes accepted
+  - Filename extension is honored when reasonable (jpg/jpeg/png/webp);
+    otherwise derived from content-type — defensive against
+    `foo.exe` masquerading as image/png
+  - S3 PUT happens *before* DB insert so a failed PUT leaves no orphan
+    row. Inline embed runs after insert; failure leaves a NULL-embedding
+    row that the future `expires_at`-driven cleanup job evicts
+
+- **New `core::object_store::ObjectStore`**
+  - Wraps `aws-sdk-s3` behind a small `put` / `public_url` / `is_real`
+    surface. `Inner::Real` for prod & MinIO; `Inner::Memory` for tests
+  - `ObjectStore::new(...)` configures the SDK from `Config` knobs
+    (endpoint override, region, static creds). `force_path_style(true)`
+    when an endpoint URL is set so MinIO works without virtual-hosted
+    addressing
+  - `ObjectStore::for_tests(bucket)` is an in-memory store —
+    integration tests run without MinIO. Mirrors the
+    `Embedder::with_fixed_vector` pattern (explicit test variant, not
+    env-gated)
+  - `test_get(key)` lets test assertions peek at what was stored
+
+- **`Config` additions**
+  - `uploads_bucket`, `s3_endpoint_url`, `s3_region`, `s3_access_key`,
+    `s3_secret_key`, `uploads_public_url_prefix`
+  - Defaults wire dev MinIO (`http://localhost:9000`, creds `dev` /
+    `devpassword`, public URL `http://localhost:9000/uploads`)
+
+- **Rate limiting**: `/v1/uploads/image` reuses the `inquiry_limit`
+  policy at 3/hr. Per `03-api-data-spec.md` the target is 20/hr; a
+  separate `uploads_limit` policy + knob lands when we have signal
+  that the inquiry-policy share is the wrong shape
+
+- **Dev-environment note**
+  - `http://localhost:9000` isn't reachable from Jina's workers, so
+    live dev uploads succeed through the PUT + DB-insert steps and
+    then 502 at the embed call. Documented inline in `uploads.rs`.
+    Real end-to-end requires either staging (CloudFront-fronted S3)
+    or a tunnel for local MinIO (ngrok / cloudflared) with
+    `UPLOADS_PUBLIC_URL_PREFIX` overridden
+
+- **Tests**
+  - 6 new in `uploads_test.rs`: signed-in writes row + embeds,
+    anonymous uses anon_id, extension derived from content-type,
+    rejects non-image content-type, rejects empty body, rejects
+    missing `image` field
+  - 5 existing test helpers updated to thread `ObjectStore::for_tests`
+    through `AppState`
+
+- **`.env` + `.env.example`** gain the S3/MinIO vars; dev `.env`
+  prefilled with the MinIO creds from `docker-compose.dev.yml`
+
+- **Verified**
+  - `cargo clippy --workspace --all-targets -- -D warnings` ✅
+  - `cargo fmt --check` ✅
+  - Rust **115** (was 109) — +6 uploads tests
+  - Vitest 20, Playwright 25 unchanged, all green
+  - Live `POST /v1/uploads/image` against running dev API confirmed
+    multipart + S3 PUT + DB insert work; embed step fails as expected
+    given the localhost-from-Jina constraint above
+
+- **Build cost**
+  - `aws-sdk-s3` + `aws-config` add ~30 transitive deps and ~30s to a
+    cold release build. Worth it for the working-with-S3 ergonomics;
+    revisit if Lambda cold-start becomes a real number
+
 ## 2026-05-27 — Studio portfolio page (T-011 Phase 3)
 
 Third slice. `/studio` is now a real page — artists can see their full

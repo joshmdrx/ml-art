@@ -18,7 +18,7 @@ tokio = { version = "1.41", features = ["macros", "rt-multi-thread", "signal"] }
 # HTTP + Lambda — `lambda_http` lets the same handler run as Lambda or local Axum.
 lambda_http = "0.13"
 lambda_runtime = "0.13"
-axum = { version = "0.7", default-features = false, features = ["json", "query", "tokio", "http1", "matched-path"] }
+axum = { version = "0.7", default-features = false, features = ["json", "query", "tokio", "http1", "matched-path", "multipart"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 http = "1"
@@ -56,6 +56,11 @@ dotenvy = "0.15"
 
 # Rate limiting (in-process GCRA / leaky-bucket; swap for Redis at scale)
 governor = "0.7"
+
+# S3 (object storage; talks to MinIO in dev, real S3 in prod)
+aws-config = { version = "1.5", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1.55"
+aws-credential-types = "1.2"
 
 [profile.release]
 opt-level = 3

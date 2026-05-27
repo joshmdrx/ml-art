@@ -39,6 +39,19 @@ pub struct Config {
     /// Per-hour quota for inquiry submission, same keying.
     /// Override via `RATE_LIMIT_INQUIRY_PER_HOUR`.
     pub rate_limit_inquiry_per_hour: u32,
+    /// S3 / MinIO settings used by `core::object_store` for the
+    /// `uploads` bucket (visual-search uploads). The `artworks` bucket
+    /// is read-only at request time — handled by `core::images`.
+    pub uploads_bucket: String,
+    /// Override the SDK's endpoint. `Some("http://localhost:9000")` for
+    /// MinIO; `None` for real AWS S3.
+    pub s3_endpoint_url: Option<String>,
+    pub s3_region: String,
+    pub s3_access_key: Option<String>,
+    pub s3_secret_key: Option<String>,
+    /// Public URL prefix for objects in the uploads bucket. Dev is
+    /// MinIO; prod is the CloudFront distribution that fronts it.
+    pub uploads_public_url_prefix: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +120,13 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(3),
+            uploads_bucket: env::var("S3_UPLOADS_BUCKET").unwrap_or_else(|_| "uploads".to_string()),
+            s3_endpoint_url: env::var("S3_ENDPOINT_URL").ok(),
+            s3_region: env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string()),
+            s3_access_key: env::var("AWS_ACCESS_KEY_ID").ok(),
+            s3_secret_key: env::var("AWS_SECRET_ACCESS_KEY").ok(),
+            uploads_public_url_prefix: env::var("UPLOADS_PUBLIC_URL_PREFIX")
+                .unwrap_or_else(|_| "http://localhost:9000/uploads".to_string()),
         };
 
         // Production sanity checks. Prevent footguns from a missing secret in prod.
@@ -142,6 +162,12 @@ impl Config {
             rate_limit_disabled: true,
             rate_limit_search_per_min: 60,
             rate_limit_inquiry_per_hour: 3,
+            uploads_bucket: "uploads".to_string(),
+            s3_endpoint_url: None,
+            s3_region: "us-east-1".to_string(),
+            s3_access_key: None,
+            s3_secret_key: None,
+            uploads_public_url_prefix: "https://test.example.com/uploads".to_string(),
         }
     }
 }

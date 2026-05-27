@@ -18,4 +18,5 @@ pub mod error;
 pub mod images;
 pub mod middleware;
 pub mod models;
+pub mod object_store;
 pub mod telemetry;

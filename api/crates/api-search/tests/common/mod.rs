@@ -14,7 +14,9 @@ use axum::{
     http::{Request, StatusCode},
     Router,
 };
-use ml_art_core::{auth::JwtVerifier, config::Config, db::Pool, embedder::Embedder};
+use ml_art_core::{
+    auth::JwtVerifier, config::Config, db::Pool, embedder::Embedder, object_store::ObjectStore,
+};
 use serde::de::DeserializeOwned;
 use sqlx::migrate::Migrator;
 use std::sync::Arc;
@@ -38,6 +40,7 @@ pub fn app_keyword_only(pool: Pool) -> Router {
         embedder,
         jwt_verifier,
         cfg,
+        object_store: ObjectStore::for_tests("uploads"),
     }))
 }
 
@@ -53,6 +56,7 @@ pub fn app_with_test_auth(pool: Pool) -> Router {
         embedder,
         jwt_verifier,
         cfg,
+        object_store: ObjectStore::for_tests("uploads"),
     }))
 }
 
@@ -131,6 +135,7 @@ pub fn app_with_rate_limit(pool: Pool, search_per_min: u32, inquiry_per_hour: u3
         embedder,
         jwt_verifier,
         cfg,
+        object_store: ObjectStore::for_tests("uploads"),
     }))
 }
 
@@ -150,6 +155,7 @@ pub fn app_with_fixed_vector(pool: Pool, vec: pgvector::Vector) -> Router {
         embedder,
         jwt_verifier,
         cfg,
+        object_store: ObjectStore::for_tests("uploads"),
     }))
 }
 
@@ -172,6 +178,7 @@ pub fn app_with_auth_and_fixed_vector(pool: Pool, vec: pgvector::Vector) -> Rout
         embedder,
         jwt_verifier,
         cfg,
+        object_store: ObjectStore::for_tests("uploads"),
     }))
 }
 

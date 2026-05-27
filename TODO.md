@@ -41,12 +41,10 @@ if the item was dropped, with a one-line reason.
 - Local dev: stub always-approves (gated by `REKOGNITION_ENABLED=false`)
 
 ### `T-010` Visual search upload + modifier UI
-**Where:** new `api-uploads` binary + new search-page modifier-button row
-**Acceptance:**
-- `POST /v1/uploads/image` stores in S3 under `uploads/`, enqueues `image.moderate` + `image.embed`
-- Embedding generated on upload (not lazy) — first search using the upload doesn't pay the Jina roundtrip
-- Search page has modifier buttons ("moodier", "warmer", "more minimal", "more textured", "more graphic") that POST against `/v1/search?image_upload_id=…&modifiers=…`
-- Implementation: delta vectors at α=0.8 per the spike findings (`ml/spikes/2026-05-modifier-deltas/FINDINGS.md`)
+- ✅ **Phase A (landed):** `POST /v1/uploads/image` — multipart in, S3/MinIO PUT, inline T-036-style embedding into `uploads.embedding`. AWS SDK behind a `core::object_store::ObjectStore` wrapper with an in-memory `for_tests` variant. Per-binary split into `api-uploads` deferred per the "no premature abstraction" decision; sits inside `api-search` for now.
+- Phase B: `GET /v1/search?image_upload_id=…` — anchor the hybrid search on an uploaded image's vector instead of a text query
+- Phase C: `?modifiers=moodier,warmer,…` — delta vectors at α=0.8 per the spike findings (`ml/spikes/2026-05-modifier-deltas/FINDINGS.md`)
+- Phase D: Web UI — camera icon on the search bar + modifier-button row on the results page
 
 ---
 
