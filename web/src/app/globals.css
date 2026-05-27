@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+/* Light-mode-only for v1 (per design spec). Gallery-aesthetic palette. */
+:root {
+  --background: #FAFAF8;   /* off-white */
+  --surface: #FFFFFF;
+  --foreground: #1A1A1A;   /* near-black */
+  --muted: #6B6B6B;
+  --border: #E5E5E3;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), Inter, system-ui, sans-serif;
+}
