@@ -2,8 +2,15 @@ import Link from "next/link";
 import { TopNav } from "@/components/TopNav";
 import { ArtworkGrid } from "@/components/ArtworkGrid";
 import { FilterBar } from "@/components/FilterBar";
-import { searchArtworks, type SearchParams, type Availability } from "@/lib/api";
+import { ModifierBar } from "@/components/ModifierBar";
+import {
+  listSearchModifiers,
+  searchArtworks,
+  type Availability,
+  type SearchParams,
+} from "@/lib/api";
 import { priceParamsFromToken } from "@/lib/filterBar";
+import { reportError } from "@/lib/reportError";
 
 /**
  * /search?q=...&location=...&medium=...&price=...&availability=...
@@ -27,6 +34,13 @@ type Search = {
   price_min?: string;
   price_max?: string;
   availability?: string;
+  /** Visual-search anchor — set after a successful upload. T-010 Phase D. */
+  image_upload_id?: string;
+  /** Comma-separated modifier names. Server rejects unknown values. */
+  modifiers?: string;
+  /** Surfaced by `actions/visualSearch::uploadAndStartVisualSearch`
+   * when the upload itself failed. */
+  upload_error?: string;
 };
 
 export default async function SearchPage({
@@ -57,6 +71,8 @@ export default async function SearchPage({
     availability: (sp.availability?.trim() || undefined) as
       | Availability
       | undefined,
+    image_upload_id: sp.image_upload_id?.trim() || undefined,
+    modifiers: sp.modifiers?.trim() || undefined,
     limit: 24,
   };
 
@@ -82,6 +98,16 @@ export default async function SearchPage({
     error = e instanceof Error ? e.message : String(e);
   }
 
+  // Fetch the modifier registry only when we'll render the bar — i.e.
+  // there's an image anchor. Saves a call in the common no-image case.
+  const visualMode = Boolean(params.image_upload_id);
+  const modifiers = visualMode
+    ? await listSearchModifiers().catch((e) => {
+        reportError(e, { surface: "search-modifiers" });
+        return [];
+      })
+    : [];
+
   const summary = describeQuery(params);
   const hasTextQuery = Boolean(params.q);
 
@@ -91,6 +117,23 @@ export default async function SearchPage({
 
       <main className="flex-1 mx-auto w-full max-w-screen-2xl px-6 py-10">
         <div className="mb-3 text-sm text-muted">{summary}</div>
+
+        {sp.upload_error && (
+          <div className="mb-6 p-4 border border-border bg-surface text-sm">
+            <p className="font-medium mb-1">Image upload failed.</p>
+            <p className="text-muted">
+              <code className="font-mono">{sp.upload_error}</code>
+            </p>
+          </div>
+        )}
+
+        {visualMode && params.image_upload_id && (
+          <VisualAnchor uploadId={params.image_upload_id} />
+        )}
+
+        {visualMode && modifiers.length > 0 && (
+          <ModifierBar modifiers={modifiers} />
+        )}
 
         <FilterBar
           availableFilters={["medium", "price", "availability", "location"]}
@@ -196,7 +239,9 @@ function EmptyState({
 
 function describeQuery(p: SearchParams): string {
   const parts: string[] = [];
+  if (p.image_upload_id) parts.push("your uploaded image");
   if (p.q) parts.push(`“${p.q}”`);
+  if (p.modifiers) parts.push(`modified by ${p.modifiers.replace(/_/g, " ")}`);
   if (p.location) parts.push(`in ${p.location}`);
   if (p.near_lat && p.near_lng) {
     parts.push(
@@ -205,4 +250,26 @@ function describeQuery(p: SearchParams): string {
   }
   if (parts.length === 0) return "Showing all artworks";
   return `Results for ${parts.join(" ")}`;
+}
+
+/** Renders the uploaded image at the top of the search results with a
+ * "clear" link that drops the visual anchor (back to plain search).
+ * The thumbnail URL is reconstructed from the configured public prefix
+ * + the known `s3_key` shape (`uploads/<uuid>.<ext>`) — we don't have
+ * the s3_key on hand, only the upload_id, so we'd need an API roundtrip
+ * to fetch it. For v0 we display the upload_id text. Real thumbnail
+ * preview lands when we add `GET /v1/uploads/:id` (T-010 Phase D+). */
+function VisualAnchor({ uploadId }: { uploadId: string }) {
+  return (
+    <div className="mb-4 p-3 flex items-center gap-3 border border-border bg-surface text-sm">
+      <span className="text-muted">Searching by image</span>
+      <code className="font-mono text-xs text-muted">{uploadId.slice(0, 8)}…</code>
+      <Link
+        href="/search"
+        className="ml-auto text-xs underline underline-offset-2 hover:text-foreground"
+      >
+        Clear image
+      </Link>
+    </div>
+  );
 }

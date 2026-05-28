@@ -21,7 +21,8 @@ minimal").
 | Surface | URL | Backing endpoint |
 |---|---|---|
 | Homepage | `/` | `/v1/search?sort=newest` + `/v1/neighborhoods` |
-| Search | `/search?q=…&medium=…&price=…&availability=…&location=…` | `/v1/search` (hybrid + geographic + filters; also accepts `image_upload_id` as a visual anchor) |
+| Search | `/search?q=…&medium=…&price=…&availability=…&location=…&image_upload_id=…&modifiers=…` | `/v1/search` (hybrid + geographic + filters + visual anchor + modifier δ-vectors at α=0.8) |
+| Visual upload | camera icon on the hero | `/v1/uploads/image` (multipart → S3 → inline Jina embed) |
 | Artwork detail | `/artworks/[id]` | `/v1/artworks/:id` + `/v1/artworks/:id/similar` |
 | Artist portfolio | `/artists/[slug]` | `/v1/artists/:slug` |
 | Neighborhoods index | `/neighborhoods` | `/v1/neighborhoods` |

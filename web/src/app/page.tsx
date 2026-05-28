@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { TopNav } from "@/components/TopNav";
 import { SearchBar } from "@/components/SearchBar";
+import { VisualSearchUpload } from "@/components/VisualSearchUpload";
 import { ArtworkGrid } from "@/components/ArtworkGrid";
 import { NeighborhoodCard } from "@/components/NeighborhoodCard";
 import { searchArtworks, listNeighborhoods } from "@/lib/api";
@@ -24,9 +25,14 @@ export default async function Home() {
       <TopNav hideSearch />
 
       <main className="flex-1">
-        {/* Hero search */}
-        <section className="py-24 md:py-32 flex justify-center px-6">
-          <SearchBar size="hero" />
+        {/* Hero search — text + visual side-by-side. */}
+        <section className="py-24 md:py-32 flex flex-col items-center gap-4 px-6">
+          <div className="flex w-full max-w-2xl items-stretch gap-2">
+            <div className="flex-1">
+              <SearchBar size="hero" />
+            </div>
+            <VisualSearchUpload size="hero" />
+          </div>
         </section>
 
         {/* Neighborhoods */}

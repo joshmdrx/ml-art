@@ -40,11 +40,11 @@ if the item was dropped, with a one-line reason.
 - Search filters out `moderation_status != 'approved'` artwork images
 - Local dev: stub always-approves (gated by `REKOGNITION_ENABLED=false`)
 
-### `T-010` Visual search upload + modifier UI
-- ✅ **Phase A (landed):** `POST /v1/uploads/image` — multipart in, S3/MinIO PUT, inline T-036-style embedding into `uploads.embedding`
-- ✅ **Phase B (landed):** `GET /v1/search?image_upload_id=…` — anchor the semantic side on an uploaded image's vector. Image wins over `q` for the semantic anchor when both are set (text still drives the keyword side, so `q=…&image_upload_id=…` composes "things like this image AND about …"). Pure-vector search when only the upload is given. All existing filters apply
-- Phase C: `?modifiers=moodier,warmer,…` — delta vectors at α=0.8 per the spike findings (`ml/spikes/2026-05-modifier-deltas/FINDINGS.md`)
-- Phase D: Web UI — camera icon on the search bar + modifier-button row on the results page
+### ~~`T-010` Visual search upload + modifier UI~~ — all four phases shipped
+- ✅ **Phase A:** `POST /v1/uploads/image` — multipart in, S3/MinIO PUT, inline T-036-style embedding into `uploads.embedding`
+- ✅ **Phase B:** `GET /v1/search?image_upload_id=…` — anchor the semantic side on an uploaded image's vector
+- ✅ **Phase C:** `?modifiers=moodier,warmer,…` at α=0.8 per the spike. `core::modifiers` registry; `GET /v1/modifiers` lists them; unknown names → 400; modifiers require `image_upload_id`
+- ✅ **Phase D:** Web UI — `VisualSearchUpload` (camera icon next to hero search), `ModifierBar` (URL-driven pill toggles on `/search`), `VisualAnchor` strip with "Clear image" affordance. Server action `uploadAndStartVisualSearch` POSTs the multipart and redirects to `/search?image_upload_id=…`
 
 ---
 

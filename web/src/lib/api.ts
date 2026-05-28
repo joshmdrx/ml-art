@@ -229,6 +229,26 @@ export interface SearchParams {
   near_radius_km?: number;
   sort?: SortOrder;
   limit?: number;
+  /** Visual-search anchor — overrides `q`'s text vector for the
+   * semantic side. T-010 Phase B. */
+  image_upload_id?: string;
+  /** Comma-separated modifier names (`moodier,warmer,…`). Each
+   * shifts the anchor along its δ-vector at α=0.8 server-side. Requires
+   * `image_upload_id`. T-010 Phase C. */
+  modifiers?: string;
+}
+
+/** Returned by `GET /v1/modifiers` for the search-page button row. */
+export interface SearchModifier {
+  name: string;
+  label: string;
+}
+
+/** Acknowledgement from `POST /v1/uploads/image`. */
+export interface UploadAck {
+  upload_id: string;
+  s3_key: string;
+  image_url: string;
 }
 
 const API_BASE =
@@ -744,6 +764,57 @@ export async function addStudioArtworkImage(
     );
   }
   return (await res.json()) as StudioImage;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Visual search — uploads + modifier list (T-010 Phase D)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** `GET /v1/modifiers` — static registry the search-page button row
+ * iterates over. Returns `[]` if the call fails (page still renders
+ * with no modifier row). */
+export async function listSearchModifiers(
+  init?: RequestInit
+): Promise<SearchModifier[]> {
+  const res = await apiFetch("/v1/modifiers", init);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`modifiers ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as SearchModifier[];
+}
+
+/** `POST /v1/uploads/image` — multipart upload. Server-side only; the
+ * Bearer / anon-id forwarding lives in `apiFetch`. */
+export async function uploadImageForSearch(
+  file: { name: string; type: string; bytes: Uint8Array }
+): Promise<UploadAck> {
+  // Build a multipart body by hand. The browser would normally do this
+  // for us, but server actions hand us `File` -> we re-serialize before
+  // forwarding to the Rust API.
+  const boundary = `----ml-art-${crypto.randomUUID()}`;
+  const enc = new TextEncoder();
+  const head = enc.encode(
+    `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="image"; filename="${file.name}"\r\n` +
+      `Content-Type: ${file.type}\r\n\r\n`
+  );
+  const tail = enc.encode(`\r\n--${boundary}--\r\n`);
+  const body = new Uint8Array(head.length + file.bytes.length + tail.length);
+  body.set(head, 0);
+  body.set(file.bytes, head.length);
+  body.set(tail, head.length + file.bytes.length);
+
+  const res = await apiFetch("/v1/uploads/image", {
+    method: "POST",
+    headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
+    body,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`uploads/image ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as UploadAck;
 }
 
 export async function removeStudioArtworkImage(

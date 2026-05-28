@@ -3,6 +3,72 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-05-28 — Visual-search UI: camera + modifier pills (T-010 Phase D)
+
+Wires the spike-validated machinery into a real user-facing surface.
+With Phase D shipped the whole `T-010` epic is done.
+
+- **`VisualSearchUpload` (client component)**
+  - Camera-icon button next to the hero search bar. Two sizes (`hero`,
+    `nav`); only `hero` rendered on the homepage today, keeping the
+    nav uncluttered
+  - File-picker triggered via hidden `<input type="file">`. Client-side
+    pre-checks: MIME type must start with `image/`; size ≤ 10MB.
+    Surfaces an instant error message instead of round-tripping a 400
+  - Submits the form to a server action so the file bytes never touch
+    the browser's fetch layer (same Bearer + anon-id forwarding as the
+    other server-action paths)
+
+- **Server action `uploadAndStartVisualSearch`**
+  - Reads the `FormData`, marshals to `uploadImageForSearch(file)` in
+    `lib/api.ts`, redirects to `/search?image_upload_id=<id>` on success
+  - On failure, redirects to `/search?upload_error=<msg>` so the search
+    page has a place to render the friendly state without a separate
+    error route
+
+- **`ModifierBar` (client component)**
+  - URL-driven pills, one per registered modifier. Toggle adds or
+    removes the name from `?modifiers=`; multiple modifiers comma-
+    separated. Same shape as `FilterBar`'s pills (`aria-pressed`,
+    toolbar role)
+  - Only renders when the URL carries `image_upload_id` — modifiers
+    without an anchor are a server-side 400 (Phase C), and we don't
+    want to draw a button that always fails
+
+- **`/search` page integration**
+  - New `Search` type fields: `image_upload_id`, `modifiers`,
+    `upload_error`
+  - Visual mode (`image_upload_id` present): renders an upload-error
+    banner if applicable + a `VisualAnchor` strip (truncated id +
+    "Clear image" link) + `ModifierBar` + the existing `FilterBar`
+    above the results grid. `describeQuery` mentions the image and
+    modifiers in the human-readable summary
+  - `listSearchModifiers()` is called only in visual mode — saves the
+    extra round-trip on every plain-text search
+
+- **`lib/api.ts` additions**
+  - `SearchParams.image_upload_id`, `SearchParams.modifiers` — flow
+    through the existing `toQueryString` automatically
+  - `SearchModifier`, `UploadAck` types
+  - `listSearchModifiers()`, `uploadImageForSearch(file)` — the latter
+    serializes a multipart body by hand (server-side, so no browser
+    `FormData` shortcut available)
+
+- **Known dev limitation (carried from Phase A)**
+  - Real uploads from local dev still 502 at the inline embed step
+    because Jina's workers can't fetch `http://localhost:9000/...`.
+    The UI flow (file picker → server action → redirect → modifier bar
+    renders → toggle modifiers) is fully exercisable; the actual
+    ranked results land when MinIO is fronted by a public URL
+
+- **Tests** — 3 new Playwright specs in `19-visual-search-modifiers.spec.ts`:
+  - Hero "Search by image" affordance renders
+  - `/search?image_upload_id=…` server-renders the anchor strip +
+    modifier toolbar
+  - Clicking a modifier toggles the URL param and flips `aria-pressed`
+  - Tally: Playwright **28** (was 25). Rust 131 unchanged. Vitest 20
+    unchanged
+
 ## 2026-05-28 — Visual search by upload (T-010 Phase B)
 
 Threading the upload through to `/v1/search` so an uploaded image
