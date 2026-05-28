@@ -3,6 +3,54 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-05-28 — Visual search by upload (T-010 Phase B)
+
+Threading the upload through to `/v1/search` so an uploaded image
+becomes the semantic anchor. Pure vector when no `q`; hybrid composition
+when both are set ("things like this image AND about painting").
+
+- **`GET /v1/search?image_upload_id=<uuid>`**
+  - Looks up `uploads.embedding` and uses it as the semantic anchor.
+    Unknown id → 404 (UUID is unguessable enough to act as a
+    capability; abuse-driven hardening lands later); row exists but
+    embedding NULL → 400 (upload is mid-flight, retry)
+  - Image anchor wins over text-derived anchor for the *semantic* side
+    when both are set. `q` still drives the *keyword* CTE, so
+    `q=zzz-no-match&image_upload_id=…` is "rank by image vector,
+    keyword side returns nothing" — which is exactly what we want for
+    "things like this image"
+  - Pure-vector search (only `image_upload_id`, no `q`) falls through
+    the existing hybrid path with an empty keyword CTE — no new code
+    branch needed
+  - All structured filters (medium / price / availability / location /
+    near) still apply
+
+- **Tests (5 new in `uploads_test.rs`)**
+  - `search_by_image_upload_returns_vector_ranked_results` — seed an
+    upload at pos=0 (Blue Morning's fixture vector); assert it ranks
+    first
+  - `search_by_unknown_image_upload_id_404s`
+  - `search_by_upload_without_embedding_400s` — covers the mid-flight
+    race where the row exists but the embed step didn't complete
+  - `search_image_upload_wins_over_text_for_semantic_anchor` —
+    explicit precedence assertion
+  - `search_by_image_upload_respects_filters` — image anchor +
+    `medium=Sculpture` excludes the painting at pos=0
+
+- **Tangential test-isolation fix**
+  - The two `core::images` tests both mutated `IMAGE_BASE_URL` and
+    occasionally raced when Cargo ran them in parallel. Merged into a
+    single test that sequences the env-mutating assertions. Caught it
+    on the first cross-suite run after adding Phase B; would have hit
+    CI eventually
+
+- **Verified**
+  - `cargo clippy --workspace --all-targets -- -D warnings` ✅
+  - `cargo fmt --check` ✅
+  - Rust **119** (was 115) — +5 search-by-upload tests, −1 merged
+    images test
+  - Vitest 20, Playwright 25 unchanged, all green
+
 ## 2026-05-27 — Image upload endpoint (T-010 Phase A)
 
 Visual-search entry point. `POST /v1/uploads/image` accepts a multipart

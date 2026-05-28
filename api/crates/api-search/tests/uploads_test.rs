@@ -183,6 +183,138 @@ async fn upload_image_rejects_empty_body(pool: PgPool) {
     assert_eq!(status, 400);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase B — /v1/search?image_upload_id=…
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Debug)]
+struct SearchPage {
+    items: Vec<SearchItem>,
+}
+#[derive(Deserialize, Debug)]
+struct SearchItem {
+    id: String,
+    title: Option<String>,
+}
+
+/// Insert an `uploads` row with a pre-computed embedding so the
+/// search-by-upload path can be tested without exercising the upload
+/// endpoint (which would also embed). Keeps the search-side concerns
+/// isolated.
+async fn seed_upload(pool: &PgPool, embedding: Vector) -> uuid::Uuid {
+    let id = uuid::Uuid::new_v4();
+    sqlx::query(
+        r#"
+        INSERT INTO uploads (id, s3_key, embedding)
+        VALUES ($1, $2, $3)
+        "#,
+    )
+    .bind(id)
+    .bind(format!("uploads/{id}.png"))
+    .bind(&embedding)
+    .execute(pool)
+    .await
+    .unwrap();
+    id
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_by_image_upload_returns_vector_ranked_results(pool: PgPool) {
+    // Seed an upload whose embedding matches one of the fixture
+    // artworks exactly (unit vector at the same dim). The search must
+    // return that artwork as its top result — cosine distance = 0.
+    //
+    // The fixture writes each artwork's embedding as a one-hot vector
+    // whose `1.0` position is the artwork's row order in the VALUES
+    // list (0 = Blue Morning). Picking pos=0 makes Blue Morning the
+    // nearest neighbour.
+    let upload_id = seed_upload(&pool, unit_vector_at(0)).await;
+
+    let app = common::app_with_fixed_vector(pool, unit_vector_at(999));
+    let (status, page): (_, SearchPage) = common::get_json(
+        app,
+        &format!("/v1/search?image_upload_id={upload_id}&limit=5"),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(!page.items.is_empty(), "should return semantic matches");
+    // Blue Morning at pos=0 should rank first.
+    assert_eq!(page.items[0].title.as_deref(), Some("Blue Morning"));
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_by_unknown_image_upload_id_404s(pool: PgPool) {
+    let app = common::app_with_fixed_vector(pool, unit_vector_at(1));
+    let bogus = uuid::Uuid::new_v4();
+    let (status, _) = common::get_status(app, &format!("/v1/search?image_upload_id={bogus}")).await;
+    assert_eq!(status, 404);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_by_upload_without_embedding_400s(pool: PgPool) {
+    // Insert an `uploads` row with NULL embedding (the state a
+    // mid-flight upload would be in if the embed step hadn't completed).
+    let upload_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO uploads (id, s3_key) VALUES ($1, $2)")
+        .bind(upload_id)
+        .bind(format!("uploads/{upload_id}.png"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let app = common::app_with_fixed_vector(pool, unit_vector_at(1));
+    let (status, _) =
+        common::get_status(app, &format!("/v1/search?image_upload_id={upload_id}")).await;
+    assert_eq!(status, 400);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_image_upload_wins_over_text_for_semantic_anchor(pool: PgPool) {
+    // With both `q` AND `image_upload_id`, the image vector should
+    // drive the semantic ranking. We seed an upload at pos=0 (Blue
+    // Morning's vector) and pass `q=zzz-no-match` so the keyword side
+    // returns nothing — leaving only the semantic side, which must
+    // surface Blue Morning first.
+    let upload_id = seed_upload(&pool, unit_vector_at(0)).await;
+
+    // Fixed-vector embedder returns pos=999 for the text query, which
+    // wouldn't match any seeded artwork. If the image anchor is being
+    // ignored in favour of text, we'd see no results.
+    let app = common::app_with_fixed_vector(pool, unit_vector_at(999));
+    let (_, page): (_, SearchPage) = common::get_json(
+        app,
+        &format!("/v1/search?image_upload_id={upload_id}&q=zzz-no-match"),
+    )
+    .await;
+    assert!(
+        page.items
+            .iter()
+            .any(|a| a.title.as_deref() == Some("Blue Morning")),
+        "Blue Morning should appear via the image anchor even when text doesn't match"
+    );
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_by_image_upload_respects_filters(pool: PgPool) {
+    // Image anchor + medium filter narrows the result set. Blue
+    // Morning is medium='Painting'; passing medium=Sculpture should
+    // drop it from the results even though it's the nearest neighbour.
+    let upload_id = seed_upload(&pool, unit_vector_at(0)).await;
+    let app = common::app_with_fixed_vector(pool, unit_vector_at(1));
+    let (_, page): (_, SearchPage) = common::get_json(
+        app,
+        &format!("/v1/search?image_upload_id={upload_id}&medium=Sculpture"),
+    )
+    .await;
+    assert!(
+        !page
+            .items
+            .iter()
+            .any(|a| a.title.as_deref() == Some("Blue Morning")),
+        "medium=Sculpture filter should exclude Blue Morning (medium='Painting')"
+    );
+}
+
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn upload_image_rejects_missing_image_field(pool: PgPool) {
     // A multipart body with a different field name; the handler

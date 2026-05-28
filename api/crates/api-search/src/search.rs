@@ -2,14 +2,19 @@
 //!
 //! Two execution paths:
 //!
-//! 1. **Hybrid** — when we have a text query AND an embedder. Computes a
-//!    keyword rank (Postgres tsvector / `ts_rank`) and a semantic rank
-//!    (pgvector cosine distance against `artwork_embeddings`), then fuses
-//!    via Reciprocal Rank Fusion (RRF, k=60).
-//! 2. **No-query** — when there's no text query, or the embedder is
-//!    disabled. Returns artworks ordered by sort param (default: newest).
+//! 1. **Hybrid** — when we have a text query or an image-upload anchor.
+//!    Computes a keyword rank (Postgres tsvector / `ts_rank`) and a
+//!    semantic rank (pgvector cosine distance against
+//!    `artwork_embeddings`), then fuses via Reciprocal Rank Fusion
+//!    (RRF, k=60). When the caller only provides an image anchor and
+//!    no text, the keyword CTE returns zero rows (empty tsquery), and
+//!    the result is a pure-vector search ordered by cosine distance.
+//! 2. **No-query** — no text, no image anchor. Returns artworks
+//!    ordered by sort param (default: newest).
 //!
-//! All filters apply in both paths.
+//! Anchor precedence: `image_upload_id` wins over `q` when both are
+//! set (the spike validated that image embeddings dominate signal).
+//! Filters apply in all paths.
 
 use crate::AppState;
 use axum::{
@@ -34,6 +39,13 @@ const CANDIDATE_POOL: i64 = 200;
 pub struct SearchParams {
     #[serde(default)]
     pub q: Option<String>,
+    /// Visual-search anchor. Looks up `uploads.embedding` for this id
+    /// and uses it as the semantic ranking vector. Wins over `q` for
+    /// the semantic side when both are set; `q` still drives the
+    /// keyword side, letting callers compose "things like this image
+    /// AND about painting." Phase B of T-010.
+    #[serde(default)]
+    pub image_upload_id: Option<Uuid>,
 
     // Filters
     #[serde(default)]
@@ -90,14 +102,43 @@ pub async fn handle(
         ));
     }
 
-    // Embed the text query if we have both a query and an embedder.
-    let query_vec: Option<Vector> = match &params.q {
+    // Resolve the semantic anchor vector. Two sources, image wins when
+    // both are set:
+    //   1. `image_upload_id` → look up `uploads.embedding`. Unknown id
+    //      → 404 (capability-style; UUIDs are unguessable). Row exists
+    //      but embedding NULL → 400 (the upload is mid-flight, retry).
+    //   2. `q` → call `embed_text`. Returns None when the embedder is
+    //      disabled in dev (no JINA_API_KEY); search degrades to
+    //      keyword-only via the existing branch.
+    let upload_vec: Option<Vector> = if let Some(id) = params.image_upload_id {
+        let row: Option<(Option<Vector>,)> =
+            sqlx::query_as("SELECT embedding FROM uploads WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&state.pool)
+                .await?;
+        match row {
+            Some((Some(v),)) => Some(v),
+            Some((None,)) => {
+                return Err(ApiError::BadRequest(
+                    "upload exists but embedding is not ready yet".into(),
+                ))
+            }
+            None => return Err(ApiError::NotFound),
+        }
+    } else {
+        None
+    };
+    let text_vec: Option<Vector> = match &params.q {
         Some(q) if !q.trim().is_empty() => state.embedder.embed_text(q).await?,
         _ => None,
     };
+    let semantic_anchor = upload_vec.or(text_vec);
 
-    let items = if params.q.as_deref().is_some_and(|q| !q.trim().is_empty()) {
-        run_hybrid(&state, &params, query_vec.as_ref(), sort, limit).await?
+    let has_text = params.q.as_deref().is_some_and(|q| !q.trim().is_empty());
+    let has_visual_anchor = params.image_upload_id.is_some();
+
+    let items = if has_text || has_visual_anchor {
+        run_hybrid(&state, &params, semantic_anchor.as_ref(), sort, limit).await?
     } else {
         run_no_query(&state, &params, sort, limit).await?
     };

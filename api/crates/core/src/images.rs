@@ -24,17 +24,12 @@ pub fn url_for_s3_key(s3_key: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Both env-mutating cases live in one test because Rust runs `#[test]`s
+    /// in parallel by default; splitting them caused a flaky race where the
+    /// `default_base` case saw a `set_var` from the `respects_env_override`
+    /// case mid-flight. One test, sequential assertions, no race.
     #[test]
-    fn url_for_s3_key_default_base() {
-        // No env override → falls back to MinIO default.
-        std::env::remove_var("IMAGE_BASE_URL");
-        let url = url_for_s3_key("demo/alice/1.jpg");
-        assert_eq!(url, "http://localhost:9000/artworks/demo/alice/1.jpg");
-    }
-
-    #[test]
-    fn url_for_s3_key_respects_env_override() {
-        // Restore-on-drop in case other tests run in the same process.
+    fn url_for_s3_key_default_and_override() {
         struct Guard;
         impl Drop for Guard {
             fn drop(&mut self) {
@@ -42,8 +37,19 @@ mod tests {
             }
         }
         let _guard = Guard;
+
+        // 1. No env → falls back to MinIO default.
+        std::env::remove_var("IMAGE_BASE_URL");
+        assert_eq!(
+            url_for_s3_key("demo/alice/1.jpg"),
+            "http://localhost:9000/artworks/demo/alice/1.jpg"
+        );
+
+        // 2. Env set → that wins.
         std::env::set_var("IMAGE_BASE_URL", "https://cdn.example.com/v1");
-        let url = url_for_s3_key("demo/alice/1.jpg");
-        assert_eq!(url, "https://cdn.example.com/v1/demo/alice/1.jpg");
+        assert_eq!(
+            url_for_s3_key("demo/alice/1.jpg"),
+            "https://cdn.example.com/v1/demo/alice/1.jpg"
+        );
     }
 }

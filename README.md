@@ -21,7 +21,7 @@ minimal").
 | Surface | URL | Backing endpoint |
 |---|---|---|
 | Homepage | `/` | `/v1/search?sort=newest` + `/v1/neighborhoods` |
-| Search | `/search?q=…&medium=…&price=…&availability=…&location=…` | `/v1/search` (hybrid + geographic + filters) |
+| Search | `/search?q=…&medium=…&price=…&availability=…&location=…` | `/v1/search` (hybrid + geographic + filters; also accepts `image_upload_id` as a visual anchor) |
 | Artwork detail | `/artworks/[id]` | `/v1/artworks/:id` + `/v1/artworks/:id/similar` |
 | Artist portfolio | `/artists/[slug]` | `/v1/artists/:slug` |
 | Neighborhoods index | `/neighborhoods` | `/v1/neighborhoods` |
