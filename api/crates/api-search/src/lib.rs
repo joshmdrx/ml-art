@@ -6,6 +6,7 @@ pub mod artwork;
 pub mod extractors;
 pub mod inquiries;
 pub mod me;
+pub mod meta;
 pub mod neighborhoods;
 pub mod search;
 pub mod studio;
@@ -124,6 +125,10 @@ pub fn build_app(state: Arc<AppState>) -> Router {
             "/v1/uploads/image",
             post(uploads::create).layer(from_fn_with_state(limiters.clone(), inquiry_limit)),
         )
+        // ── Metadata (cheap, static). T-010 Phase C exposes the
+        // modifier registry so the search-page button row can render
+        // without hardcoding labels client-side.
+        .route("/v1/modifiers", get(meta::list_modifiers))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }

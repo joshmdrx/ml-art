@@ -294,6 +294,85 @@ async fn search_image_upload_wins_over_text_for_semantic_anchor(pool: PgPool) {
     );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase C — modifier deltas
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_with_modifiers_requires_image_upload(pool: PgPool) {
+    // `modifiers` without an image_upload_id 400s — the spike only
+    // validated the visual-anchor path, and we don't want to silently
+    // pretend text-anchor + modifiers is supported.
+    let app = common::app_with_fixed_vector(pool, unit_vector_at(1));
+    let (status, _) = common::get_status(app, "/v1/search?modifiers=moodier&q=foo").await;
+    assert_eq!(status, 400);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_with_unknown_modifier_400s(pool: PgPool) {
+    let upload_id = seed_upload(&pool, unit_vector_at(0)).await;
+    let app = common::app_with_fixed_vector(pool, unit_vector_at(1));
+    let (status, _) = common::get_status(
+        app,
+        &format!("/v1/search?image_upload_id={upload_id}&modifiers=not_a_modifier"),
+    )
+    .await;
+    assert_eq!(status, 400);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_with_modifier_does_not_crash_with_fixed_embedder(pool: PgPool) {
+    // The fixed-vector embedder returns the SAME vector for every text,
+    // so compute_delta yields a zero delta (pos - neg = 0), and
+    // apply_deltas normalizes the zero shift to a no-op. The handler
+    // must still return a 200 with sensible results (same as the
+    // no-modifiers case). The shape of the *correct* directional shift
+    // is verified by the pure-math unit tests in core::modifiers.
+    let upload_id = seed_upload(&pool, unit_vector_at(0)).await;
+    let app = common::app_with_fixed_vector(pool, unit_vector_at(1));
+    let (status, page): (_, SearchPage) = common::get_json(
+        app,
+        &format!("/v1/search?image_upload_id={upload_id}&modifiers=moodier"),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(!page.items.is_empty(), "results should still come back");
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_with_modifier_tolerates_trailing_comma(pool: PgPool) {
+    // `?modifiers=moodier,` is a real shape a careless URL builder
+    // emits. The parser splits, skips empties, and continues. No 400.
+    let upload_id = seed_upload(&pool, unit_vector_at(0)).await;
+    let app = common::app_with_fixed_vector(pool, unit_vector_at(1));
+    let (status, _) = common::get_status(
+        app,
+        &format!("/v1/search?image_upload_id={upload_id}&modifiers=moodier,"),
+    )
+    .await;
+    assert_eq!(status, 200);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn list_modifiers_returns_five(pool: PgPool) {
+    let app = common::app_keyword_only(pool);
+    #[derive(Deserialize, Debug)]
+    struct Info {
+        name: String,
+        label: String,
+    }
+    let (status, items): (_, Vec<Info>) = common::get_json(app, "/v1/modifiers").await;
+    assert_eq!(status, 200);
+    assert_eq!(items.len(), 5);
+    // Sanity-check one entry — the registry order is stable.
+    let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+    assert!(names.contains(&"moodier"));
+    assert!(names.contains(&"more_minimal"));
+    // Label humanization rounds-trip through `_`.
+    let mm = items.iter().find(|i| i.name == "more_minimal").unwrap();
+    assert_eq!(mm.label, "More minimal");
+}
+
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn search_by_image_upload_respects_filters(pool: PgPool) {
     // Image anchor + medium filter narrows the result set. Blue

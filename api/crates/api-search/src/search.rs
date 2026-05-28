@@ -25,6 +25,7 @@ use ml_art_core::{
     auth::OptionalAnonId,
     error::ApiError,
     models::{ArtworkSummary, Paginated, SortOrder},
+    modifiers::{self, DEFAULT_ALPHA},
 };
 use pgvector::Vector;
 use serde::Deserialize;
@@ -46,6 +47,14 @@ pub struct SearchParams {
     /// AND about painting." Phase B of T-010.
     #[serde(default)]
     pub image_upload_id: Option<Uuid>,
+    /// Comma-separated modifier names — e.g. `?modifiers=moodier,warmer`.
+    /// Each known modifier contributes its δ-vector (computed via
+    /// `core::modifiers::compute_delta`); the anchor is shifted at
+    /// α=0.8 per the WikiArt spike. Unknown names → 400. Requires
+    /// `image_upload_id`: modifiers without a visual anchor weren't
+    /// part of the validated path. Phase C of T-010.
+    #[serde(default)]
+    pub modifiers: Option<String>,
 
     // Filters
     #[serde(default)]
@@ -132,7 +141,45 @@ pub async fn handle(
         Some(q) if !q.trim().is_empty() => state.embedder.embed_text(q).await?,
         _ => None,
     };
-    let semantic_anchor = upload_vec.or(text_vec);
+    let mut semantic_anchor = upload_vec.or(text_vec);
+
+    // Modifiers: validate + apply δ-vectors at α=0.8. Spec ties this to
+    // image_upload_id (the spike only validated visual anchors), so we
+    // reject modifiers without one rather than silently shifting a text
+    // vector in untested territory.
+    let modifier_names = parse_modifiers(params.modifiers.as_deref())?;
+    if !modifier_names.is_empty() {
+        if params.image_upload_id.is_none() {
+            return Err(ApiError::BadRequest(
+                "modifiers require image_upload_id".into(),
+            ));
+        }
+        // semantic_anchor must be Some here (image_upload_id resolved
+        // above), but be defensive about the upstream invariant.
+        let Some(anchor) = semantic_anchor.as_ref() else {
+            return Err(ApiError::BadRequest(
+                "modifiers require a resolved image anchor".into(),
+            ));
+        };
+        let mut deltas: Vec<Vector> = Vec::with_capacity(modifier_names.len());
+        for m in &modifier_names {
+            match modifiers::compute_delta(m, &state.embedder).await {
+                Ok(Some(d)) => deltas.push(d),
+                Ok(None) => {
+                    return Err(ApiError::BadRequest(
+                        "embedder unavailable; modifiers can't be applied".into(),
+                    ))
+                }
+                Err(e) => {
+                    return Err(ApiError::Internal(anyhow::anyhow!(
+                        "compute_delta({}): {e}",
+                        m.name
+                    )))
+                }
+            }
+        }
+        semantic_anchor = Some(modifiers::apply_deltas(anchor, &deltas, DEFAULT_ALPHA));
+    }
 
     let has_text = params.q.as_deref().is_some_and(|q| !q.trim().is_empty());
     let has_visual_anchor = params.image_upload_id.is_some();
@@ -426,4 +473,31 @@ impl Row {
             availability: self.availability,
         }
     }
+}
+
+/// Parse a `?modifiers=moodier,warmer` value into the registered
+/// `Modifier`s. Empty / missing input is an empty `Vec`. Unknown names
+/// are a hard 400 so the client can correct the URL.
+fn parse_modifiers(raw: Option<&str>) -> Result<Vec<&'static modifiers::Modifier>, ApiError> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for token in raw.split(',') {
+        let name = token.trim();
+        if name.is_empty() {
+            continue; // tolerate "moodier,,warmer" or trailing commas
+        }
+        match modifiers::find(name) {
+            Some(m) => out.push(m),
+            None => {
+                let known = modifiers::all_names();
+                return Err(ApiError::BadRequest(format!(
+                    "unknown modifier `{name}`; known: {}",
+                    known.join(", ")
+                )));
+            }
+        }
+    }
+    Ok(out)
 }
