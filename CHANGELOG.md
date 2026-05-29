@@ -3,6 +3,50 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-05-29 — Artist UX polish: T-039 price input + T-040 location feedback
+
+Two real-artist friction points from the demo session.
+
+- **T-039 — currency-aware price input**
+  - `lib/parsePrice.ts` accepts what humans type: `£120`, `$1,200`,
+    `EUR 4500`, `120.50`, `1.234,50` (European decimal). Strips
+    currency symbols + thousands separators; parses decimals as the
+    currency's minor-unit places (USD/GBP/EUR = 2, JPY = 0)
+  - Inverse `formatPriceForInput` pretty-prints back into the input
+    on blur so artists see `120.00` not `12000`
+  - ISO 4217 minor-unit table for ~20 common currencies; falls back
+    to 2 places for unknown codes (parser still accepts them inline,
+    e.g. `AUD 200`)
+  - `ArtworkEditModal` price field is now `<input type="text">` with
+    `inputMode="decimal"` + a currency `<select>` next to it (USD,
+    GBP, EUR, CAD, AUD, JPY, CHF, SEK, NOK, DKK). Validation runs on
+    submit; errors surface inline next to the field. On-blur
+    re-formats to canonical "120.00" shape and updates the selected
+    currency if the artist typed a symbol or code inline
+  - Removed the redundant "Currency" text-input field — the dropdown
+    next to the price input replaces it
+  - 17 new vitest tests on `parsePrice` + `formatPriceForInput` +
+    `minorUnitsFor`
+
+- **T-040 — geocode feedback in studio locations**
+  - `StudioLocationsManager`'s pin status is now three-state:
+    - `geocoded_at` null → "Locating…" (amber, in-flight)
+    - `geocoded_at` set + lat null → "Couldn't find this address —
+      try adding city + country" (red, actionable error)
+    - `geocoded_at` set + lat set → "Pin set · {city}, {country}"
+      (muted, success)
+  - Previously the failure case looked identical to "Locating…"
+    forever, leaving the artist with no signal that they needed to
+    edit. The Mapbox response is on the row already; this is pure
+    UI surfacing
+
+- **Tests + checks**
+  - 44 vitest tests (was 27, +17 from parsePrice)
+  - 206 Rust (unchanged — both fixes are web-side)
+  - fmt + clippy + ESLint + tsc all clean
+
+---
+
 ## 2026-05-29 — Map discovery v1 (T-041 + T-042 + T-043)
 
 Closes the two user journeys we identified for the map: "find galleries

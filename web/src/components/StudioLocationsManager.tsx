@@ -16,7 +16,13 @@
  * cheap. The poll stops the moment every row has a pin.
  */
 
-import { useEffect, useState, useTransition, type FormEvent } from "react";
+import {
+  useEffect,
+  useState,
+  useTransition,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { useRouter } from "next/navigation";
 import {
   createLocation,
@@ -285,14 +291,27 @@ function LocationRow({
     );
   }
 
-  const pinStatus =
-    location.lat != null && location.lng != null ? (
+  // Three-state pin feedback (T-040):
+  //   - geocoded_at null → never tried (or pending) → "Locating…"
+  //   - geocoded_at set + lat null → Mapbox couldn't find this address
+  //   - geocoded_at set + lat set → success, show the resolved city/country
+  let pinStatus: ReactNode;
+  if (location.lat != null && location.lng != null) {
+    const where = [location.city, location.country].filter(Boolean).join(", ");
+    pinStatus = (
       <span className="text-xs text-muted">
-        Pin set{location.city ? ` · ${location.city}` : ""}
+        Pin set{where ? ` · ${where}` : ""}
       </span>
-    ) : (
-      <span className="text-xs text-amber-700">Locating…</span>
     );
+  } else if (location.geocoded_at) {
+    pinStatus = (
+      <span className="text-xs text-red-600">
+        Couldn&apos;t find this address — try adding city + country
+      </span>
+    );
+  } else {
+    pinStatus = <span className="text-xs text-amber-700">Locating…</span>;
+  }
 
   return (
     <li className="py-4 flex items-start justify-between gap-4">

@@ -47,31 +47,18 @@ if the item was dropped, with a one-line reason.
 **Where:** seed script (optional) + `lib/api.ts` (done) + ArtworkDetail panel (done)
 **State:** `formatDimensions` and `formatPrice` work; the seeded demo artworks have null dimensions/price. Either backfill in `seed.py` with plausible random values, or leave demo content as-is (price/dim only matter for real artists). Decide before launch.
 
-### `T-039` Artist-facing price input UX (currency-aware, no minor-units math)
-**Where:** `ArtworkEditModal.tsx` price field + a new `lib/parsePrice.ts` helper + a tiny `currencies.ts` registry; possibly Rust-side validation tighten-up on `price_cents`.
-**Why:** today the studio form asks artists to type `price_cents` (an integer in minor units) and pick a currency code (`USD` / `GBP` / `EUR`). Both are bad UX:
-- Asking "what's £4,500 in pence?" makes the artist do mental math the computer should do
-- Currency is a free-text input next to it; nothing nudges them to use a real ISO code
-- No formatting feedback as they type — they can't tell if "4500" means £45 or £4500 until they hit save and look at the public surface
+### ~~`T-039` Artist-facing price input UX~~ — shipped 2026-05-29
 
-**Acceptance:**
-- New `parsePrice(input, currencyCode)` helper that accepts what humans type: `£120`, `120`, `120.00`, `1,200`, `1,200.50`, `EUR 4500`, `$4500.00`. Returns `{ amount_minor: number, currency: string }` or a validation error. Strips currency symbols + thousands separators; parses decimals as the currency's minor-unit fractional digits (USD/GBP/EUR = 2; JPY = 0)
-- ISO 4217 minor-unit table baked into the helper (covers the ~20 currencies we'd realistically see; falls back to 2 digits)
-- New `formatPriceForInput(amount_minor, currency)` inverse for pre-populating the edit form (e.g. `12000` GBP → `"120.00"`)
-- Studio price field: `<input type="text">` with currency `<select>` next to it (pre-populated from existing common-currency list). On blur, format the amount cleanly so the artist sees what's stored. On submit, send `price_cents` derived via `parsePrice`
-- Unit tests on `parsePrice` covering symbols, separators, decimal handling, JPY zero-decimal, malformed input rejection
-- Server-side: `studio::artworks` already accepts `price_cents` as i64. Maybe tighten the validator to reject negative + impossibly-large values (`> 100M` minor units would be a buggy client). Defer the schema change to a `currency` enum check until a real bad-input incident motivates it.
+- ✅ `lib/parsePrice.ts` + `formatPriceForInput` + ISO 4217 minor-unit table; 17 vitest tests.
+- ✅ `ArtworkEditModal` price field: text input + currency dropdown (USD/GBP/EUR/CAD/AUD/JPY/CHF/SEK/NOK/DKK). On blur reformats. On submit derives `price_cents`.
+- **Deferred:** server-side tighten on `price_cents` (negative + overflow). Open if bad input is observed.
+- **Deferred:** auto-detect currency from artist `based in` city.
 
-**Out of scope:** currency conversion (multi-currency display preference is in `99-deferred.md`); fancy locale-aware formatting beyond what `Intl.NumberFormat` gives us; auto-detecting currency from artist location.
+### ~~`T-040` Studio location validation feedback~~ — shipped 2026-05-29
 
-### `T-040` Studio location validation feedback
-**Where:** `StudioLocationsManager.tsx` add + edit forms; possibly a "Suggested matches" panel server-side.
-**Why:** today the artist types a free-text address and we silently fire it at Mapbox. If Mapbox returns nothing (or geocodes to the wrong place), the only feedback is "Locating…" forever then quietly never showing on the map. They can't tell whether their typo was the problem or the API was.
-
-**Acceptance:**
-- On save, after the background geocode completes, surface the geocoded `city, country` next to the row as "Mapbox found: London, GB". If empty, "Couldn't geocode this address — try including the city/country."
-- Optional polish (deferred): use Mapbox's autocomplete/places endpoint to suggest matches as the artist types, so they pick a known address rather than guessing.
-- Same UX hook works for the artist's own "based in" field once that gets surfaced through the geocode pipeline (currently only the location string is stored, no city/country derived).
+- ✅ Three-state pin status on `StudioLocationsManager`: "Locating…" (in-flight) → "Pin set · {city, country}" (success) → "Couldn't find this address — try adding city + country" (Mapbox returned empty).
+- **Deferred:** Mapbox Places autocomplete on the address field.
+- **Deferred:** Same three-state pattern for the artist's own `based in` field (needs the field to actually flow through the geocoder, which it doesn't yet — currently only the raw string is stored).
 
 ### `T-004` Incremental cache saves in `CachedEmbedder`
 **Where:** `ml/ml_art/embeddings/cache.py`

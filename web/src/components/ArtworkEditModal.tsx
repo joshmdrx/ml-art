@@ -33,6 +33,7 @@ import {
 } from "@/app/actions/studio";
 import type { StudioArtworkDetail, StudioImage } from "@/lib/api";
 import { normalizeWebsiteUrl } from "@/lib/normalizeUrl";
+import { formatPriceForInput, parsePrice } from "@/lib/parsePrice";
 import { reportError } from "@/lib/reportError";
 
 const AVAILABILITY_OPTIONS = [
@@ -46,6 +47,23 @@ const STATUS_OPTIONS = [
   { value: "draft", label: "Draft" },
   { value: "published", label: "Published" },
   { value: "archived", label: "Archived" },
+] as const;
+
+/** Currencies offered in the price-input dropdown. Covers the
+ * countries we'd expect to see real artists from at v1; the parser
+ * accepts any 3-letter ISO code typed inline ("AUD 200") so this
+ * list isn't a hard limit. */
+const COMMON_CURRENCIES = [
+  "USD",
+  "GBP",
+  "EUR",
+  "CAD",
+  "AUD",
+  "JPY",
+  "CHF",
+  "SEK",
+  "NOK",
+  "DKK",
 ] as const;
 
 type Target = string | "new" | null;
@@ -79,7 +97,8 @@ export function ArtworkEditModal({
     if (target === null) return;
     if (target === "new") {
       // Intentional state-machine transition on `open` — same pattern
-      // (and the same conservative lint) as SaveModal / InquiryModal.
+      // (and the same conservative lint exception) as SaveModal /
+      // InquiryModal.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setLoad({ kind: "ready", detail: null });
       return;
@@ -190,10 +209,47 @@ function ArtworkForm({
   const [yearCreated, setYearCreated] = useState(
     detail?.year_created != null ? String(detail.year_created) : ""
   );
-  const [priceCents, setPriceCents] = useState(
-    detail?.price_cents != null ? String(detail.price_cents) : ""
+  // Price is a free-text input (T-039) — the artist types "£120" or
+  // "120.50", we parse to minor units on submit. State holds the raw
+  // display string, not the integer.
+  const [priceInput, setPriceInput] = useState(
+    detail?.price_cents != null && detail?.currency
+      ? formatPriceForInput(detail.price_cents, detail.currency)
+      : ""
   );
   const [currency, setCurrency] = useState(detail?.currency ?? "USD");
+  const [priceError, setPriceError] = useState<string | null>(null);
+
+  /** Parse the current price input into `{ amount_minor, currency }`
+   * or null (empty input). Sets `priceError` and returns `undefined`
+   * if the input is malformed — caller bails out of the submit. */
+  function tryParsePrice(): { amount_minor: number; currency: string } | null | undefined {
+    try {
+      const result = parsePrice(priceInput, currency);
+      setPriceError(null);
+      return result;
+    } catch (e) {
+      setPriceError(e instanceof Error ? e.message : "Couldn't parse price");
+      return undefined;
+    }
+  }
+
+  /** On blur: re-format to the canonical "120.00" shape so artists
+   * see what's being stored. No-op on empty or unparseable input. */
+  function onPriceBlur() {
+    if (priceInput.trim().length === 0) return;
+    try {
+      const parsed = parsePrice(priceInput, currency);
+      if (parsed) {
+        setPriceInput(formatPriceForInput(parsed.amount_minor, parsed.currency));
+        setCurrency(parsed.currency);
+        setPriceError(null);
+      }
+    } catch {
+      // Leave the input as-is; the submit-time validator will
+      // surface the error.
+    }
+  }
   const [availability, setAvailability] = useState<string>(
     detail?.availability ?? "available"
   );
@@ -203,14 +259,14 @@ function ArtworkForm({
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  function buildBody() {
+  function buildBody(parsedPrice: { amount_minor: number; currency: string } | null) {
     return {
       title: title.trim() || null,
       description: description.trim() || null,
       medium: medium.trim() || null,
       year_created: yearCreated ? Number(yearCreated) : null,
-      price_cents: priceCents ? Number(priceCents) : null,
-      currency: currency.trim() || "USD",
+      price_cents: parsedPrice?.amount_minor ?? null,
+      currency: parsedPrice?.currency ?? (currency.trim() || "USD"),
       availability: availability as
         | "available"
         | "sold"
@@ -225,6 +281,14 @@ function ArtworkForm({
     e.preventDefault();
     if (isPending) return;
     setError(null);
+
+    const parsedPrice = tryParsePrice();
+    if (parsedPrice === undefined) {
+      // tryParsePrice already set priceError + this is a synchronous
+      // bail. Don't fire the network call.
+      return;
+    }
+
     startTransition(async () => {
       try {
         if (isCreate) {
@@ -233,8 +297,8 @@ function ArtworkForm({
             description: description.trim() || undefined,
             medium: medium.trim() || undefined,
             year_created: yearCreated ? Number(yearCreated) : undefined,
-            price_cents: priceCents ? Number(priceCents) : undefined,
-            currency: currency.trim() || undefined,
+            price_cents: parsedPrice?.amount_minor ?? undefined,
+            currency: parsedPrice?.currency ?? (currency.trim() || undefined),
             availability: availability as
               | "available"
               | "sold"
@@ -254,7 +318,7 @@ function ArtworkForm({
             images: [],
           });
         } else {
-          const updated = await patchArtwork(detail!.id, buildBody());
+          const updated = await patchArtwork(detail!.id, buildBody(parsedPrice));
           onSaved({
             ...detail!,
             ...updated,
@@ -333,29 +397,44 @@ function ArtworkForm({
           />
         </Field>
         <Field
-          label="Price (cents)"
-          hint="Leave blank to hide. 100000 = $1,000 / £1,000."
+          label="Price"
+          hint="Leave blank to hide. You can type the symbol — '£120', '$1,200', '4500'."
         >
-          <input
-            type="number"
-            value={priceCents}
-            onChange={(e) => setPriceCents(e.target.value)}
-            min={0}
-            className="w-full bg-background border border-border px-3 py-2 text-sm focus:outline-none focus:border-foreground"
-          />
+          <div className="flex gap-2">
+            <input
+              type="text"
+              inputMode="decimal"
+              value={priceInput}
+              onChange={(e) => {
+                setPriceInput(e.target.value);
+                if (priceError) setPriceError(null);
+              }}
+              onBlur={onPriceBlur}
+              placeholder="120.00"
+              className="flex-1 bg-background border border-border px-3 py-2 text-sm focus:outline-none focus:border-foreground"
+            />
+            <select
+              aria-label="Currency"
+              value={currency}
+              onChange={(e) => setCurrency(e.target.value)}
+              className="bg-background border border-border px-2 py-2 text-sm focus:outline-none focus:border-foreground"
+            >
+              {COMMON_CURRENCIES.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </div>
+          {priceError && (
+            <p role="alert" className="mt-1 text-xs text-red-600">
+              {priceError}
+            </p>
+          )}
         </Field>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
-        <Field label="Currency">
-          <input
-            type="text"
-            value={currency}
-            onChange={(e) => setCurrency(e.target.value.toUpperCase())}
-            maxLength={3}
-            className="w-full bg-background border border-border px-3 py-2 text-sm focus:outline-none focus:border-foreground"
-          />
-        </Field>
+      <div>
         <Field label="Availability">
           <select
             value={availability}
