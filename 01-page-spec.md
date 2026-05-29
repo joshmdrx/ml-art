@@ -30,6 +30,7 @@
 | `/` | Homepage |
 | `/search?q=...&filters=...` | Search results (text) |
 | `/search?image=<upload_id>&modifiers=...` | Visual search results |
+| `/search?map=1&bbox=...&artist=...` | Map mode — venues matching the active filters, with city-pivot pills + "Near me" affordance |
 | `/neighborhoods` | Index of all semantic neighborhoods |
 | `/neighborhoods/[slug]` | Single neighborhood view |
 | `/artists/[slug]` | Artist portfolio |
@@ -89,6 +90,19 @@ Note: pre-built portfolio claim flow (`/claim/[token]`) and admin submission que
 - Save icon → if signed in, opens save-to-collection modal; if not, opens sign-in modal with redirect preserving action.
 
 **Data needed:** ranked artwork list (paginated, cursor-based), facet counts per filter option.
+
+**Map mode** *(shipped 2026-05-29, T-038 G5 + T-041/T-042/T-043)*
+
+A Grid / Map view toggle (small chip strip below the FilterBar) swaps the results grid for a Mapbox GL JS interactive map of venues — galleries + studios where matching artists' work can be seen in person.
+
+- **Pins per `artist_locations` row.** Click → popover with venue name, address, "Showing {artist}" + thumbnail, "View portfolio →" link. Clustered at low zoom (client-side via Mapbox's `cluster: true`).
+- **URL is the source of truth.** Pan/zoom updates `?bbox=…` via `history.replaceState` (no history spam). Reload keeps the same view.
+- **City pivots above the map** *(T-042)* — horizontal pill strip "London (12) · Berlin (8) · Lisbon (3)" sourced from `/v1/search/map/cities`. Click → jumps to that city's bbox. Solves cold-start when the user lands at world zoom with nothing visible.
+- **Near-me button** *(T-043)* — uses browser geolocation API, sets bbox ~5km around the user's coords. Self-hides on browsers without `navigator.geolocation`. PERMISSION_DENIED gets a soft inline message.
+- **Artist filter** *(T-041)* — `?artist=<slug>` pins down to a single artist's venues, with a "Showing where to see **{name}** [Clear filter]" pill at the top. Entered via the "See on full map →" CTA on `/artists/[slug]`.
+- **Filter semantics** — `q` / `medium` / `location` use the same per-artist match the grid uses: a venue shows if the artist has *any* artwork matching. See `decisions.md` 2026-05-29 — map-search filter semantics.
+
+Falls back to a non-interactive list of pin cards when `NEXT_PUBLIC_MAPBOX_TOKEN` is unset (same fallback shape as the artist-profile map widget).
 
 ### Semantic neighborhoods index (`/neighborhoods`)
 
@@ -212,26 +226,24 @@ V1: skip email preferences entirely (no newsletters to opt in/out of).
 
 ### Artist onboarding (`/onboarding`)
 
-**Purpose:** Stepped flow. Single page, progressive disclosure — each step expands below the previous.
+**Purpose:** Stepped wizard that turns a signed-in user into a published artist. Single page, URL-driven step state (`?step=…`) so refresh is safe and individual steps are deep-linkable.
 
-**Steps:**
-1. **Welcome.** "Let's set up your portfolio." Email verification via Clerk magic link if not already authed.
-2. **Import.** "Where can we find your work?" Input for website URL (Instagram import deferred — TOS-restricted and unreliable). "Import" button. Shows import progress. User can skip with "Add work manually instead."
-3. **Bio.** Pre-filled from scrape if available, otherwise blank. Editable textarea. Location, website, socials — editable fields.
-4. **Per-artwork metadata (LLM-assisted).** For each imported artwork (capped at 10 for onboarding; rest handled in /studio later):
-   - Image on left.
-   - Conversational prompt: "Tell me about this piece — medium, size, what you were thinking about."
-   - User types freeform. LLM extracts → fills structured fields below (title, medium, dimensions, year, tags, price). User reviews and edits.
-   - "Skip the chat, fill the form" link swaps to a pure form view (for artists who prefer it).
-   - "Next artwork" / "Skip this one" controls.
-5. **Artist statement.** "What are you trying to do with your work?" Freeform. Optional "Help me polish this" button → LLM rewrites, user accepts or keeps original.
-6. **Commissioning.** "Do you accept commissions?" Yes/No. If yes: commission types (tags), typical price range, brief note field.
-7. **Inquiry routing.** Radio: direct email (default, pre-filled), on-platform inbox, external URL.
-8. **Preview + publish.** Shows the full portfolio as it will appear. "Publish" button, "Save as draft" secondary.
+**Shipped (T-012 Phase 1, 2026-05-28):**
 
-**Post-publish:** redirect to `/studio`.
+1. **Identity.** Display name (required) + free-text location (optional). Submits to `POST /v1/onboarding/start`, which mints the `artists` row with `status='pending'`, generates a unique slug, and flips `users.is_artist`.
+2. **Profile.** Bio, artist statement, website. Wraps the existing `PATCH /v1/studio/settings` endpoint. Skippable.
+3. **Artworks.** Reuses the studio `ArtworkEditModal` for create + edit. Skip-friendly — zero artworks at publish time is fine; artists can add more later from `/studio`.
+4. **Where to see (locations).** Reuses `StudioLocationsManager` (T-038 G3) — galleries + studios + their geocoded pins.
+5. **Review + publish.** Summary of everything entered. "Publish" hits `POST /v1/onboarding/complete` which flips `status: pending → active` (idempotent) and redirects to `/artists/<slug>`.
 
-**Data stored:** progress saved between steps — user can leave and return.
+**Deferred to Phase 2 (blocked on Inngest runtime):**
+
+- Website / Instagram scrape job to pre-fill bio + image URLs (`POST /v1/onboarding/import`)
+- Conversational LLM extraction per artwork ("Tell me about this piece — medium, size, what you were thinking about") via `POST /v1/onboarding/extract-metadata`
+- "Help me polish this" button on the statement step (`POST /v1/onboarding/polish-statement`)
+- Per-step progress persistence (today: each step's data is persisted on submit, but partial state on a step isn't checkpointed)
+
+**Cross-cutting:** `/studio` and `/studio/settings` redirect signed-in non-artists into the wizard. `TopNav` surfaces a "Studio" link for all signed-in users (single link, two destinations — the page-level redirect handles the branch).
 
 ### Artist studio (`/studio`, `/studio/analytics`, `/studio/settings`)
 

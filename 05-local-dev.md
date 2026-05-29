@@ -116,6 +116,12 @@ CLERK_SECRET_KEY=sk_test_...
 JINA_API_KEY=...
 # or VOYAGE_API_KEY=...
 
+# Geocoding + maps (T-038). Same token is used for forward-geocoding
+# server-side (api/.env) AND for the GL JS map widget client-side
+# (web/.env.local as NEXT_PUBLIC_MAPBOX_TOKEN). When unset, location
+# CRUD still works; the map widgets degrade to a non-interactive list.
+MAPBOX_TOKEN=pk.eyJ...
+
 # LLM (real, dev key with spend cap)
 ANTHROPIC_API_KEY=...
 
@@ -199,13 +205,14 @@ Eval-set runs (`eval.run` Inngest job) are not in the test pipeline — they run
 
 1. `brew install rustup-init pnpm docker awscli` (or equivalent on Linux).
 2. `cargo install cargo-lambda`.
-3. Clone, `pnpm install`.
-4. Create Clerk dev instance, copy keys to `.env.local`.
-5. Generate dev API keys for Jina/Voyage and Anthropic. Set monthly spend cap (~$20).
-6. `docker compose -f docker-compose.dev.yml up -d`.
-7. `pnpm db:migrate`.
-8. `pnpm seed`.
-9. `pnpm dev:all`.
-10. Open `localhost:3000`, search "moody coastal", confirm results.
+3. `cargo install cargo-watch` (drives api-binary hot-reload under `make dev`).
+4. Clone, `pnpm install`.
+5. Create Clerk dev instance, copy keys to `.env.local`.
+6. Generate dev API keys for Jina/Voyage and Anthropic. Set monthly spend cap (~$20).
+7. `docker compose -f docker-compose.dev.yml up -d`.
+8. `pnpm db:migrate`.
+9. `pnpm seed`.
+10. `pnpm dev:all`.
+11. Open `localhost:3000`, search "moody coastal", confirm results.
 
-If all 10 work, you're set up.
+If all 11 work, you're set up.

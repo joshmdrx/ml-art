@@ -24,10 +24,14 @@ minimal").
 | Search | `/search?q=…&medium=…&price=…&availability=…&location=…&image_upload_id=…&modifiers=…` | `/v1/search` (hybrid + geographic + filters + visual anchor + modifier δ-vectors at α=0.8) |
 | Visual upload | camera icon on the hero | `/v1/uploads/image` (multipart → S3 → inline Jina embed) |
 | Artwork detail | `/artworks/[id]` | `/v1/artworks/:id` + `/v1/artworks/:id/similar` |
-| Artist portfolio | `/artists/[slug]` | `/v1/artists/:slug` |
+| Artist portfolio | `/artists/[slug]` | `/v1/artists/:slug` (incl. `locations[]` → map widget) |
+| Search by map | `/search?map=1&bbox=…&artist=…` | `/v1/search/map` — clustered pins, "Near me" geolocation, city-pivot pills, per-artist filter |
+| Map city pivots | strip above `/search?map=1` | `/v1/search/map/cities` — top cities by venue count |
 | Neighborhoods index | `/neighborhoods` | `/v1/neighborhoods` |
 | Neighborhood detail | `/neighborhoods/[slug]` | `/v1/neighborhoods/:slug` (filterable) |
 | Sign in / up | `/sign-in`, `/sign-up` | Clerk |
+| Become an artist | `/onboarding` | `/v1/onboarding/start` + `/v1/onboarding/complete` (5-step wizard) |
+| Artist studio | `/studio`, `/studio/settings` | `/v1/studio/*` (artworks CRUD, settings, locations CRUD) |
 | Current user (debug) | `/me` | `/v1/me` |
 | Save to collection | modal on artwork detail | `/v1/me/collections/*` |
 | My collections | `/collections`, `/collections/[id]` | `/v1/me/collections/*` |
@@ -39,13 +43,16 @@ it, search degrades cleanly to keyword-only and the empty state explains
 why. Rate limiting (`/search` 60/min, inquiry 3/hr per key) is on by
 default in dev; set `RATE_LIMIT_DISABLED=true` to hammer-test locally.
 
+Geographic features (artist-profile map, `/search?map=1`, studio location
+CRUD with live geocoding) activate when `MAPBOX_TOKEN` is set in
+`api/.env` AND `NEXT_PUBLIC_MAPBOX_TOKEN` is set in `web/.env.local`.
+Without them, the schema + APIs still work but map widgets fall back to
+a non-interactive list view (no JS map bundle loads). Free tier covers
+100k geocoding + 50k map loads per month — well above any v0 traffic.
+
 Real email delivery (Resend) is **not** wired yet — anonymous inquiries
 return the verification token in the response body in dev mode so manual
 testing works without an inbox (see `T-032`).
-
-Vector search activates when `JINA_API_KEY` is set in `api/.env`. Without
-it, search degrades cleanly to keyword-only and the empty state explains
-why.
 
 ## Quick start
 
@@ -118,9 +125,9 @@ repo root. Each has a specific role:
 - **Database:** Postgres 16 + pgvector (Neon in prod)
 - **Storage:** S3 + CloudFront (MinIO locally)
 - **Embeddings:** `jinaai/jina-clip-v2` — local PyTorch for seed/spike, Jina HTTP API at request time
-- **Auth (planned):** Clerk
-- **Background jobs (planned):** Inngest
-- **Geocoding (planned):** Mapbox
+- **Auth:** Clerk
+- **Geocoding + maps:** Mapbox v6 forward-geocoding + Mapbox GL JS (T-038)
+- **Background jobs (planned):** Inngest — currently a `tokio::spawn` stub for the geocoding worker; the real runtime unblocks `T-032` (inquiry email), `T-008` (image moderation), and `T-012 Phase 2` (LLM-assisted onboarding)
 - **Infra (planned):** Terraform, OpenNext for Next on AWS
 
 See [`04-stack-and-infra.md`](04-stack-and-infra.md) for the full picture
@@ -128,11 +135,11 @@ including the topology diagram and cost projection.
 
 ## Testing
 
-50 tests total, ~7s locally:
+~257 tests total, ~10s locally for the Rust + Vitest tiers (E2E adds another ~30s against the full stack):
 
-- **28 Rust integration tests** — `make test-api` (per-test ephemeral Postgres via `#[sqlx::test]`)
-- **11 Playwright E2E tests** — `make test-e2e` (against the full local stack)
-- **11 Vitest unit tests** — `make test-web` (pure functions only)
+- **206 Rust tests** — `make test-api` (per-test ephemeral Postgres via `#[sqlx::test]`; unit + integration combined)
+- **~24 Playwright E2E tests** — `make test-e2e` (against the full local stack)
+- **27 Vitest unit tests** — `make test-web` (pure functions only)
 - **Python pytest** — `make test-ml` (vector utils)
 
 CI per-directory in `.github/workflows/` so PRs only run what they

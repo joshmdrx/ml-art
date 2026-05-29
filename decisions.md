@@ -17,6 +17,56 @@ Format:
 
 ---
 
+## 2026-05-29 — Map-search filter semantics: per-artist, not per-artwork
+
+**Context:** `/search?q=ukiyo&map=1` could plausibly mean two things: (a) "venues whose artist has *any* artwork matching ukiyo" (per-artist), or (b) "venues with at least one artwork matching ukiyo on display right now" (per-artwork, stricter). The data layer can express either — the EXISTS subquery on `artworks` is a one-line change.
+
+**Decided:** Per-artist match. A venue surfaces if the artist who lists it has any matching artwork in their portfolio.
+
+**Alternatives:**
+- **Per-artwork match** — stricter, more accurate to "find ukiyo prints near me." But artists list venues at the artist level (an `artist_locations` row says "you can see *me* at Foo Gallery"), not at the artwork level. We don't model "which artworks are at which venue" at all in v1 — that's the deferred shows / events Phase 2 work. Per-artwork match would imply a contract we can't currently honor.
+- **Defer the decision** — option C from the original triage. Rejected because the question is binary and shipping required a choice; leaving it ambiguous would have meant inconsistent behavior across keyword vs medium vs artist filters.
+
+**Why:** Matches the model of the data — venues are per-artist, so filtering venues should be per-artist. Lower friction: a viewer searching "ukiyo near me" gets every venue that has an artist working in that style, which is what they actually want for a Saturday gallery crawl. Stricter "this specific painting is at this gallery today" UX needs the post-v1 events model.
+
+**Reversibility:** High — one SQL change in `api-search::search_map`, no schema impact. If real users ask "I went to the gallery and the ukiyo print wasn't there," we revisit.
+
+---
+
+## 2026-05-28 — Geography promoted from post-v1 to v1 (lean slice)
+
+**Context:** During the feature-review pass, the user surfaced geography as a key personal motivator: "I don't find it easy to find local galleries or artists whose work I can go look at in person." The current shape is half a foundation — `artists.city/country/lat/lng` columns, `/v1/search?near_lat&near_lng`, a location filter on FilterBar — but no map UI, no live geocoding job, no street-level locations. `99-deferred.md` carves the full geographic story into three phases; Phase 1 (map view + geo neighborhoods) was deferred largely because it didn't have an internal champion yet.
+
+City-only pins are useless on a map ("the artist is somewhere in Berlin"). Useful pins need a street address, which means a place a viewer can actually go — a gallery the artist is represented by, or an open studio. That's a different entity from the artist's "based in" city.
+
+**Decided:** Promote a lean geography slice to v1 as `T-038`. Specifically:
+
+1. Add `artist_locations` table — one row per place an artist's work can be seen. `kind` is `'gallery' | 'studio'` (shows deferred). Street-level address, geocoded to lat/lng.
+2. Mapbox geocoding via an Inngest job. Stubs to no-op when `MAPBOX_TOKEN` is absent, matching the existing degrades-gracefully pattern.
+3. Studio settings gets a "Where to see my work" CRUD section. Self-listed, trust-based, with a "Listed by the artist" label on the public pin (no admin verification in v1).
+4. Artist profile gets a map widget showing the artist's `artist_locations` pins; falls back to a "based in {city}" pill if none.
+5. `/search?map=1` toggles grid → map. Clustered pins are `artist_locations` rows. Bounds in URL so views are shareable.
+
+Explicitly **not** in this slice:
+- Shows / events as time-bound entities (still post-v1; needs the `events` table).
+- `spaces` as first-class entities with their own pages. Two artists at the same gallery just have duplicated `artist_locations` rows; we eat the denormalization for v1 because the venue page is not the product yet.
+- Admin moderation queue for galleries. The "Listed by the artist" label is the trust model; a 'Report listing' link can come later if abuse appears.
+- Geographic neighborhoods (`neighborhoods.kind = 'geographic'`). Still post-v1 — editorial work, not a code path.
+
+**Alternatives:**
+- **Stay deferred, ship v1 without maps** — fastest. But the user has explicitly named this as a differentiator they care about; shipping v1 without it means relaunching the surface later.
+- **Full Phase 2 (`spaces` + `events` tables, claim flows, admin moderation)** — the "right" model long-term, but several weeks of build and a moderation problem we're not ready to own. Deferred.
+- **"Just-cities" pins** — what 99-deferred's Phase 1 had. Rejected: city-level pins don't drive in-person discovery, which is the whole point.
+- **Google Maps embed (user's first instinct)** — Mapbox already has a token slot in env config and is in `04-stack-and-infra.md`'s cost model. Mapbox GL JS is open-source-licensed, supports vector tiles + clustering natively, and the free tier (50k monthly map loads) is generous for v0 traffic.
+
+**Why:** The intermediate "artist_locations as a JSON column on artists" was tempting (no new table). Rejected because we need to query pins by bbox for the `/search?map=1` map mode, and a JSON-blob filter is harder to index than a (lat, lng) on a normalized row. The shape we're picking is forward-compatible with Phase 2 — when we eventually add `spaces`, we migrate `artist_locations` rows into `space_artists` join rows; nothing thrown away.
+
+Cost impact: Mapbox geocoding is free up to 100k requests/month, well above any v0 traffic. Map loads via GL JS: 50k/month free. Both line up with existing `COST.md` guardrails.
+
+**Reversibility:** Medium — `artist_locations` is one table + one Inngest job + two UI surfaces. If we decide to consolidate into `spaces` later, migration is mechanical (one row per `artist_locations.id` → `spaces` + `space_artists` join). The studio CRUD surface stays; only the underlying table changes.
+
+---
+
 ## 2026-05-27 — Pre-commit hooks via lefthook
 
 **Context:** Today's audit caught silent drift: `cargo fmt --check` fails (`artwork.rs`), `cargo clippy -- -D warnings` fails (`auth.rs`, `models.rs`), `eslint` fails (`SaveModal.tsx`'s `set-state-in-effect`). All four CI workflows enforce these, so either CI is currently red or we've been lucky on toolchain timing. Local development is on the honor system and the honor system has stopped working.

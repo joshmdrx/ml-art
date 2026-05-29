@@ -11,6 +11,26 @@ if the item was dropped, with a one-line reason.
 
 ## Now (active build)
 
+### ~~`T-041` + `T-042` + `T-043` Map discovery v1~~ — shipped 2026-05-29
+
+- ✅ **T-041** — `?artist=<slug>` filter on `/v1/search/map`; "See on full map →" CTA on artist profile; scoping pill on the search map view. 3 integration tests.
+- ✅ **T-042** — new `/v1/search/map/cities` aggregation endpoint; `CityPivotStrip` component (horizontal pill row above the map). Solves the cold-start "blank world" problem. 5 integration tests.
+- ✅ **T-043** — `NearMeButton` component using browser geolocation; homepage hero gets a "📍 Near me · or · Explore the map →" row.
+
+### ~~`T-038` Geography slice — `artist_locations` + Mapbox + map UI~~ — all five phases shipped 2026-05-28
+
+- ✅ **G1** — `0011_artist_locations.sql` schema; `ArtistDetail.locations` extended; pre-geocode rows hidden from public payload
+- ✅ **G2** — `core::geocoding` Mapbox v6 client (Real / Disabled / Test variants); `trigger_background_geocode` + `geocode_and_update`; `AppState.geocoder` plumbing
+- ✅ **G3** — `/v1/studio/locations` CRUD with `deserialize_double_option` helper for real PATCH semantics; `StudioLocationsManager` UI on `/studio/settings`; polls every 3s until pins land
+- ✅ **G4** — `ArtistLocationsMap` on `/artists/[slug]`; Mapbox GL JS dynamic import; fallback list view when `NEXT_PUBLIC_MAPBOX_TOKEN` is absent
+- ✅ **G5** — `/v1/search/map` endpoint (bbox + q + medium + location); `/search?map=1` Grid/Map toggle with clustered pins, URL-synced bounds, popups, `searchMapClient.ts` browser-only fetch wrapper
+- 22 new Rust tests + 4 new Playwright specs
+
+**Follow-ups (not blocking v1):**
+- Replace `tokio::spawn` in `trigger_background_geocode` with a real Inngest `artist_location.geocode` function once the Inngest runtime lands (same signature, same semantics — one-line swap)
+- Seed at least one `artist_locations` row for the WikiArt demo corpus so the artist-profile map + `/search?map=1` show real pins out of the box
+- Geographic neighborhoods (`neighborhoods.kind = 'geographic'`) — editorial work, still deferred per `99-deferred.md` Phase 1
+
 ### `T-032` Real inquiry delivery via Resend + Inngest
 **Where:** new Inngest function `inquiry.deliver`; Resend HTTP client in `core::email`
 **Acceptance:**
@@ -26,6 +46,32 @@ if the item was dropped, with a one-line reason.
 ### `T-022` Pricing/dimensions polish (partial — formatters in place, seed data null)
 **Where:** seed script (optional) + `lib/api.ts` (done) + ArtworkDetail panel (done)
 **State:** `formatDimensions` and `formatPrice` work; the seeded demo artworks have null dimensions/price. Either backfill in `seed.py` with plausible random values, or leave demo content as-is (price/dim only matter for real artists). Decide before launch.
+
+### `T-039` Artist-facing price input UX (currency-aware, no minor-units math)
+**Where:** `ArtworkEditModal.tsx` price field + a new `lib/parsePrice.ts` helper + a tiny `currencies.ts` registry; possibly Rust-side validation tighten-up on `price_cents`.
+**Why:** today the studio form asks artists to type `price_cents` (an integer in minor units) and pick a currency code (`USD` / `GBP` / `EUR`). Both are bad UX:
+- Asking "what's £4,500 in pence?" makes the artist do mental math the computer should do
+- Currency is a free-text input next to it; nothing nudges them to use a real ISO code
+- No formatting feedback as they type — they can't tell if "4500" means £45 or £4500 until they hit save and look at the public surface
+
+**Acceptance:**
+- New `parsePrice(input, currencyCode)` helper that accepts what humans type: `£120`, `120`, `120.00`, `1,200`, `1,200.50`, `EUR 4500`, `$4500.00`. Returns `{ amount_minor: number, currency: string }` or a validation error. Strips currency symbols + thousands separators; parses decimals as the currency's minor-unit fractional digits (USD/GBP/EUR = 2; JPY = 0)
+- ISO 4217 minor-unit table baked into the helper (covers the ~20 currencies we'd realistically see; falls back to 2 digits)
+- New `formatPriceForInput(amount_minor, currency)` inverse for pre-populating the edit form (e.g. `12000` GBP → `"120.00"`)
+- Studio price field: `<input type="text">` with currency `<select>` next to it (pre-populated from existing common-currency list). On blur, format the amount cleanly so the artist sees what's stored. On submit, send `price_cents` derived via `parsePrice`
+- Unit tests on `parsePrice` covering symbols, separators, decimal handling, JPY zero-decimal, malformed input rejection
+- Server-side: `studio::artworks` already accepts `price_cents` as i64. Maybe tighten the validator to reject negative + impossibly-large values (`> 100M` minor units would be a buggy client). Defer the schema change to a `currency` enum check until a real bad-input incident motivates it.
+
+**Out of scope:** currency conversion (multi-currency display preference is in `99-deferred.md`); fancy locale-aware formatting beyond what `Intl.NumberFormat` gives us; auto-detecting currency from artist location.
+
+### `T-040` Studio location validation feedback
+**Where:** `StudioLocationsManager.tsx` add + edit forms; possibly a "Suggested matches" panel server-side.
+**Why:** today the artist types a free-text address and we silently fire it at Mapbox. If Mapbox returns nothing (or geocodes to the wrong place), the only feedback is "Locating…" forever then quietly never showing on the map. They can't tell whether their typo was the problem or the API was.
+
+**Acceptance:**
+- On save, after the background geocode completes, surface the geocoded `city, country` next to the row as "Mapbox found: London, GB". If empty, "Couldn't geocode this address — try including the city/country."
+- Optional polish (deferred): use Mapbox's autocomplete/places endpoint to suggest matches as the artist types, so they pick a known address rather than guessing.
+- Same UX hook works for the artist's own "based in" field once that gets surfaced through the geocode pipeline (currently only the location string is stored, no city/country derived).
 
 ### `T-004` Incremental cache saves in `CachedEmbedder`
 **Where:** `ml/ml_art/embeddings/cache.py`
@@ -69,9 +115,11 @@ if the item was dropped, with a one-line reason.
 - Phase 5: Bulk image upload (depends on `T-010` `POST /v1/uploads/image`)
 
 ### `T-012` Onboarding flow `/onboarding`
-- Stepped, progressive disclosure
-- Website scrape Inngest job
-- Per-artwork conversational metadata extraction (Anthropic, behind `ANTHROPIC_ENABLED`)
+- ✅ **Phase 1 (landed 2026-05-28):** `POST /v1/onboarding/start` (mint artist + link `user_id`, slug w/ collision suffix) and `POST /v1/onboarding/complete` (`pending → active`, idempotent). Five-step wizard at `/onboarding` (identity → profile → artworks → locations → review) reusing existing studio mutations. `/studio` + `/studio/settings` redirect signed-in non-artists into the wizard. 10 Rust integration tests + 6 slugify unit tests + 1 Playwright spec.
+- Phase 2 (blocked on Inngest runtime):
+  - `POST /v1/onboarding/import` — website / Instagram scrape job; pre-fills bio + image URLs
+  - `POST /v1/onboarding/extract-metadata` — Anthropic conversational extraction per artwork (gated by `ANTHROPIC_ENABLED`)
+  - `POST /v1/onboarding/polish-statement` — optional LLM polish on the artist statement
 
 ### `T-015` Spend caps + budget alarms
 **Where:** `infra/` (Terraform, not yet started)

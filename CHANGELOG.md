@@ -3,6 +3,544 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-05-29 — Map discovery v1 (T-041 + T-042 + T-043)
+
+Closes the two user journeys we identified for the map: "find galleries
+near me" and "see where an artist's work is." Three small slices on top
+of T-038, no new infra.
+
+- **T-041 — artist filter + "See on map" CTA**
+  - `GET /v1/search/map?artist=<slug>` — pins down to that artist's
+    venues only. Composes with `q` / `medium` / `bbox` / `location`
+    (e.g. `?artist=alice&bbox=12,52,14,53` for "Alice's venues in this
+    area"). Uses the existing `artists_slug_idx` index — cost is
+    constant
+  - "See on full map →" link in the `ArtistLocationsMap` header on
+    `/artists/[slug]` (when locations > 0)
+  - Scoping pill on `/search?map=1` when artist is active: "Showing
+    where to see **Alice Test** [Clear filter]". Clear preserves
+    every other URL param
+  - 3 new integration tests (happy / unknown-slug / bbox composition)
+
+- **T-042 — city-pivot pills**
+  - `GET /v1/search/map/cities` — top-N cities by venue count, each
+    with `count`, centroid, and tight bbox of all pins in that city.
+    Single GROUP BY query; honors `?limit=` (default 12, max 100).
+    No rate-limit layer (light static read)
+  - Excludes pre-geocode rows + inactive artists. Ordered by
+    `count DESC, city ASC` so ties are stable
+  - New `CityPivotStrip` client component — horizontal scrollable
+    pill row above the map ("London (12) · Berlin (8) · …"). Each
+    pill links to `/search?map=1&bbox=<padded-city-bbox>` so the
+    URL stays bookmarkable. Degenerate single-pin bboxes get padded
+    to ~5km half-extent so we don't zoom to street level
+  - Solves the cold-start "blank world" problem — the strip
+    surfaces where there's *anything* to see
+  - 5 new integration tests (counts / pre-geocode exclusion /
+    ordering / limit cap / multi-pin bbox)
+
+- **T-043 — "Near me" geolocation**
+  - New `NearMeButton` component using `navigator.geolocation`. Two
+    variants: `inline` (sits next to the Grid/Map toggle on
+    `/search`) and `hero` (homepage hero affordance under the search
+    bar)
+  - Self-hides when geolocation isn't available (SSR, opted-out
+    browser, embedded webview) — no "this won't work" surface
+  - PERMISSION_DENIED gets a soft inline message; other errors are
+    reported via `reportError`. 10s timeout for cold GPS warmup
+  - Sets a ~5km half-extent bbox around the user's coords and
+    navigates to `/search?map=1&bbox=…` — the existing `SearchMap`
+    component handles the fitBounds on mount
+
+- **Homepage hero gets a map row**
+  - Below the existing search bar + camera icon: "📍 Near me · or ·
+    Explore the map →" — the first user-visible entry point into
+    geographic discovery without going through `/search`
+
+- **Tests + checks**
+  - **Rust: 206/206** (was 201; +5 cities tests)
+  - Vitest: 27 (unchanged)
+  - fmt + clippy + ESLint + tsc all clean; `pnpm build` clean
+
+End-to-end demo path:
+1. Land on `/` — hero search + "📍 Near me · or · Explore the map →"
+2. Click "Explore the map →" → `/search?map=1` → see city pills
+   ("London (1) · Basingstoke (1)") even at world zoom
+3. Click "London" → map zooms to London bbox → see the pin
+4. Click pin → popover with artist preview + "View portfolio →"
+5. From `/artists/josh-matthews` → "See on full map →" → map filtered
+   to only Josh's venues with the scoping pill
+
+Out of v1 (still deferred):
+- Server-side sort by distance from a point (the bbox refetch already
+  drops out-of-bounds pins implicitly)
+- Mapbox Places autocomplete on the city pivot (the pill strip
+  covers 80% of intent)
+- IP-based geo for first-page-load default zoom
+- Saved-artists → "where are they showing" digest (needs follow signal)
+
+---
+
+
+## 2026-05-28 — Onboarding Phase 1 (T-012): self-serve artist mint
+
+Closes the biggest "demo-only" gap in v1: any signed-in user can now
+mint their own `artists` row, fill in a profile, add work, list venues,
+and publish — no admin intervention needed. AI-assisted pieces (website
+scrape, LLM artwork metadata) stay deferred until Inngest lands;
+shipped path is intentionally lean.
+
+- **API** (`api-search::onboarding`)
+  - `POST /v1/onboarding/start` — body `{display_name, location?}`.
+    Validates (1–100 char name, ≤200 char location), checks the caller
+    doesn't already have an `artists` row, generates a slug via
+    `slugify()` + collision-suffix loop (`jane-doe`, `jane-doe-2`, …),
+    inserts the row with `status='pending'` + a platform-inbox default
+    for `inquiry_preferences`, and flips `users.is_artist=true`. Returns
+    201 + the new `StudioArtist`
+  - `POST /v1/onboarding/complete` — flips `status: pending → active`
+    in a CASE-guarded UPDATE so a re-submit on an already-active artist
+    returns the unchanged row (200, idempotent)
+  - `slugify()` is a pure function with 6 unit tests (whitespace +
+    punctuation collapsing, leading/trailing dashes, lowercasing,
+    non-ASCII fallback, empty-input fallback to "artist")
+  - 10 integration tests in `tests/onboarding_test.rs` — mint /
+    already-an-artist / empty-name / overlong-name / slug collision /
+    complete-flip / complete-idempotent / complete-no-artist / auth
+    boundaries
+  - `ApiError::Conflict` not added (would touch every other handler);
+    "already an artist" returns 400 with a clear detail string. Comment
+    inline notes the sharpening path if a real call-site needs 409
+
+- **Wizard** (`/onboarding`)
+  - Server-rendered orchestrator at `app/onboarding/page.tsx`. Reads
+    the user's current artist state (`getStudioMe`), gates each step:
+    no-artist → forced to `?step=identity`; already-onboarded who
+    lands on identity → bumped to `?step=profile`; active artist on
+    review → "View your profile →" instead of "Publish"
+  - Five step components under `components/onboarding/`:
+    - **IdentityStep** — `display_name` + optional `location`; submits
+      to `startOnboarding` server action
+    - **ProfileStep** — bio, statement, website; wraps
+      `updateStudioSettings`; skippable
+    - **ArtworksStep** — reuses `ArtworkEditModal` (T-011) for create
+      + edit; skip-friendly (zero artworks allowed)
+    - **LocationsStep** — reuses `StudioLocationsManager` (T-038 G3)
+    - **ReviewStep** — summary + Publish, calls `completeOnboarding`,
+      redirects to `/artists/<slug>`
+  - **StepNav** — chip strip with numbered steps. Past + current
+    chips are clickable; future steps are muted (no jump-ahead).
+    Server-rendered, no interactivity — current step is a prop
+
+- **Cross-cutting**
+  - `/studio` redirects signed-in non-artists to `/onboarding`
+    (previously: stale "by direct invitation only" empty state)
+  - `/studio/settings` same redirect
+  - `TopNav` gains a "Studio" link for signed-in users (alongside
+    Collections). `/studio` handles the artist / non-artist branch via
+    its own redirect, so a single link covers both UX paths — no
+    per-render `getStudioMe()` call
+
+- **E2E**
+  - New `e2e/tests/21-onboarding-signed-in.spec.ts` — drives the full
+    wizard: visit `/studio` → bounce to `/onboarding` → fill identity
+    (unique-per-worker display name) → skip profile / artworks /
+    locations → publish → land on `/artists/<slug>` with the
+    display-name heading
+  - Updated specs 17 + 18 to assert the redirect-to-onboarding shape
+    instead of the now-removed empty states
+
+- **Server actions** (`app/actions/onboarding.ts`)
+  - `startOnboarding(body)` + `completeOnboarding()` — same pattern as
+    `actions/studio.ts`: Bearer never touches the browser,
+    `revalidatePath` on the affected slug-keyed pages
+
+- **Tests + checks**
+  - Rust: **198/198** passing (+16 from onboarding)
+  - Vitest: 20/20
+  - fmt + clippy + ESLint + tsc + production build clean
+
+**Deferred to T-012 Phase 2** (when Inngest lands):
+- `POST /v1/onboarding/scrape` — website pre-fill from a portfolio URL
+- `POST /v1/onboarding/extract` — Anthropic-assisted artwork metadata
+  extraction from free-text descriptions
+
+Next priorities in `TODO.md`: Inngest runtime (unblocks T-032 email,
+T-008 moderation, T-012 Phase 2, and the T-038 geocode swap as a
+side-effect), then T-033 anon→user merge, then UI polish.
+
+---
+
+## 2026-05-28 — Geography slice G6: E2E + docs sweep, T-038 closed
+
+Wraps up T-038. Geography is now end-to-end shippable: schema, geocoder,
+studio CRUD + UI, artist-profile map, search map mode. All five subtasks
+in `TODO.md` flipped to ✅ with a small follow-up list (real Inngest
+swap, seeded demo locations, geographic neighborhoods) carried forward.
+
+- **E2E** — `e2e/tests/20-geography-search-map.spec.ts`
+  - Grid / Map view toggle renders on `/search` with the correct
+    `aria-selected` default (Grid)
+  - Clicking "Map" navigates to `?map=1` and the toggle reflects
+    selection
+  - Toggling back to Grid preserves filters (`q=ukiyo` survives) but
+    drops the `map` and `bbox` params (no stale-bbox poisoning)
+  - Map region (token set) or fallback empty-state (token absent) is
+    present without runtime errors — same `.or()` pattern as other
+    E2Es that tolerate the missing-key path
+  - Direct API hit asserts malformed `bbox` returns 400 via Playwright's
+    `request` fixture
+  - Full pin-clicking / cluster-zoom path isn't asserted in CI — the
+    seeded WikiArt corpus has no `artist_locations` rows, so a real
+    end-to-end demo needs a manual seed step. Tracked as a follow-up
+    in `TODO.md`
+
+- **Docs**
+  - `03-api-data-spec.md` — added `/v1/studio/locations` CRUD,
+    `/v1/search/map`, and the full `artist_locations` table definition
+    with indexes + trust-model note
+  - `99-deferred.md` — annotated "Geographic discovery / Phase 1" with
+    a 2026-05-28 update; map view marked shipped, geographic
+    neighborhoods + "based in" filter still deferred
+  - `TODO.md` — `T-038` struck through with the five sub-phase
+    summaries inline + a small follow-up list (Inngest swap, seeded
+    demo locations, geographic neighborhoods)
+
+- **Final test tally:** 182 Rust + 20 vitest + ~24 Playwright specs.
+  fmt + clippy + eslint + typecheck + production build all clean.
+
+T-038 closed. The biggest unbuilt v1 piece is now `T-012` (onboarding
+flow) and `T-032` (real email delivery via Resend + Inngest). See
+`TODO.md` for the active queue.
+
+---
+
+## 2026-05-28 — Geography slice G5: `/search?map=1` map mode (T-038)
+
+Closes the user-facing arc of T-038. Viewers can now toggle the search
+page between the grid of artworks (existing behavior) and a Mapbox GL
+JS map of venues, pan/zoom to explore, and click pins to jump to artist
+profiles. Filters from the URL (`q`, `medium`, `location`) compose with
+map mode out of the box.
+
+- **`GET /v1/search/map`** (`api-search::search_map`)
+  - Returns a flat list of `MapPin` rows — one per geocoded
+    `artist_locations` row matching the active filters
+  - Filters: `q` (artwork tsvector via `plainto_tsquery('english', …)`,
+    EXISTS subquery to keep the join one-per-location), `medium`
+    (same EXISTS shape), `location` (case-insensitive `LIKE` on
+    `al.city`, with user wildcards escaped), `bbox` ("west,south,east,
+    north" — Mapbox's `bounds.toArray().flat()` ordering)
+  - Hard cap of 500 pins per response (Mapbox clusters smoothly into
+    the low thousands; gives us room to add server-side aggregation
+    later)
+  - Bbox validator rejects malformed inputs (wrong arity, non-numeric,
+    out-of-range lat/lng, inverted) with RFC 7807 400
+  - SQL composed string-piece-by-string-piece with positional bind
+    markers — same pattern as `/v1/search`. `AssertSqlSafe` is the
+    audited escape from sqlx's `'static str` bound: no user input ever
+    lands in the SQL string itself
+  - Why a separate endpoint, not a `?map=1` flag on `/v1/search`:
+    `/v1/search` ranks **artworks** via the hybrid keyword + vector
+    fusion. Map mode wants **venues**, and "rank by relevance" doesn't
+    translate. Two narrow endpoints beat one with two divergent
+    codepaths
+
+- **`web/src/components/SearchMap.tsx`** — client component
+  - Three render paths (same model as `ArtistLocationsMap`): no
+    `NEXT_PUBLIC_MAPBOX_TOKEN` → non-interactive grid of pin cards;
+    token present → Mapbox GL JS map; init error → fallback list with
+    error note
+  - GeoJSON source with `cluster: true` — clustering is entirely
+    client-side and free; pin count up to 500 per response stays
+    smooth
+  - Cluster click → `getClusterExpansionZoom` + `easeTo`; pin click
+    → popup with thumbnail + artist name + "View portfolio →" link
+  - Pan/zoom → `bbox` query param updated via `history.replaceState`
+    (so the URL stays shareable but doesn't push a history entry per
+    move) → refetches `/v1/search/map?bbox=…` via the new
+    `searchMapClient` helper
+  - GL JS bundle dynamically imported inside the effect so it
+    doesn't ship in the initial JS bundle for users who never toggle
+    to map mode
+
+- **`web/src/lib/searchMapClient.ts`** — small browser-only fetch
+  wrapper for `/v1/search/map`. Lives in its own module so the
+  `SearchMap` client component doesn't drag in `lib/api.ts`'s
+  `apiFetch` (which dynamic-imports `@clerk/nextjs/server` and pollutes
+  the client bundle). The endpoint is public — no Bearer needed — so a
+  plain `window.fetch` is correct
+  - Pattern matches `decisions.md` 2026-05-27 client/server import
+    boundary: anything the client touches must not transit
+    `@clerk/nextjs/server`
+
+- **`/search` page** — Grid/Map toggle tab strip below the FilterBar.
+  Tabs preserve all other query params; only `map` flips. `bbox` is
+  dropped when leaving map mode so a stale bbox doesn't poison the
+  next grid query
+  - Server-side initial fetch on `map=1` so the first render has data
+    before the client Mapbox module loads; client takes over from
+    there
+
+- **`lib/api.ts`** — new `MapPin`, `MapSearchParams`, `searchMap`
+  (server-side variant; only used by the server-rendered initial
+  fetch). The client variant lives in `searchMapClient.ts`
+
+- **Tests**
+  - 8 unit tests on bbox parsing + location filter escaping
+    (`api-search::search_map::tests`)
+  - 14 integration tests in `tests/search_map_test.rs` — happy path,
+    bbox London/Berlin/Atlantic/global, malformed/inverted/out-of-
+    range bbox 400s, location substring filter, medium per-artist
+    composition (Painting → Alice only, Sculpture → Bruno only,
+    Holography → empty), `q` tsvector match (cobalt → Alice), `q`
+    no-match, pre-geocode rows never leak
+  - 182 Rust tests passing (was 160 — +22 from G5)
+  - 20 vitest unchanged; `pnpm build` clean (no client/server bundling
+    regression)
+
+Next up: G6 — E2E coverage, doc updates, CHANGELOG sweep. Then T-038
+itself is done.
+
+---
+
+
+## 2026-05-28 — Geography slice G4: artist-profile map widget (T-038)
+
+First user-visible map on the platform. `/artists/[slug]` now renders a
+"Where to see this work" section with an interactive Mapbox GL JS map
+pinned to the artist's `artist_locations` rows (geocoded only — the API
+filters out pending ones, so the surface stays clean).
+
+- **`web/src/components/ArtistLocationsMap.tsx`** — client component
+  - Three render paths, picked at runtime: zero locations → returns
+    `null` (no section); no `NEXT_PUBLIC_MAPBOX_TOKEN` → non-interactive
+    list of pin cards (same data, no JS — keeps local dev usable
+    without the paid key); token present → real GL JS map
+  - Dynamic `import("mapbox-gl")` inside the effect so the ~250KB
+    bundle never ships for artist pages that have zero locations (most
+    of them today)
+  - Single pin: center+zoom; multiple pins: `fitBounds` with padding
+    so they all show
+  - Click → popover with name, address, optional website link, and a
+    "Listed by the artist" disclosure (the v1 trust model). Popup HTML
+    assembled by hand because Mapbox takes strings, not React; every
+    field goes through `escapeHtml` / `escapeAttr`
+  - Map errors fall back to the same list view, with a small note —
+    "Couldn't load the map. Showing the list instead."
+  - Style: `mapbox://styles/mapbox/light-v11`. Tilt + rotate disabled
+    (no value on a profile-card-sized embed); standard nav control
+    (no compass)
+
+- **`web/src/lib/api.ts`** — `ArtistDetail` gains
+  `locations: PublicArtistLocation[]`. Lighter than `StudioLocation`:
+  `lat` / `lng` are guaranteed non-null on this surface because the API
+  filters pre-geocode rows out of the public payload
+
+- **`/artists/[slug]/page.tsx`** — renders `ArtistLocationsMap` between
+  the header and the artist statement. Component returns `null` for
+  artists with no locations, so the section silently disappears for
+  the corpus that doesn't have any yet (every seeded WikiArt artist)
+
+- **Deps**
+  - Added `mapbox-gl ^3.24.0`. Bundles its own TypeScript types in v3
+    (the legacy `@types/mapbox-gl` is deprecated; we briefly installed
+    then removed it)
+  - No new dev deps
+
+- **Env**
+  - `NEXT_PUBLIC_MAPBOX_TOKEN` documented in `web/.env.example` with
+    the same "degrades gracefully when absent" framing as the other
+    paid keys. Free tier covers 50k map loads/month — well above any
+    v0 traffic
+
+- **Build / lint**
+  - `pnpm build` clean — the dynamic import keeps Mapbox out of the
+    server bundle, no edge / RSC warnings
+  - 20 vitest unchanged
+
+Next up: G5 — `/search?map=1` toggle (grid ↔ map), with clustering and
+URL-synced bounds.
+
+---
+
+## 2026-05-28 — Geography slice G3: studio locations CRUD + UI (T-038)
+
+Closes the loop on G1 (schema) + G2 (geocoder): artists can now self-list
+the galleries and studios where their work can be seen, and Mapbox fires
+in the background to pin them. Public artist pages don't render the map
+yet (G4) but the JSON they return already includes geocoded rows.
+
+- **`POST/GET/PATCH/DELETE /v1/studio/locations`** (`api-search::studio::locations`)
+  - Resolves `current_artist_id` from `AuthedUser`; every SQL gate is
+    `artist_id = $current_artist_id` so cross-artist access returns 404
+    (not 403, to avoid leaking existence — same pattern as artworks)
+  - `kind` constrained to `'gallery' | 'studio'`; soft per-artist cap
+    of 50 rows (well above any real artist's count, hard-fails before
+    the studio UI gets noisy)
+  - POST inserts the row, then fires `trigger_background_geocode` so
+    the HTTP response returns immediately. The studio UI reads the
+    un-geocoded row and shows "Locating…"
+  - PATCH clears lat/lng/city/country/geocoded_at when `address`
+    changes and re-fires the geocode (mirrors the existing `location`-
+    clearing pattern in studio settings)
+  - DELETE soft-deletes via `deleted_at`; row stays in the table but
+    drops out of every read path
+  - Custom serde helper `deserialize_double_option` gives real PATCH
+    semantics on `website_url` — missing key → leave alone, `null` →
+    clear, string → set. Without it, plain `Option<Option<T>>` +
+    `#[serde(default)]` collapses both `null` and missing into outer
+    `None`, making it impossible to NULL a column over PATCH. Generic
+    so future endpoints can lift it
+
+- **`web/src/components/StudioLocationsManager.tsx`** — client component
+  - Inline "Add location" form (kind / name / address / website)
+  - One row per location with read + inline edit; "Pin set" or
+    "Locating…" badge driven by `lat != null`
+  - Delete with two-step confirm
+  - **Source-of-truth model:** `initial` prop is the latest server
+    snapshot; we don't mirror in local state. After every mutation we
+    `router.refresh()`, which re-renders with new props. Avoids the
+    `set-state-in-effect` lint trap and keeps a single source of truth
+  - Polling: when any row is pre-geocode, refresh every 3s until all
+    rows have pins. Stops cleanly the moment geocoding completes
+
+- **`web/src/lib/api.ts`** — new `StudioLocation`, `CreateLocationBody`,
+  `PatchLocationBody` types + `listStudioLocations` /
+  `createStudioLocation` / `patchStudioLocation` / `deleteStudioLocation`
+  client functions (server-only — Bearer never touches the browser)
+
+- **`web/src/app/actions/studio.ts`** — server-action wrappers
+  (`loadStudioLocations`, `createLocation`, `patchLocation`,
+  `deleteLocation`) that revalidate `/studio/settings` so the next
+  refresh picks up the new state
+
+- **`/studio/settings` page** — renders `StudioLocationsManager` below
+  the existing `StudioSettingsForm`. Loading failures collapse to an
+  empty list (same null-collapses-failure pattern as the rest of the
+  studio surface)
+
+- **Tests**
+  - 16 new integration tests in `tests/studio_locations_test.rs`:
+    list / create / patch / delete happy paths + 401 / 404 / 400
+    branches + ownership boundary (alice can't reach bruno's row) +
+    PATCH-can-null-website-url + PATCH-address-clears-geocode +
+    create-rejects-bare-url / -unknown-kind / -empty-name
+  - 176 total tests passing (Rust 160 + web vitest 20 — vitest
+    unchanged, all 16 new were Rust integration)
+
+Next up: G4 — Mapbox GL JS map widget on `/artists/[slug]`, rendering
+the geocoded pins this slice now produces.
+
+---
+
+## 2026-05-28 — Geography slice G2: Mapbox forward-geocoding (T-038)
+
+Wires the geocoder behind a `GeocodingClient` abstraction with the same
+degrades-gracefully pattern as `Embedder` and `ObjectStore`. No studio
+endpoint calls it yet (G3) — G2 is the library + the integration tests
+that prove the round trip works.
+
+- **`core::geocoding` module**
+  - `GeocodingClient` enum-backed sum type: `Real` (Mapbox v6 HTTP),
+    `Disabled` (token absent → `Ok(None)`), `Test` (canned address →
+    result map for integration tests; no network)
+  - `from_env()` reads `MAPBOX_TOKEN`; empty or unset falls back to
+    `Disabled`. Production code never branches on the variant directly
+  - `geocode_address(addr)` → `Result<Option<Geocoded>, GeocodeError>`.
+    `Some(g)` = pin lands. `None` = stamp `geocoded_at` and move on
+    (covers both "Mapbox returned zero features" and "token disabled"
+    so callers handle them the same way). `Err` = transient failure,
+    don't stamp, the partial-index re-queues the row
+  - Mapbox v6 response parsing pinned in unit tests: `coordinates`
+    array, `properties.context.place.name`, `properties.context.country
+    .country_code` (ISO 3166-1 alpha-2, uppercased on the way out)
+- **`geocode_and_update(client, pool, location_id)`** — synchronous
+  helper that reads the address, calls the client, writes lat / lng /
+  city / country / geocoded_at. Public so studio CRUD can call it
+  directly (G3) and integration tests can drive the path without racing
+  `tokio::spawn`
+- **`trigger_background_geocode(client, pool, location_id)`** — fire-
+  and-forget wrapper: same logic, in `tokio::spawn`, errors logged via
+  `tracing::warn`. The studio handlers will use this on POST/PATCH so
+  the HTTP response returns immediately; crashes lose the in-flight task
+  but `artist_locations_geocode_pending_idx` finds the row next pass.
+  When Inngest lands we replace this with an `artist_location.geocode`
+  function — same signature, same semantics
+
+- **`AppState` plumbing**
+  - New `geocoder: GeocodingClient` field on `AppState`; `main.rs`
+    wires `GeocodingClient::from_env()`; test helpers default to
+    `Disabled`
+  - All 5 `AppState { ... }` constructions in `tests/common/mod.rs`
+    updated via `replace_all`
+
+- **Tests**
+  - 5 unit tests in `core::geocoding::tests` covering the v6 response
+    shape (happy, missing-context, empty-features) + `Disabled` /
+    `Test` client behavior
+  - 5 integration tests in `tests/geocoding_test.rs` exercising
+    `geocode_and_update` against a real Postgres + canned client:
+    writes lat / lng / city / country, stamps `geocoded_at` even when
+    the client returns `None`, overwrites previous coords on re-run,
+    and is a soft no-op for missing rows. 144 total tests passing (was
+    134)
+
+- **`api/.env.example`** — expanded the `MAPBOX_TOKEN` comment to call
+  out the degrades-gracefully behavior and link to Mapbox's free-tier
+  signup. No new keys
+
+Next up: G3 — `/v1/studio/locations` CRUD calling `trigger_background_geocode`,
+plus the studio settings UI for adding gallery / studio rows.
+
+---
+
+## 2026-05-28 — Geography slice G1: `artist_locations` schema + artist-detail payload (T-038)
+
+First step of promoting geography from post-v1 to v1 (`decisions.md` 2026-05-28).
+Pure data-layer change — no UI, no Mapbox call yet. Sets up the row shape that
+the next sub-tasks (G2 geocoding, G3 studio CRUD + UI, G4 profile map, G5 search
+map mode) build on.
+
+- **`db/migrations/0011_artist_locations.sql`**
+  - New table: `(id, artist_id, kind, name, address, city, country, lat, lng,
+    website_url, display_order, geocoded_at, created_at, updated_at, deleted_at)`
+  - `kind CHECK IN ('gallery', 'studio')` — shows/events deferred to post-v1
+  - Address captured raw at insert; geocoder populates lat/lng/city/country async
+  - Indexes: `(artist_id, display_order)` for studio + artist-profile reads;
+    `(lat, lng)` partial for bbox queries on `/search?map=1`; `(city)` partial
+    for the existing location-text filter; `(created_at)` partial on
+    `geocoded_at IS NULL` for the geocode-job worklist
+  - `ON DELETE CASCADE` on `artist_id` — locations don't outlive their artist
+
+- **`ml_art_core::models`**
+  - New `ArtistLocation` DTO; `ArtistDetail` gains `locations: Vec<ArtistLocation>`
+    (serde-default so older clients can ignore it)
+
+- **`api-search::artist`**
+  - `GET /v1/artists/:slug` joins on `artist_locations`, returning only rows
+    where lat/lng are non-null (geocode landed) and `deleted_at IS NULL`
+  - Hidden rows: pre-geocode rows (lat/lng NULL) are gated out of the public
+    payload. The studio UI will use a separate endpoint that includes them so
+    the artist can see "Locating…" feedback (G3)
+  - Sort: `display_order ASC, created_at ASC` — predictable order even when
+    the artist hasn't reordered
+
+- **Tests** (`api-search/tests/`)
+  - Fixture: alice gets 2 location rows (1 geocoded gallery, 1 pre-geocode
+    studio); bruno gets 1 geocoded; carmen gets 0
+  - `artist_detail_returns_geocoded_locations` — public payload shows the
+    geocoded gallery, hides the pre-geocode studio
+  - `artist_detail_empty_locations_for_artist_without_any` — empty list, no
+    error, when an artist has none
+  - 134 Rust tests passing (was 132)
+
+Next up: G2 — Mapbox HTTP client in `core::geocoding` + the
+`artist_location.geocode` Inngest job, with no-op behavior when `MAPBOX_TOKEN`
+is absent.
+
+---
+
 ## 2026-05-28 — Visual-search UI: camera + modifier pills (T-010 Phase D)
 
 Wires the spike-validated machinery into a real user-facing surface.

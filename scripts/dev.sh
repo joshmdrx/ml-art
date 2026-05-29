@@ -9,33 +9,62 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# Sanity: make sure docker is up before we start anything else.
-if ! docker ps --format '{{.Names}}' | grep -q '^ml-art-postgres$'; then
-  echo "✘ docker services aren't running. Start them first:"
-  echo "    make up"
+# Sanity: cargo-watch gives the api binary the same hot-reload story the
+# Next.js dev server has by default. Without it every endpoint change
+# requires a manual `make down && make dev`.
+if ! command -v cargo-watch >/dev/null 2>&1; then
+  echo "✘ cargo-watch is not installed. Install once with:"
+  echo "    cargo install cargo-watch"
+  echo "  Then re-run 'make dev'."
   exit 1
 fi
 
-# Helper: kill the whole process group we created. Works even if children
-# spawn grandchildren (cargo run forks the actual binary, next dev forks
-# the next-server process).
+# Reclaim 9100/3000 in case a previous `make dev` died ungracefully (terminal
+# closed, SIGKILL, etc.) and left the api binary or next-dev holding the
+# port. Without this, `make dev` twice in a row would fail with EADDRINUSE
+# on the api side and silently degrade — the situation that wasted ~10
+# minutes of debugging when a stale binary served /v1/health but 404'd new
+# routes.
+scripts/kill-port.sh 9100 api >/dev/null
+scripts/kill-port.sh 3000 web >/dev/null
+
+# Walk the process tree from $2 and send signal $1 to every descendant,
+# leaves first so reparenting doesn't strand a grandchild while we kill
+# its parent. cargo-watch in particular spawns `cargo run`, which spawns
+# the api binary; only the leaf holds port 9100. A flat `pkill -P $$`
+# would kill the immediate subshell and orphan the binary, leaving the
+# port bound until the next manual `pkill`.
+kill_descendants() {
+  local sig=$1 pid=$2 child
+  for child in $(pgrep -P "$pid" 2>/dev/null); do
+    kill_descendants "$sig" "$child"
+    kill -"$sig" "$child" 2>/dev/null || true
+  done
+}
+
 cleanup() {
   echo ""
   echo "stopping…"
-  # SIGTERM to the process group; trap re-runs the script's own EXIT.
-  pkill -P $$ 2>/dev/null || true
-  # Give cargo a beat to finish its drop, then SIGKILL any holdouts.
+  kill_descendants TERM $$
   sleep 0.5
-  pkill -KILL -P $$ 2>/dev/null || true
+  kill_descendants KILL $$
 }
 trap cleanup EXIT INT TERM
 
 # ─── api ────────────────────────────────────────────────────────────────────
-echo "→ starting api (logs: /tmp/api.log)"
+echo "→ starting api (logs: /tmp/api.log)  [auto-reloads on *.rs / *.sql]"
 (
   cd api
   # Picks up DATABASE_URL, JINA_API_KEY, etc. from api/.env via dotenvy.
-  PORT=9100 cargo run -p api-search >/tmp/api.log 2>&1
+  # cargo-watch rebuilds + restarts the binary on changes to Rust sources
+  # and SQL migrations. `--why` prints the changed path into /tmp/api.log
+  # so a confused restart is easy to trace.
+  PORT=9100 cargo watch \
+    --why \
+    --watch crates \
+    --watch ../db/migrations \
+    -x 'run -p api-search' \
+    >/tmp/api.log 2>&1
 ) &
 API_PID=$!
 

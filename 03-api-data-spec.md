@@ -216,6 +216,20 @@ Public, no auth. Confirms an anonymous inquiry. Marks delivered, triggers `inqui
 
 ### Artist onboarding
 
+**Shipped (T-012 Phase 1):**
+
+#### `POST /v1/onboarding/start`
+
+Body: `{ display_name, location? }`. Mints an `artists` row for the calling user with `status='pending'`, generates a unique slug via the `slugify` + collision-suffix path (`jane-doe`, `jane-doe-2`, …), and flips `users.is_artist=true`. Returns the new `StudioArtist` payload, 201.
+
+Errors: 400 if the caller already has an `artists` row, if `display_name` is empty/blank, or exceeds 100 chars; 401 if unauthed.
+
+#### `POST /v1/onboarding/complete`
+
+Flips the caller's artist `status: pending → active`. Idempotent — calling on an already-active artist returns the unchanged row, 200. 404 when the caller has no artist row at all.
+
+**Deferred (T-012 Phase 2, requires Inngest):**
+
 #### `POST /v1/onboarding/import`
 
 Body: `{ website_url?, instagram_handle? }`.
@@ -241,10 +255,6 @@ Behavior: calls LLM with structured extraction prompt. Stores artifact in `llm_e
 Body: `{ original_text }`.
 
 Response: `{ polished_text }`.
-
-#### `POST /v1/onboarding/publish`
-
-Publishes the artist's portfolio (moves artworks from draft to published, sets artist status active).
 
 ### Artist studio (authed, artist role)
 
@@ -285,6 +295,48 @@ Response: inquiries received (if artist uses on-platform inbox).
 #### `PATCH /v1/studio/settings`
 
 Body: bio, location, website, socials, artist_statement, commissioning_preferences, inquiry_preferences, visibility.
+
+#### `GET /v1/studio/locations` *(T-038 G3)*
+
+Lists every `artist_locations` row owned by the calling artist — geocoded and pre-geocode. The studio UI uses the pre-geocode rows to render "Locating…" placeholders.
+
+#### `POST /v1/studio/locations` *(T-038 G3)*
+
+Body: `{ kind: 'gallery'|'studio', name, address, website_url?, display_order? }`. Returns the new row (lat/lng null) and fires a background Mapbox forward-geocode. Hard cap: 50 rows per artist.
+
+#### `PATCH /v1/studio/locations/:id` *(T-038 G3)*
+
+Partial update. Editing `address` re-fires the geocode and clears the cached lat/lng/city/country/geocoded_at until it lands. `website_url` accepts `null` (cleared) via the explicit-null PATCH semantics — see `decisions.md` 2026-05-28 for the `deserialize_double_option` helper.
+
+#### `DELETE /v1/studio/locations/:id` *(T-038 G3)*
+
+Soft-delete via `deleted_at`. Row is hidden from every read path immediately.
+
+### Public map
+
+#### `GET /v1/search/map` *(T-038 G5)*
+
+Returns map pins (`artist_locations` rows) matching the active filters. One row per location.
+
+Query params:
+- `q` — artwork-tsvector match (pin shows if the artist has *any* matching artwork)
+- `medium` — same EXISTS shape as `q`
+- `location` — case-insensitive substring on `artist_locations.city`
+- `bbox` — `"west,south,east,north"` (lng,lat,lng,lat). Mapbox's `bounds.toArray().flat()` ordering. Validator rejects malformed / inverted / out-of-range with RFC 7807 400.
+- `artist` *(T-041)* — exact slug match. Pins down the map to a single artist's venues; powers the "See on full map →" CTA on `/artists/[slug]`. Composes with all other filters.
+
+Hard cap: 500 pins per response. Mapbox GL JS clusters client-side, so the cap leaves room for an interactive map without server-side aggregation. See `decisions.md` 2026-05-28 for why this is a separate endpoint from `/v1/search`.
+
+#### `GET /v1/search/map/cities` *(T-042)*
+
+Returns the top-N cities by venue count, with a centroid + tight bbox per city. Powers the horizontal "city pivot" pills above `/search?map=1` — clicking a pill jumps the map to that city's bbox.
+
+Query params:
+- `limit` — how many cities to return (default 12, max 100).
+
+Response: `Array<{ city, country, count, center_lat, center_lng, west, south, east, north }>`. Excludes pre-geocode rows + inactive artists. Ordered by `count DESC, city ASC`.
+
+Single GROUP BY query; no rate-limit layer (light static read). When a city has one pin, `west == east` and `south == north` — the client pads the bbox to a sensible viewport (~5km half-extent) before calling `fitBounds`.
 
 ### Admin
 
@@ -334,6 +386,33 @@ INDEX (lat, lng) WHERE lat IS NOT NULL AND lng IS NOT NULL
 **Slug collisions:** on artist creation, generate slug from `display_name`. If taken, append `-2`, then `-3`, etc., until unique. Helper lives in the API; do not rely on UNIQUE constraint races — check-and-insert in a transaction.
 
 **Geocoding:** when `location` is set or changed, the `artist.geocode` Inngest job calls Mapbox forward-geocode, populates `city`, `country`, `lat`, `lng`, `geocoded_at`. Failures leave fields null; the artist is still searchable by name and artwork, just not by geography. Re-runs are idempotent.
+
+### `artist_locations` *(T-038)*
+
+```sql
+id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+artist_id uuid NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
+kind text NOT NULL CHECK (kind IN ('gallery', 'studio')),
+name text NOT NULL,           -- "Foo Gallery", "Open studio", etc.
+address text NOT NULL,        -- street-level, as typed by the artist
+city text, country text,      -- populated by geocoder
+lat double precision, lng double precision,  -- populated by geocoder
+website_url text,
+display_order int NOT NULL DEFAULT 0,
+geocoded_at timestamptz,      -- last attempt (success or fail)
+created_at, updated_at, deleted_at timestamptz,
+
+INDEX (artist_id, display_order) WHERE deleted_at IS NULL,
+INDEX (lat, lng) WHERE lat IS NOT NULL AND lng IS NOT NULL AND deleted_at IS NULL,
+INDEX (city) WHERE deleted_at IS NULL,
+INDEX (created_at) WHERE geocoded_at IS NULL AND deleted_at IS NULL  -- geocode worklist
+```
+
+One row per place an artist's work can be seen. Distinct from `artists.{city,country,lat,lng}` which is the artist's "based in" — that's city-level and fuzzy; `artist_locations` is street-level and pinnable. Shows / events as time-bound entities are deferred (`99-deferred.md` Phase 2); when they land, rows here migrate to `spaces` + `space_artists` join.
+
+**Trust model:** self-listed; the public surface labels every pin "Listed by the artist." No admin moderation in v1. See `decisions.md` 2026-05-28.
+
+**Geocoding:** `address` is captured raw on insert; an Inngest function `artist_location.geocode` calls Mapbox v6 forward-geocode and writes back lat/lng/city/country/geocoded_at. Until Inngest is wired (current state), the studio CRUD handlers `tokio::spawn` the same logic — same semantics, replaced with the Inngest call when the runtime lands. Public surfaces (artist profile, `/v1/search/map`) filter out rows where lat/lng are still null.
 
 ### `artworks`
 

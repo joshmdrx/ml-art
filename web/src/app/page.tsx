@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { TopNav } from "@/components/TopNav";
+import { NearMeButton } from "@/components/NearMeButton";
 import { SearchBar } from "@/components/SearchBar";
 import { VisualSearchUpload } from "@/components/VisualSearchUpload";
 import { ArtworkGrid } from "@/components/ArtworkGrid";
@@ -32,6 +33,19 @@ export default async function Home() {
               <SearchBar size="hero" />
             </div>
             <VisualSearchUpload size="hero" />
+          </div>
+          {/* Map discovery affordances (T-042 + T-043). The NearMe
+              button self-hides when geolocation is unavailable, so
+              the row collapses cleanly on unsupported browsers. */}
+          <div className="flex items-center gap-3 text-sm">
+            <NearMeButton variant="hero" />
+            <span className="text-muted">or</span>
+            <Link
+              href="/search?map=1"
+              className="inline-flex items-center border border-border bg-surface hover:bg-fg/10 px-4 py-2"
+            >
+              Explore the map →
+            </Link>
           </div>
         </section>
 

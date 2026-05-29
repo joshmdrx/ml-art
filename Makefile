@@ -71,6 +71,8 @@ up:
 down:
 	@$(COMPOSE) down
 	@echo "✔ docker services stopped (volumes kept)"
+	@scripts/kill-port.sh $(API_PORT) api
+	@scripts/kill-port.sh $(WEB_PORT) web
 
 .PHONY: nuke
 nuke:
@@ -113,7 +115,7 @@ setup: up migrate seed
 
 # ─── runners ────────────────────────────────────────────────────────────────
 .PHONY: dev
-dev:
+dev: up
 	@scripts/dev.sh
 
 .PHONY: api
