@@ -16,16 +16,23 @@
  */
 
 import * as Dialog from "@radix-ui/react-dialog";
-import { useEffect, useState, useTransition, type FormEvent } from "react";
 import {
-  addArtworkImage,
+  useEffect,
+  useRef,
+  useState,
+  useTransition,
+  type FormEvent,
+} from "react";
+import {
   createArtwork,
   deleteArtwork,
   loadArtworkForEdit,
   patchArtwork,
   removeArtworkImage,
+  uploadArtworkImage,
 } from "@/app/actions/studio";
 import type { StudioArtworkDetail, StudioImage } from "@/lib/api";
+import { normalizeWebsiteUrl } from "@/lib/normalizeUrl";
 import { reportError } from "@/lib/reportError";
 
 const AVAILABILITY_OPTIONS = [
@@ -209,7 +216,7 @@ function ArtworkForm({
         | "sold"
         | "not_for_sale"
         | "inquire",
-      external_url: externalUrl.trim() || null,
+      external_url: normalizeWebsiteUrl(externalUrl),
       status: status as "draft" | "published" | "archived",
     };
   }
@@ -233,7 +240,7 @@ function ArtworkForm({
               | "sold"
               | "not_for_sale"
               | "inquire",
-            external_url: externalUrl.trim() || undefined,
+            external_url: normalizeWebsiteUrl(externalUrl) ?? undefined,
           });
           // Lift to "ready with detail" so image management activates.
           // The created row has no images yet, so synthesize an empty
@@ -243,7 +250,7 @@ function ArtworkForm({
             description: description.trim() || null,
             year_created: yearCreated ? Number(yearCreated) : null,
             dimensions: null,
-            external_url: externalUrl.trim() || null,
+            external_url: normalizeWebsiteUrl(externalUrl),
             images: [],
           });
         } else {
@@ -366,14 +373,18 @@ function ArtworkForm({
 
       <Field
         label="External URL"
-        hint="Where buyers should go (your site, gallery page, etc.)."
+        hint="Where buyers should go (your site, gallery page, etc.). We'll add https:// for you."
       >
         <input
-          type="url"
+          type="text"
+          inputMode="url"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
           value={externalUrl}
           onChange={(e) => setExternalUrl(e.target.value)}
           maxLength={500}
-          placeholder="https://"
+          placeholder="yoursite.com/painting-1"
           className="w-full bg-background border border-border px-3 py-2 text-sm focus:outline-none focus:border-foreground"
         />
       </Field>
@@ -445,19 +456,37 @@ function ImageManager({
   images: StudioImage[];
   onChanged: (images: StudioImage[]) => void;
 }) {
-  const [s3Key, setS3Key] = useState("");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  function onAdd() {
-    if (!s3Key.trim() || isPending) return;
+  /** File-picker handler. Pre-checks size + MIME before the server
+   * round-trip — same client-side gate `VisualSearchUpload` uses, so
+   * the artist sees an instant error instead of waiting on a 400. */
+  function onFileSelected(file: File) {
     setError(null);
+    if (!file.type.startsWith("image/")) {
+      setError("Please choose an image file.");
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setError("Image must be 10MB or smaller.");
+      return;
+    }
     startTransition(async () => {
       try {
-        const img = await addArtworkImage(artworkId, { s3_key: s3Key.trim() });
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const img = await uploadArtworkImage(artworkId, {
+          name: file.name || "upload.bin",
+          type: file.type || "application/octet-stream",
+          bytes,
+        });
         onChanged([...images, img]);
-        setS3Key("");
+        // Reset the input so picking the same file twice in a row
+        // still fires `change`.
+        if (fileInputRef.current) fileInputRef.current.value = "";
       } catch (e) {
+        reportError(e, { surface: "studio-artwork-image-upload" });
         setError(e instanceof Error ? e.message : String(e));
       }
     });
@@ -525,27 +554,27 @@ function ImageManager({
         </ul>
       )}
 
-      <div className="flex gap-2">
+      <div>
         <input
-          type="text"
-          value={s3Key}
-          onChange={(e) => setS3Key(e.target.value)}
-          placeholder="s3 key (e.g. uploads/<uuid>.jpg)"
-          className="flex-1 bg-background border border-border px-3 py-2 text-sm focus:outline-none focus:border-foreground"
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) onFileSelected(f);
+          }}
+          disabled={isPending}
+          className="block text-sm file:mr-3 file:px-4 file:py-2 file:border file:border-border file:bg-background file:text-sm file:cursor-pointer hover:file:bg-surface disabled:opacity-40"
         />
-        <button
-          type="button"
-          onClick={onAdd}
-          disabled={!s3Key.trim() || isPending}
-          className="px-4 py-2 text-sm border border-border bg-background hover:bg-surface disabled:opacity-40"
-        >
-          Add
-        </button>
+        {isPending && (
+          <p className="mt-2 text-xs text-muted">
+            Uploading and embedding…
+          </p>
+        )}
       </div>
       <p className="text-[11px] text-muted mt-2">
-        Until upload endpoint lands (T-010), enter the S3/MinIO key directly.
-        Use a key that already exists on the bucket — Jina will fetch it to
-        embed.
+        JPEG, PNG, or WebP up to 10MB. The first image you add becomes the
+        primary and is what shows up in search results.
       </p>
     </section>
   );

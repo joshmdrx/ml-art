@@ -17,6 +17,7 @@ import { useState, useTransition, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { clsx } from "clsx";
 import { updateStudioSettings } from "@/app/actions/studio";
+import { normalizeWebsiteUrl } from "@/lib/normalizeUrl";
 import type { StudioArtist, StudioSettingsPatch } from "@/lib/api";
 
 interface Props {
@@ -47,8 +48,14 @@ export function StudioSettingsForm({ initial }: Props) {
     if (!eq(statement, initial.artist_statement))
       patch.artist_statement = statement.trim() || null;
     if (!eq(location, initial.location)) patch.location = location.trim() || null;
-    if (!eq(websiteUrl, initial.website_url))
-      patch.website_url = websiteUrl.trim() || null;
+    // Normalize bare hostnames before comparing + sending — the
+    // server validator requires a scheme and we don't want to make
+    // artists type `https://`.
+    const normalizedUrl = normalizeWebsiteUrl(websiteUrl);
+    const previousUrl = initial.website_url?.trim() || null;
+    if (normalizedUrl !== previousUrl) {
+      patch.website_url = normalizedUrl;
+    }
     return patch;
   }
 
@@ -148,13 +155,17 @@ export function StudioSettingsForm({ initial }: Props) {
         />
       </Field>
 
-      <Field label="Website" hint="Optional; must start with http:// or https://.">
+      <Field label="Website" hint="Optional. We'll add https:// for you.">
         <input
-          type="url"
+          type="text"
+          inputMode="url"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
           value={websiteUrl}
           onChange={(e) => setWebsiteUrl(e.target.value)}
           maxLength={500}
-          placeholder="https://example.com"
+          placeholder="yoursite.com"
           className="w-full bg-background border border-border px-3 py-2 text-sm focus:outline-none focus:border-foreground"
         />
       </Field>

@@ -54,6 +54,12 @@ export function TopNav({
           </Show>
           <Show when="signed-in">
             <Link
+              href="/studio"
+              className="text-muted hover:text-foreground"
+            >
+              Studio
+            </Link>
+            <Link
               href="/collections"
               className="text-muted hover:text-foreground"
             >

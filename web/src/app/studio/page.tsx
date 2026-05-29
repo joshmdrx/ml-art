@@ -42,8 +42,11 @@ export default async function StudioPage({
       ? statusParam
       : "all";
 
-  // Run me + list in parallel; both calls return null for non-artists
-  // so the page can fall through to the empty state without throwing.
+  // Run me + list in parallel. `getStudioMe` returns null for signed-
+  // in non-artists (404 → null); send those users to the onboarding
+  // wizard so they can mint an artist row instead of bouncing off an
+  // empty state. With T-012 Phase 1 shipped, self-onboarding is the
+  // default path.
   const [artist, page] = await Promise.all([
     getStudioMe().catch((e) => {
       reportError(e, { surface: "studio-portfolio", call: "me" });
@@ -56,6 +59,16 @@ export default async function StudioPage({
       }
     ),
   ]);
+
+  if (!artist) {
+    redirect("/onboarding");
+  }
+
+  // `page === null` means the list endpoint errored (not that the
+  // artist has zero rows — the API returns an empty `items` array in
+  // that case). Fall back to an empty grid; the StudioPortfolio
+  // component handles `items: []` cleanly.
+  const items = page?.items ?? [];
 
   return (
     <>
@@ -78,32 +91,8 @@ export default async function StudioPage({
           </Link>
         </header>
 
-        {artist && page ? (
-          <StudioPortfolio
-            artist={artist}
-            items={page.items}
-            status={status}
-          />
-        ) : (
-          <NotAnArtistYet />
-        )}
+        <StudioPortfolio artist={artist} items={items} status={status} />
       </main>
     </>
-  );
-}
-
-function NotAnArtistYet() {
-  return (
-    <section className="p-6 border border-border bg-surface">
-      <h2 className="font-serif text-xl">No portfolio yet.</h2>
-      <p className="mt-3 text-sm leading-relaxed">
-        Studio is for verified artists on the platform. We&apos;re onboarding
-        artists by direct invitation only right now —{" "}
-        <Link href="/" className="underline">
-          head back to the homepage
-        </Link>{" "}
-        or get in touch.
-      </p>
-    </section>
   );
 }
