@@ -144,43 +144,42 @@ pub async fn create(
     };
     let s3_key = format!("uploads/{upload_id}.{ext}");
 
-    // PUT to S3/MinIO before we touch the DB — if S3 fails, we don't
-    // want an orphan `uploads` row.
+    // Embed FIRST, while we still have the bytes in memory. Two wins:
+    //
+    //   1. Works in dev: Jina's cloud workers can't reach our
+    //      `localhost:9000` MinIO, so URL-based embedding 502s. Sending
+    //      the bytes as a base64 data URL bypasses the fetch step.
+    //   2. Better failure handling: if Jina is down we haven't written
+    //      anything yet — no orphan S3 object, no half-written row.
+    let vector: Vector = state
+        .embedder
+        .embed_image_from_bytes(&content_type, &bytes)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("embed upload: {e}")))?;
+
+    // PUT to S3/MinIO. Now we know the embed succeeded.
     state
         .object_store
         .put(&s3_key, bytes, &content_type)
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("s3 put: {e}")))?;
 
-    // Insert the upload row. Embedding stays NULL until the Jina call
-    // succeeds (next step).
+    // Insert the upload row with the embedding in one shot.
     sqlx::query(
         r#"
-        INSERT INTO uploads (id, s3_key, anonymous_id, user_id)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO uploads (id, s3_key, anonymous_id, user_id, embedding)
+        VALUES ($1, $2, $3, $4, $5)
         "#,
     )
     .bind(upload_id)
     .bind(&s3_key)
     .bind(anon_id)
     .bind(user.as_ref().map(|u| u.id))
+    .bind(&vector)
     .execute(&state.pool)
     .await?;
 
-    // Embed inline. Same pattern as T-036's `process_image` but the
-    // destination row is `uploads`, not `artwork_embeddings`, so we
-    // call the embedder directly and UPDATE.
     let image_url = state.object_store.public_url(&s3_key);
-    let vector: Vector = state
-        .embedder
-        .embed_image_from_url(&image_url)
-        .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("embed upload: {e}")))?;
-    sqlx::query("UPDATE uploads SET embedding = $1 WHERE id = $2")
-        .bind(&vector)
-        .bind(upload_id)
-        .execute(&state.pool)
-        .await?;
 
     Ok((
         StatusCode::CREATED,

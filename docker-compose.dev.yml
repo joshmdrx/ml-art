@@ -66,7 +66,14 @@ services:
         mc alias set local http://minio:9000 dev devpassword
         mc mb --ignore-existing local/artworks
         mc mb --ignore-existing local/uploads
+        # Public read on both buckets:
+        #   - artworks/: served as <img src> on every public page
+        #   - uploads/: artist-uploaded artwork images now live here too
+        #     (T-012 file picker → /v1/uploads/image). Without public
+        #     read the studio + artist-profile <img> tags 403. Visual-
+        #     search anchors are also served from here.
         mc anonymous set download local/artworks
+        mc anonymous set download local/uploads
         echo "buckets ready: artworks, uploads"
 
   mailhog:

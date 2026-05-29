@@ -487,17 +487,69 @@ pub async fn add_image(
 
     // Whenever the *primary* image lands, generate the artwork embedding
     // so vector search can find the work. Non-primary images don't
-    // change the artwork's vector representation. This is the inline
-    // call to T-036's `process_image` — when Rekognition gating lands
-    // we lift this into an async job (`T-008`).
+    // change the artwork's vector representation.
+    //
+    // Fast path: when the s3_key comes from `/v1/uploads/image` (prefix
+    // `uploads/`), the `uploads` row already has the embedding — same
+    // bytes, same model, same version. Copy it rather than re-embedding
+    // via Jina. This (a) avoids paying for the embed twice, (b) bypasses
+    // the dev-only "Jina can't reach localhost MinIO" limitation, and
+    // (c) is just a SQL SELECT instead of an HTTP round trip.
+    //
+    // Slow path: any other s3_key (seed data via the WikiArt importer,
+    // or a future direct artworks-bucket write) goes through the
+    // standard URL embed.
     if is_primary && state.embedder.enabled() {
-        let image_url = url_for_s3_key(s3_key);
-        artwork_embeddings::process_image(&state.pool, &state.embedder, id, &image_url)
-            .await
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!("embed failed: {e}")))?;
+        let copied = if s3_key.starts_with("uploads/") {
+            try_copy_embedding_from_upload(&state.pool, &state.embedder, s3_key, id).await?
+        } else {
+            false
+        };
+        if !copied {
+            let image_url = url_for_s3_key(s3_key);
+            artwork_embeddings::process_image(&state.pool, &state.embedder, id, &image_url)
+                .await
+                .map_err(|e| ApiError::Internal(anyhow::anyhow!("embed failed: {e}")))?;
+        }
     }
 
     Ok((StatusCode::CREATED, Json(row.into_studio_image())))
+}
+
+/// Try to copy an existing `uploads.embedding` into `artwork_embeddings`
+/// for this artwork. Returns `Ok(true)` when the copy happened,
+/// `Ok(false)` when there's no matching upload row (or it has no
+/// embedding yet — shouldn't happen since the upload endpoint embeds
+/// inline, but we're defensive).
+///
+/// Used to avoid re-embedding bytes we just embedded in
+/// `/v1/uploads/image`. The (model_name, model_version) on the upload
+/// row matches the current embedder's (asserted via the read of those
+/// accessors), so the embedding is directly portable.
+async fn try_copy_embedding_from_upload(
+    pool: &ml_art_core::db::Pool,
+    embedder: &ml_art_core::embedder::Embedder,
+    s3_key: &str,
+    artwork_id: Uuid,
+) -> Result<bool, ApiError> {
+    use pgvector::Vector;
+    let row: Option<(Option<Vector>,)> =
+        sqlx::query_as(r#"SELECT embedding FROM uploads WHERE s3_key = $1"#)
+            .bind(s3_key)
+            .fetch_optional(pool)
+            .await?;
+    let Some((Some(vector),)) = row else {
+        return Ok(false);
+    };
+    artwork_embeddings::write(
+        pool,
+        artwork_id,
+        embedder.model_name(),
+        embedder.model_version(),
+        &vector,
+    )
+    .await?;
+    Ok(true)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

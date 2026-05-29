@@ -78,6 +78,36 @@ pub struct ArtistFull {
 pub struct ArtistDetail {
     pub artist: ArtistFull,
     pub artworks: Paginated<ArtworkSummary>,
+    /// Geocoded, non-deleted locations for this artist — only included
+    /// when the geocode has completed (lat/lng present). Empty list when
+    /// the artist has no public locations; the web client falls back to
+    /// the artist's `based in` city pill in that case. See T-038.
+    #[serde(default)]
+    pub locations: Vec<ArtistLocation>,
+}
+
+/// A physical place where an artist's work can be seen — gallery the
+/// artist is represented at, or studio open by appointment. See
+/// `db/migrations/0011_artist_locations.sql` and `decisions.md` 2026-05-28.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtistLocation {
+    pub id: Uuid,
+    /// `gallery` | `studio`. Shows / events are out of scope for v1.
+    pub kind: String,
+    pub name: String,
+    pub address: String,
+    pub city: Option<String>,
+    pub country: Option<String>,
+    /// Present iff geocoding has succeeded. Public surfaces only render
+    /// rows where both are set.
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
+    pub website_url: Option<String>,
+    pub display_order: i32,
+    /// Last time the geocode job ran for this row, success or failure.
+    /// `None` means "never attempted yet" — the studio UI surfaces this
+    /// as "Locating…".
+    pub geocoded_at: Option<DateTime<Utc>>,
 }
 
 /// Full artwork as returned by `GET /v1/artworks/:id`.

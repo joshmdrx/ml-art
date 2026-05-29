@@ -69,15 +69,17 @@ Each path has schema implications; revisit before committing.
 
 ## Geographic discovery (post-v1 track)
 
-V1 ships a minimal version: structured `city`, `country`, `lat`, `lng` on artists; `location` and `near_me` filters on `/v1/search`. No map, no galleries, no events. The full geographic story is bigger and worth planning as a coherent track rather than piecemeal additions.
+**Update 2026-05-28:** The lean v1 slice of this track — `artist_locations`, Mapbox geocoding, studio CRUD, artist-profile map, `/search?map=1` — shipped as `T-038`. See `decisions.md` 2026-05-28 for the scope-and-tradeoffs entry that promoted it from this doc into v1. What remains below is still post-v1.
 
-### Phase 1 — Map view + geographic neighborhoods
+V1 originally shipped only the structured `city`, `country`, `lat`, `lng` on artists with `location` and `near_me` filters on `/v1/search`. The T-038 work added per-artist `artist_locations` rows (gallery + studio kinds), live Mapbox geocoding, the artist-profile map widget, and the `/search?map=1` map mode. The full geographic story below is bigger and worth planning as a coherent track rather than piecemeal additions.
 
-- **Map view** on `/search`. Toggle between grid and map. Pins per artist (cluster at low zoom). Click pin → artist preview card with thumbnail strip; click card → artist profile. Map state (bounds, zoom) shared in URL so views are shareable.
-- **Geographic neighborhoods** — manually curated, same UX as semantic neighborhoods but selected by location. "London painters", "Mexico City ceramicists", "Pacific Northwest". Editorial work; same `neighborhoods` table with an additional `kind text` discriminator (`semantic` | `geographic`).
-- **Artist "based in" filter** on the homepage and neighborhood pages.
+### Phase 1 — Geographic neighborhoods *(map view shipped in v1 as T-038)*
 
-Schema additions: minor. `neighborhoods.kind`, that's it. The artist lat/lng already exists from v1.
+- ~~**Map view** on `/search`.~~ ✅ **Shipped in T-038 G5.** Grid/Map toggle, clustered pins, URL-synced bounds.
+- **Geographic neighborhoods** — manually curated, same UX as semantic neighborhoods but selected by location. "London painters", "Mexico City ceramicists", "Pacific Northwest". Editorial work; same `neighborhoods` table with an additional `kind text` discriminator (`semantic` | `geographic`). **Still deferred.**
+- **Artist "based in" filter** on the homepage and neighborhood pages. **Still deferred.**
+
+Schema additions: minor. `neighborhoods.kind`, that's it.
 
 ### Phase 2 — Spaces and events as first-class entities
 

@@ -463,11 +463,9 @@ impl Row {
             title: self.title,
             artist_name: self.artist_name,
             artist_slug: self.artist_slug,
-            primary_image_url: self.primary_s3_key.map(|k| {
-                let base = std::env::var("IMAGE_BASE_URL")
-                    .unwrap_or_else(|_| "http://localhost:9000/artworks".to_string());
-                format!("{base}/{k}")
-            }),
+            primary_image_url: self
+                .primary_s3_key
+                .map(|k| ml_art_core::images::url_for_s3_key(&k)),
             price_cents: self.price_cents,
             currency: self.currency,
             availability: self.availability,

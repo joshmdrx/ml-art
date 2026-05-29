@@ -134,3 +134,33 @@ INSERT INTO neighborhood_artworks (neighborhood_id, artwork_id) VALUES
   ('ccc11111-1111-1111-1111-111111111111', 'bbb11111-1111-1111-1111-111111111111'),
   ('ccc11111-1111-1111-1111-111111111111', 'bbb22222-2222-2222-2222-222222222222'),
   ('ccc11111-1111-1111-1111-111111111111', 'bbb33333-3333-3333-3333-333333333333');
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Artist locations (T-038)
+--   alice: 2 rows — one geocoded (gallery, public), one pre-geocode (studio, hidden)
+--   bruno: 1 row — geocoded gallery in Berlin
+--   carmen: 0 — used as the "no locations" fallback case
+-- ─────────────────────────────────────────────────────────────────────────────
+
+INSERT INTO artist_locations (
+    id, artist_id, kind, name, address, city, country, lat, lng,
+    website_url, display_order, geocoded_at
+) VALUES
+  -- Alice — public gallery pin
+  ('ddd11111-1111-1111-1111-111111111111',
+   'aaa11111-1111-1111-1111-111111111111',
+   'gallery', 'Test Gallery London', '1 Test St, London EC1A 1AA',
+   'London', 'GB', 51.5155, -0.0922,
+   'https://test-gallery.example', 0, now()),
+  -- Alice — pre-geocode studio (lat/lng NULL); must be hidden from public surfaces
+  ('ddd22222-2222-2222-2222-222222222222',
+   'aaa11111-1111-1111-1111-111111111111',
+   'studio', 'Studio (by appointment)', '99 Test Lane, London',
+   NULL, NULL, NULL, NULL,
+   NULL, 1, NULL),
+  -- Bruno — public gallery pin
+  ('ddd33333-3333-3333-3333-333333333333',
+   'aaa22222-2222-2222-2222-222222222222',
+   'gallery', 'Berlin Project Space', '12 Teststraße, 10115 Berlin',
+   'Berlin', 'DE', 52.5300, 13.3850,
+   'https://berlin-space.example', 0, now());

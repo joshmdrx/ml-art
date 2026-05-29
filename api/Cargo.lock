@@ -2119,6 +2119,7 @@ dependencies = [
  "aws-credential-types",
  "aws-sdk-s3",
  "axum",
+ "base64",
  "chrono",
  "dotenvy",
  "governor",

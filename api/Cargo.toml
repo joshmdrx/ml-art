@@ -35,6 +35,11 @@ serde_json = "1"
 # HTTP client (Jina, etc.)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
 
+# Encoding image bytes into data URLs for Jina (lets us embed without
+# requiring Jina to fetch the image from a public URL — important in
+# dev where MinIO is on localhost).
+base64 = "0.22"
+
 # Auth
 jsonwebtoken = "9"
 

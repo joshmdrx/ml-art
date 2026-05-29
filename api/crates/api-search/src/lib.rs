@@ -5,10 +5,13 @@ pub mod artist;
 pub mod artwork;
 pub mod extractors;
 pub mod inquiries;
+pub mod map_cities;
 pub mod me;
 pub mod meta;
 pub mod neighborhoods;
+pub mod onboarding;
 pub mod search;
+pub mod search_map;
 pub mod studio;
 pub mod uploads;
 
@@ -24,6 +27,7 @@ use ml_art_core::{
     db::Pool,
     embedder::Embedder,
     error::ApiError,
+    geocoding::GeocodingClient,
     middleware::{inquiry_limit, search_limit, RateLimiters},
     object_store::ObjectStore,
 };
@@ -39,6 +43,11 @@ pub struct AppState {
     /// Backend for the `uploads/` bucket. Real S3/MinIO in dev + prod;
     /// in-memory stub via `ObjectStore::for_tests` for integration tests.
     pub object_store: ObjectStore,
+    /// Mapbox forward-geocoder. `Disabled` when `MAPBOX_TOKEN` is unset
+    /// (local dev without a paid key); studio location writes still
+    /// succeed, the row just stays hidden from public surfaces until a
+    /// real geocode lands. See `core::geocoding` for the design.
+    pub geocoder: GeocodingClient,
 }
 
 /// Build the full Axum router for this binary. Used by both the runtime
@@ -63,6 +72,16 @@ pub fn build_app(state: Arc<AppState>) -> Router {
             "/v1/search",
             get(search::handle).layer(from_fn_with_state(limiters.clone(), search_limit)),
         )
+        // T-038 G5: sibling endpoint for the `/search?map=1` UI. Same
+        // search-limit policy since it traverses the same filter shape.
+        .route(
+            "/v1/search/map",
+            get(search_map::handle).layer(from_fn_with_state(limiters.clone(), search_limit)),
+        )
+        // T-042: top-cities aggregation. Powers the "where do I start?"
+        // city-pivot pills on `/search?map=1`. Cheap GROUP BY query;
+        // no rate-limit layer since it's a static, light call.
+        .route("/v1/search/map/cities", get(map_cities::handle))
         .route("/v1/artists/:slug", get(artist::handle))
         .route("/v1/artworks/:id", get(artwork::detail))
         .route("/v1/artworks/:id/similar", get(artwork::similar))
@@ -92,6 +111,11 @@ pub fn build_app(state: Arc<AppState>) -> Router {
             post(inquiries::create).layer(from_fn_with_state(limiters.clone(), inquiry_limit)),
         )
         .route("/v1/inquiries/verify/:token", get(inquiries::verify))
+        // ── Onboarding (T-012 Phase 1). Mints + publishes an artist
+        // row for the calling user. Subsequent edits go through the
+        // existing /v1/studio/* surfaces.
+        .route("/v1/onboarding/start", post(onboarding::start))
+        .route("/v1/onboarding/complete", post(onboarding::complete))
         // ── Studio (artist-only authed surface). T-011.
         .route("/v1/studio/me", get(studio::me::current_artist))
         .route(
@@ -115,6 +139,18 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route(
             "/v1/studio/settings",
             axum::routing::patch(studio::settings::patch),
+        )
+        // ── Studio locations (T-038 G3): galleries / studios where
+        // this artist's work can be seen in person. Public listing on
+        // the artist profile only includes geocoded rows; the studio
+        // sees all of them, including "Locating…" placeholders.
+        .route(
+            "/v1/studio/locations",
+            get(studio::locations::list).post(studio::locations::create),
+        )
+        .route(
+            "/v1/studio/locations/:id",
+            axum::routing::patch(studio::locations::patch).delete(studio::locations::delete),
         )
         // ── Uploads (visual-search entry point). T-010 Phase A.
         // Limit per `03-api-data-spec.md`: 20/hr per key. Reuses the

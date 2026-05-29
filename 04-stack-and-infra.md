@@ -98,13 +98,15 @@
 - ~$1 / 1000 images. Negligible at v1.
 - Invoked from the `image.moderate` Inngest job.
 
-### Geocoding: Mapbox forward-geocode
+### Geocoding + maps: Mapbox (shipped, T-038)
 
-- Called from the `artist.geocode` Inngest job whenever an artist updates `location`.
-- 100k requests/month free covers v1 by a large margin (geocode-on-change only, not per-request).
+- **Forward-geocoding** via Mapbox v6 — wired in `core::geocoding`. Real / Disabled / Test variants behind a `GeocodingClient` abstraction; falls back to `Disabled` when `MAPBOX_TOKEN` is unset so dev works without a paid key.
+- **Map widgets** via Mapbox GL JS — `/artists/[slug]` map widget + `/search?map=1` clustered map mode. Same token (as `NEXT_PUBLIC_MAPBOX_TOKEN`).
+- Currently driven from the studio CRUD path (`POST /v1/studio/locations`) which `tokio::spawn`s the geocode work inline. When the Inngest runtime lands we swap that for an `artist_location.geocode` function — same `geocode_and_update` body, different driver. Documented in `core::geocoding` module docs.
+- 100k requests/month free + 50k map loads/month free covers v1 by a large margin.
 - Returns structured city, country, lat, lng.
 - Alternative considered: Nominatim (OpenStreetMap) — free, self-host or use public servers — rejected for v1: public Nominatim is rate-limited to 1 req/s and unreliable. Self-hosted is extra infra. Revisit if Mapbox cost ever becomes a concern.
-- Failure mode: keep artist visible, just not geo-searchable; re-run on next location edit.
+- Failure mode: `geocoded_at` is stamped, `lat`/`lng` stay NULL; row hidden from public surfaces. Artist re-edits to retry. Map widget falls back to a "based in {city}" pill or a list view.
 
 ### Embeddings: Jina or Voyage (HTTP API)
 

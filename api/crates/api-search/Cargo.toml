@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+# Multiple bins in this crate; tell `cargo run -p api-search` (no
+# `--bin` flag, as dev.sh and CI use it) to launch the main server.
+default-run = "api-search"
 
 [lib]
 name = "api_search"
@@ -13,6 +16,15 @@ path = "src/lib.rs"
 [[bin]]
 name = "api-search"
 path = "src/main.rs"
+
+# One-shot ops tool: re-geocode a specific `artist_locations` row.
+# Useful when the row got stamped `geocoded_at` while Mapbox was
+# disabled, or when an artist's address change didn't trigger a fresh
+# geocode for some reason. Invoke as:
+#   cargo run -p api-search --bin regeocode -- <location-uuid>
+[[bin]]
+name = "regeocode"
+path = "src/bin/regeocode.rs"
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }

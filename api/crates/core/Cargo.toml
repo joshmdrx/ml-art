@@ -17,6 +17,7 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 pgvector = { workspace = true }
 reqwest = { workspace = true }
+base64 = { workspace = true }
 jsonwebtoken = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }

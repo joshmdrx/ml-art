@@ -23,7 +23,8 @@ doc captures the spend posture, free-tier audit, and code-level guardrails.
 | Upstash Redis (rate limiting) | 10k commands / day | Unlikely to use; Postgres caches are first choice | unused |
 | PostHog | 1M events / mo | ~10k–50k events from 1k DAU | 20× |
 | Resend | 3,000 emails / mo | Verification + inquiries — should be <500 | 6× |
-| Mapbox geocoding | 100k requests / mo | Only on artist update → <100 / mo | 1000× |
+| Mapbox geocoding *(shipped, T-038)* | 100k requests / mo | On artist + location create/update → <100 / mo | 1000× |
+| Mapbox GL JS map loads *(shipped, T-038)* | 50k loads / mo | Artist-profile + `/search?map=1` views — depends on traffic | wide range |
 | Hugging Face Hub | Free downloads | One-time model pull on dev machine | n/a |
 | AWS Lambda | 1M invocations + 400k GB-s / mo | <100k at v1 | 10× |
 | AWS S3 | 5 GB storage, 20k GET, 2k PUT / mo | ~2 GB for demo + few hundred real artworks | borderline |

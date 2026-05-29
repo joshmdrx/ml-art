@@ -9,9 +9,11 @@ use axum::{
     extract::{Path, State},
     Json,
 };
+use chrono::{DateTime, Utc};
 use ml_art_core::{
     error::ApiError,
-    models::{ArtistDetail, ArtistFull, ArtworkSummary, Paginated},
+    images::url_for_s3_key,
+    models::{ArtistDetail, ArtistFull, ArtistLocation, ArtworkSummary, Paginated},
 };
 use sqlx::FromRow;
 use std::sync::Arc;
@@ -83,6 +85,32 @@ pub async fn handle(
         .take(REPRESENTATIVE_COUNT)
         .collect();
 
+    // 3. Public locations for this artist. Only geocoded rows are
+    // returned to the public surface (T-038 G1) — the studio UI uses a
+    // different endpoint that includes pre-geocode rows so the artist
+    // can see "Locating…" feedback.
+    let location_rows: Vec<ArtistLocationRow> = sqlx::query_as(
+        r#"
+        SELECT
+            id, kind, name, address, city, country, lat, lng,
+            website_url, display_order, geocoded_at
+        FROM artist_locations
+        WHERE artist_id = $1
+          AND deleted_at IS NULL
+          AND lat IS NOT NULL
+          AND lng IS NOT NULL
+        ORDER BY display_order ASC, created_at ASC
+        "#,
+    )
+    .bind(artist.id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let locations: Vec<ArtistLocation> = location_rows
+        .into_iter()
+        .map(ArtistLocationRow::into_dto)
+        .collect();
+
     let full = ArtistFull {
         id: artist.id,
         slug: artist.slug,
@@ -106,6 +134,7 @@ pub async fn handle(
             items: artwork_summaries,
             next_cursor: None,
         },
+        locations,
     }))
 }
 
@@ -149,14 +178,43 @@ impl ArtworkRow {
             title: self.title,
             artist_name: self.artist_name,
             artist_slug: self.artist_slug,
-            primary_image_url: self.primary_s3_key.map(|k| {
-                let base = std::env::var("IMAGE_BASE_URL")
-                    .unwrap_or_else(|_| "http://localhost:9000/artworks".to_string());
-                format!("{base}/{k}")
-            }),
+            primary_image_url: self.primary_s3_key.map(|k| url_for_s3_key(&k)),
             price_cents: self.price_cents,
             currency: self.currency,
             availability: self.availability,
+        }
+    }
+}
+
+#[derive(FromRow)]
+struct ArtistLocationRow {
+    id: Uuid,
+    kind: String,
+    name: String,
+    address: String,
+    city: Option<String>,
+    country: Option<String>,
+    lat: Option<f64>,
+    lng: Option<f64>,
+    website_url: Option<String>,
+    display_order: i32,
+    geocoded_at: Option<DateTime<Utc>>,
+}
+
+impl ArtistLocationRow {
+    fn into_dto(self) -> ArtistLocation {
+        ArtistLocation {
+            id: self.id,
+            kind: self.kind,
+            name: self.name,
+            address: self.address,
+            city: self.city,
+            country: self.country,
+            lat: self.lat,
+            lng: self.lng,
+            website_url: self.website_url,
+            display_order: self.display_order,
+            geocoded_at: self.geocoded_at,
         }
     }
 }

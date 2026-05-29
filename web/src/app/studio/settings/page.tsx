@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
 import { TopNav } from "@/components/TopNav";
 import { StudioSettingsForm } from "@/components/StudioSettingsForm";
-import { getStudioMe } from "@/lib/api";
+import { StudioLocationsManager } from "@/components/StudioLocationsManager";
+import { getStudioMe, listStudioLocations } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
 export const metadata: Metadata = {
@@ -14,10 +14,10 @@ export const metadata: Metadata = {
 /**
  * `/studio/settings` — the artist's profile + visibility controls.
  *
- * Three states:
+ * States:
  *   - signed-out → /sign-in?redirect_url=/studio/settings
- *   - signed-in non-artist (no `artists.user_id` link) → "you're not an
- *     artist yet" empty state (onboarding lands as `T-012`)
+ *   - signed-in non-artist → /onboarding (self-serve mint flow,
+ *     T-012 Phase 1)
  *   - signed-in artist → form pre-filled with `getStudioMe()` result
  */
 export default async function StudioSettingsPage() {
@@ -33,6 +33,18 @@ export default async function StudioSettingsPage() {
     reportError(e, { surface: "studio-settings" });
     artist = null;
   }
+  if (!artist) {
+    redirect("/onboarding");
+  }
+
+  // Locations: same null-collapses-failure pattern as the rest of the
+  // studio surface.
+  let locations: Awaited<ReturnType<typeof listStudioLocations>> = null;
+  try {
+    locations = await listStudioLocations();
+  } catch (e) {
+    reportError(e, { surface: "studio-locations" });
+  }
 
   return (
     <>
@@ -45,29 +57,9 @@ export default async function StudioSettingsPage() {
           </p>
         </header>
 
-        {artist ? (
-          <StudioSettingsForm initial={artist} />
-        ) : (
-          <NotAnArtistYet />
-        )}
+        <StudioSettingsForm initial={artist} />
+        <StudioLocationsManager initial={locations ?? []} />
       </main>
     </>
-  );
-}
-
-function NotAnArtistYet() {
-  return (
-    <section className="p-6 border border-border bg-surface">
-      <h2 className="font-serif text-xl">You&apos;re not set up as an artist yet.</h2>
-      <p className="mt-3 text-sm leading-relaxed">
-        Studio settings are for verified artists with a portfolio on the
-        platform. We&apos;re currently onboarding artists by direct invitation
-        only — if you think this is wrong,{" "}
-        <Link href="/" className="underline">
-          head back to the homepage
-        </Link>{" "}
-        or get in touch.
-      </p>
-    </section>
   );
 }

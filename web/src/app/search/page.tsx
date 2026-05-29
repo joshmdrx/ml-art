@@ -3,10 +3,17 @@ import { TopNav } from "@/components/TopNav";
 import { ArtworkGrid } from "@/components/ArtworkGrid";
 import { FilterBar } from "@/components/FilterBar";
 import { ModifierBar } from "@/components/ModifierBar";
+import { CityPivotStrip } from "@/components/CityPivotStrip";
+import { NearMeButton } from "@/components/NearMeButton";
+import { SearchMap } from "@/components/SearchMap";
 import {
+  listMapCities,
   listSearchModifiers,
   searchArtworks,
+  searchMap,
   type Availability,
+  type CityPivot,
+  type MapPin,
   type SearchParams,
 } from "@/lib/api";
 import { priceParamsFromToken } from "@/lib/filterBar";
@@ -41,6 +48,15 @@ type Search = {
   /** Surfaced by `actions/visualSearch::uploadAndStartVisualSearch`
    * when the upload itself failed. */
   upload_error?: string;
+  /** Map mode toggle (T-038 G5). `?map=1` swaps the grid for a Mapbox
+   * GL JS view of venues matching the active filters. */
+  map?: string;
+  /** Mapbox bounds when in map mode, "west,south,east,north". The
+   * client component owns mutating this as the user pans/zooms. */
+  bbox?: string;
+  /** Pin the map down to a single artist's locations (T-041). Set by
+   * the "See on map" CTA on `/artists/[slug]`. */
+  artist?: string;
 };
 
 export default async function SearchPage({
@@ -98,6 +114,44 @@ export default async function SearchPage({
     error = e instanceof Error ? e.message : String(e);
   }
 
+  // Map mode (T-038 G5). Server-fetches the first page of pins so
+  // the initial render has data even before the client's Mapbox
+  // module loads; the client component takes over for pan/zoom
+  // refetches.
+  const mapMode = sp.map === "1";
+  let mapPins: MapPin[] = [];
+  let mapError: string | null = null;
+  let mapCities: CityPivot[] = [];
+  if (mapMode) {
+    // Fetch pins + city pivots in parallel — both small reads, both
+    // needed for first paint.
+    const [pinsResult, citiesResult] = await Promise.allSettled([
+      searchMap({
+        q: params.q,
+        medium: params.medium,
+        location: params.location,
+        artist: sp.artist?.trim() || undefined,
+        bbox: sp.bbox?.trim() || undefined,
+      }),
+      listMapCities(),
+    ]);
+    if (pinsResult.status === "fulfilled") {
+      mapPins = pinsResult.value;
+    } else {
+      reportError(pinsResult.reason, { surface: "search-map-initial" });
+      mapError =
+        pinsResult.reason instanceof Error
+          ? pinsResult.reason.message
+          : String(pinsResult.reason);
+    }
+    if (citiesResult.status === "fulfilled") {
+      mapCities = citiesResult.value;
+    } else {
+      // City pivots are a nice-to-have; failure shouldn't blow up the map.
+      reportError(citiesResult.reason, { surface: "search-map-cities" });
+    }
+  }
+
   // Fetch the modifier registry only when we'll render the bar — i.e.
   // there's an image anchor. Saves a call in the common no-image case.
   const visualMode = Boolean(params.image_upload_id);
@@ -140,6 +194,8 @@ export default async function SearchPage({
           basePath="/search"
         />
 
+        <ViewToggle mapMode={mapMode} searchParams={sp} />
+
         {error && (
           <div className="mb-6 p-4 border border-border bg-surface text-sm">
             <p className="font-medium mb-1">Couldn’t reach the search API.</p>
@@ -153,7 +209,21 @@ export default async function SearchPage({
           </div>
         )}
 
-        {resp.items.length === 0 && !error ? (
+        {mapMode ? (
+          <SearchMapBlock
+            pins={mapPins}
+            filters={{
+              q: params.q,
+              medium: params.medium,
+              location: params.location,
+              artist: sp.artist?.trim() || undefined,
+            }}
+            artistSlug={sp.artist?.trim() || undefined}
+            cities={mapCities}
+            searchParams={sp}
+            error={mapError}
+          />
+        ) : resp.items.length === 0 && !error ? (
           <EmptyState
             hasTextQuery={hasTextQuery}
             query={params.q}
@@ -163,6 +233,145 @@ export default async function SearchPage({
           <ArtworkGrid items={resp.items} />
         )}
       </main>
+    </>
+  );
+}
+
+/**
+ * Grid / Map view toggle. Both tabs preserve the rest of the URL (q,
+ * medium, etc.); only the `map` param flips. `bbox` is dropped when
+ * we leave map mode so a stale bbox doesn't constrain the grid query.
+ */
+function ViewToggle({
+  mapMode,
+  searchParams,
+}: {
+  mapMode: boolean;
+  searchParams: Search;
+}) {
+  function hrefFor(map: boolean): string {
+    const usp = new URLSearchParams();
+    for (const [k, v] of Object.entries(searchParams)) {
+      if (k === "map" || k === "bbox") continue;
+      if (typeof v === "string" && v.length > 0) usp.set(k, v);
+    }
+    if (map) usp.set("map", "1");
+    const qs = usp.toString();
+    return `/search${qs ? `?${qs}` : ""}`;
+  }
+
+  return (
+    <div className="my-4 flex items-center gap-3">
+      <div
+        role="tablist"
+        aria-label="Result view"
+        className="inline-flex border border-border"
+      >
+      <Link
+        href={hrefFor(false)}
+        role="tab"
+        aria-selected={!mapMode}
+        className={`px-3 py-1 text-sm ${
+          !mapMode ? "bg-fg text-bg" : "hover:bg-surface"
+        }`}
+      >
+        Grid
+      </Link>
+      <Link
+        href={hrefFor(true)}
+        role="tab"
+        aria-selected={mapMode}
+        className={`px-3 py-1 text-sm border-l border-border ${
+          mapMode ? "bg-fg text-bg" : "hover:bg-surface"
+        }`}
+      >
+        Map
+      </Link>
+      </div>
+      {/* Near-me button only makes sense in map mode (T-043). */}
+      {mapMode && <NearMeButton variant="inline" />}
+    </div>
+  );
+}
+
+function SearchMapBlock({
+  pins,
+  filters,
+  artistSlug,
+  cities,
+  searchParams,
+  error,
+}: {
+  pins: MapPin[];
+  filters: {
+    q?: string;
+    medium?: string;
+    location?: string;
+    artist?: string;
+  };
+  /** Same as `filters.artist` but lifted out so the scoping pill can
+   * derive the "Clear filter" link without duplicating the prop. */
+  artistSlug?: string;
+  /** Top-cities pivot (T-042). Empty array when nothing's geocoded
+   * yet (cold-start). */
+  cities: CityPivot[];
+  /** Full URL search params so the "Clear filter" link can preserve
+   * every other filter the artist had set. */
+  searchParams: Search;
+  error: string | null;
+}) {
+  if (error) {
+    return (
+      <div className="mb-6 p-4 border border-border bg-surface text-sm">
+        <p className="font-medium mb-1">Couldn’t load map results.</p>
+        <p className="text-muted">
+          <code className="font-mono">{error}</code>
+        </p>
+      </div>
+    );
+  }
+
+  // Build a "clear artist filter" href that keeps every other param.
+  function clearArtistHref(): string {
+    const usp = new URLSearchParams();
+    for (const [k, v] of Object.entries(searchParams)) {
+      if (k === "artist") continue;
+      if (typeof v === "string" && v.length > 0) usp.set(k, v);
+    }
+    return `/search?${usp.toString()}`;
+  }
+
+  // Pick a display name for the pill. We don't have the artist's
+  // display name on this surface — only the slug — so we de-kebab
+  // ("josh-matthews" → "Josh Matthews"). Close-enough for a chip;
+  // when the user clicks any pin they see the real display name.
+  function prettifySlug(slug: string): string {
+    return slug
+      .split("-")
+      .map((p) => (p ? p[0].toUpperCase() + p.slice(1) : p))
+      .join(" ");
+  }
+
+  return (
+    <>
+      {artistSlug && (
+        <div
+          className="mb-4 inline-flex items-center gap-3 text-sm bg-surface border border-border px-3 py-1.5"
+          role="status"
+        >
+          <span>
+            Showing where to see <strong>{prettifySlug(artistSlug)}</strong>
+          </span>
+          <Link
+            href={clearArtistHref()}
+            className="text-muted underline hover:text-foreground"
+          >
+            Clear filter
+          </Link>
+        </div>
+      )}
+      <CityPivotStrip cities={cities} />
+      <SearchMap initial={pins} filters={filters} />
     </>
   );
 }

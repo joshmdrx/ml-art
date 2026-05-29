@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { TopNav } from "@/components/TopNav";
 import { ArtworkGrid } from "@/components/ArtworkGrid";
+import { ArtistLocationsMap } from "@/components/ArtistLocationsMap";
 import { getArtist } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
@@ -45,7 +46,11 @@ export default async function ArtistPage({ params }: { params: Params }) {
   });
   if (!data) notFound();
 
+  // `locations` defaults to [] so a stale API build (no `locations`
+  // field in the JSON) doesn't crash the page — the map widget
+  // tolerates the empty list by rendering nothing.
   const { artist, artworks } = data;
+  const locations = data.locations ?? [];
 
   // Order socials deterministically for display. Empty object → []
   const socials = Object.entries(artist.socials ?? {}).filter(
@@ -105,6 +110,11 @@ export default async function ArtistPage({ params }: { params: Params }) {
             </ul>
           )}
         </header>
+
+        {/* Where to see this work — Mapbox GL embed (T-038 G4). The
+            component returns null when there are no locations, so the
+            section disappears entirely for artists without any. */}
+        <ArtistLocationsMap locations={locations} artistSlug={artist.slug} />
 
         {/* Statement (optional) */}
         {artist.artist_statement && (

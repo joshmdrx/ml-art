@@ -173,6 +173,36 @@ impl Embedder {
         self.call_jina_image(url).await
     }
 
+    /// Embed an image by raw bytes. We base64-encode and send as a
+    /// `data:` URL in Jina's `image` field; the API supports either
+    /// form. This is the right path when we already have the bytes
+    /// (fresh upload) — and crucially, it works in dev where Jina's
+    /// cloud workers can't reach our `localhost:9000` MinIO.
+    ///
+    /// In prod this is also cheaper than the URL path: no Jina → S3
+    /// fetch round-trip, no race between upload completion and
+    /// embed-time fetch. Worth using as the default path for
+    /// just-uploaded bytes.
+    pub async fn embed_image_from_bytes(
+        &self,
+        mime_type: &str,
+        bytes: &[u8],
+    ) -> anyhow::Result<Vector> {
+        if let Some(v) = &self.inner.fixed_vector {
+            return Ok(v.clone());
+        }
+
+        if self.inner.api_key.is_none() {
+            anyhow::bail!("jina api key not configured; cannot embed image");
+        }
+
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        // `data:<mime>;base64,<payload>` — RFC 2397.
+        let data_url = format!("data:{mime_type};base64,{b64}");
+        self.call_jina_image(&data_url).await
+    }
+
     async fn call_jina_text(&self, text: &str) -> anyhow::Result<Vector> {
         #[derive(Serialize)]
         struct Body<'a> {

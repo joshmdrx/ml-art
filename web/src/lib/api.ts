@@ -50,6 +50,76 @@ export interface ArtistFull {
 export interface ArtistDetail {
   artist: ArtistFull;
   artworks: Paginated<ArtworkSummary>;
+  /** Public locations — only rows where the geocode has landed
+   * (`lat`/`lng` are guaranteed non-null on this surface; the API
+   * filters out pre-geocode rows). Empty list when the artist has none.
+   * Optional on the type so callers don't crash when an older API
+   * build (pre-T-038) omits the field. T-038. */
+  locations?: PublicArtistLocation[];
+}
+
+/** Lighter mirror of `StudioLocation` for public surfaces — same wire
+ * shape, but lat/lng are guaranteed non-null by the API. */
+export interface PublicArtistLocation {
+  id: string;
+  kind: "gallery" | "studio";
+  name: string;
+  address: string;
+  city: string | null;
+  country: string | null;
+  lat: number;
+  lng: number;
+  website_url: string | null;
+  display_order: number;
+}
+
+/** A pin returned by `/v1/search/map` (T-038 G5). One row per
+ * `artist_locations` row matching the active filters, with a small
+ * artist + thumb payload baked in for the popover. */
+export interface MapPin {
+  location_id: string;
+  lat: number;
+  lng: number;
+  name: string;
+  kind: "gallery" | "studio";
+  city: string | null;
+  country: string | null;
+  artist: {
+    slug: string;
+    display_name: string;
+    primary_image_url: string | null;
+  };
+}
+
+/** A city pivot returned by `/v1/search/map/cities` (T-042). Powers
+ * the city-pill strip on `/search?map=1`. `west/south/east/north` is
+ * the tight bbox of every pin in that city — degenerate to a point
+ * when there's only one pin, expands as more land. */
+export interface CityPivot {
+  city: string;
+  country: string | null;
+  count: number;
+  center_lat: number;
+  center_lng: number;
+  west: number;
+  south: number;
+  east: number;
+  north: number;
+}
+
+/** Params for `/v1/search/map`. Subset of `SearchParams` — only the
+ * filters that make sense for picking *where to go* (vs ranking
+ * artworks). See `api-search::search_map` for the rationale. */
+export interface MapSearchParams {
+  q?: string;
+  medium?: string;
+  location?: string;
+  /** "west,south,east,north" (lng,lat,lng,lat). Mapbox bounds are
+   * available as `.toArray().flat().join(',')`. */
+  bbox?: string;
+  /** Pin down to a single artist by slug (T-041). Set by the
+   * "See on map" CTA on `/artists/[slug]`. */
+  artist?: string;
 }
 
 export interface Dimensions {
@@ -202,6 +272,43 @@ export interface CreateArtworkBody {
   external_url?: string;
 }
 
+// Studio locations (T-038 G3) — "Where to see my work" CRUD.
+
+/** A row in `GET /v1/studio/locations`. Mirrors the public `ArtistLocation`
+ * but the studio surface includes pre-geocode rows (`lat`/`lng` null),
+ * which the public artist profile hides. */
+export interface StudioLocation {
+  id: string;
+  kind: "gallery" | "studio";
+  name: string;
+  address: string;
+  city: string | null;
+  country: string | null;
+  lat: number | null;
+  lng: number | null;
+  website_url: string | null;
+  display_order: number;
+  geocoded_at: string | null;
+}
+
+export interface CreateLocationBody {
+  kind: "gallery" | "studio";
+  name: string;
+  address: string;
+  website_url?: string;
+  display_order?: number;
+}
+
+/** PATCH body for `/v1/studio/locations/:id`. Omit a key to leave it
+ * alone; pass `null` for `website_url` to clear it. */
+export interface PatchLocationBody {
+  kind?: "gallery" | "studio";
+  name?: string;
+  address?: string;
+  website_url?: string | null;
+  display_order?: number;
+}
+
 /** Body for `PATCH /v1/studio/artworks/:id`. `Option<Option<T>>` shape:
  * omit a key to leave it alone; pass `null` to clear a nullable field. */
 export interface PatchArtworkBody {
@@ -327,6 +434,37 @@ export async function searchArtworks(
     throw new Error(`search ${res.status}: ${text || res.statusText}`);
   }
   return (await res.json()) as Paginated<ArtworkSummary>;
+}
+
+/** T-042 — fetch the top-cities pivot list for `/search?map=1`'s
+ * city-pill strip. Empty array on success-with-no-cities (the
+ * cold-start case before any artist has geocoded locations). */
+export async function listMapCities(
+  init?: RequestInit
+): Promise<CityPivot[]> {
+  const res = await apiFetch("/v1/search/map/cities", init);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `search/map/cities ${res.status}: ${text || res.statusText}`
+    );
+  }
+  return (await res.json()) as CityPivot[];
+}
+
+/** T-038 G5 — fetch map pins matching the given filters. Returns an
+ * empty array (not null) on success-with-no-results so the map page
+ * can render its empty state cleanly. */
+export async function searchMap(
+  params: MapSearchParams,
+  init?: RequestInit
+): Promise<MapPin[]> {
+  const res = await apiFetch(`/v1/search/map${toQueryString(params)}`, init);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`search/map ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as MapPin[];
 }
 
 export async function getArtist(
@@ -635,6 +773,47 @@ export function formatPrice(
  * the user isn't signed in (401) or has no artist row (404 from
  * `current_artist_id`) — both cases collapse to "not an artist (yet)"
  * from the UI's perspective. */
+// ─────────────────────────────────────────────────────────────────────────────
+// Onboarding (T-012 Phase 1) — mints an artist row + flips it to active.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Body for `POST /v1/onboarding/start`. */
+export interface StartOnboardingBody {
+  display_name: string;
+  location?: string;
+}
+
+/** `POST /v1/onboarding/start` — creates the caller's `artists` row with
+ * `status='pending'` and links `user_id`. Returns the new `StudioArtist`.
+ * Throws if the API errors (already-onboarded, validation, 401). */
+export async function startOnboarding(
+  body: StartOnboardingBody
+): Promise<StudioArtist> {
+  const res = await apiFetch("/v1/onboarding/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`onboarding/start ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as StudioArtist;
+}
+
+/** `POST /v1/onboarding/complete` — flips `status: pending → active`.
+ * Idempotent on already-active artists. */
+export async function completeOnboarding(): Promise<StudioArtist> {
+  const res = await apiFetch("/v1/onboarding/complete", { method: "POST" });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `onboarding/complete ${res.status}: ${text || res.statusText}`
+    );
+  }
+  return (await res.json()) as StudioArtist;
+}
+
 export async function getStudioMe(
   init?: RequestInit
 ): Promise<StudioArtist | null> {
@@ -764,6 +943,70 @@ export async function addStudioArtworkImage(
     );
   }
   return (await res.json()) as StudioImage;
+}
+
+// Studio locations (T-038 G3) — CRUD for "Where to see my work."
+
+export async function listStudioLocations(
+  init?: RequestInit
+): Promise<StudioLocation[] | null> {
+  const res = await apiFetch("/v1/studio/locations", init);
+  if (res.status === 401 || res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `studio/locations ${res.status}: ${text || res.statusText}`
+    );
+  }
+  return (await res.json()) as StudioLocation[];
+}
+
+export async function createStudioLocation(
+  body: CreateLocationBody
+): Promise<StudioLocation> {
+  const res = await apiFetch("/v1/studio/locations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `studio/locations POST ${res.status}: ${text || res.statusText}`
+    );
+  }
+  return (await res.json()) as StudioLocation;
+}
+
+export async function patchStudioLocation(
+  id: string,
+  body: PatchLocationBody
+): Promise<StudioLocation> {
+  const res = await apiFetch(`/v1/studio/locations/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `studio/locations PATCH ${res.status}: ${text || res.statusText}`
+    );
+  }
+  return (await res.json()) as StudioLocation;
+}
+
+export async function deleteStudioLocation(id: string): Promise<void> {
+  const res = await apiFetch(
+    `/v1/studio/locations/${encodeURIComponent(id)}`,
+    { method: "DELETE" }
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `studio/locations DELETE ${res.status}: ${text || res.statusText}`
+    );
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
