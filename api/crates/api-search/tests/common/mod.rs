@@ -143,6 +143,25 @@ pub fn app_with_rate_limit(pool: Pool, search_per_min: u32, inquiry_per_hour: u3
     }))
 }
 
+/// Build the Axum router with a real Postgres-backed `JobsBackend` so
+/// tests can assert that the right `JobEvent`s landed in the `jobs`
+/// table via SQL. The other helpers use `JobsBackend::for_tests()`,
+/// which captures in memory — useful for the unit-style tests but
+/// hard to observe from outside the test scope.
+pub fn app_with_postgres_jobs(pool: Pool) -> Router {
+    let cfg = Config::for_tests(String::new());
+    let embedder = Embedder::disabled(pool.clone());
+    let jwt_verifier = JwtVerifier::for_tests();
+    build_app(Arc::new(AppState {
+        pool: pool.clone(),
+        embedder,
+        jwt_verifier,
+        cfg,
+        object_store: ObjectStore::for_tests("uploads"),
+        jobs: JobsBackend::postgres(pool),
+    }))
+}
+
 /// Build the Axum router with an embedder that returns a fixed vector for
 /// every text query. Use this when the test needs the vector path to fire.
 pub fn app_with_fixed_vector(pool: Pool, vec: pgvector::Vector) -> Router {

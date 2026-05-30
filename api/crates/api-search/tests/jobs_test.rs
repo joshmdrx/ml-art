@@ -9,6 +9,7 @@ mod common;
 
 use common::MIGRATOR;
 use ml_art_core::{
+    emails::EmailClient,
     geocoding::{Geocoded, GeocodingClient},
     jobs::{self, EnqueueOpts, JobEvent, JobsBackend, JobsDeps},
 };
@@ -124,6 +125,8 @@ async fn full_loop_geocodes_via_handler(pool: PgPool) {
     let deps = JobsDeps {
         pool: pool.clone(),
         geocoder: GeocodingClient::for_tests(canned),
+        emails: EmailClient::for_tests(),
+        web_base_url: "https://test.example.com".to_string(),
     };
 
     let job = jobs::postgres::claim_one(&pool).await.unwrap().unwrap();

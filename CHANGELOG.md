@@ -3,6 +3,88 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-05-29 — T-032: real inquiry email delivery via Resend + jobs queue
+
+Closes the biggest "demoware" gap in the inquiry flow — the
+verification email + the artist notification email both now actually
+send (when `RESEND_API_KEY` is set). First handler-pair to land on
+the new jobs queue (T-044), validating the pattern.
+
+- **`core::emails`** — `EmailClient` enum with `Real` (Resend HTTP),
+  `Disabled` (logs + returns Ok), and `for_tests` (in-memory capture).
+  Same shape as `Embedder` / `GeocodingClient` / `JobsBackend`.
+  Reads `RESEND_API_KEY` + `RESEND_FROM_EMAIL`; falls back to
+  `Disabled` when either is unset (local dev with no paid key).
+  6 unit tests on disabled-noop / test-capture / template rendering.
+
+- **Two email templates** (`core::emails::templates`):
+  - `verification(verify_url, name, artwork_title, artist)` — the
+    confirm-your-email link for anonymous inquirers.
+  - `delivered_to_artist(artwork_url, title, image, name, email,
+    message, budget)` — the actual "you have an inquiry" email.
+    Hand-escaped HTML; user input goes through `escape_html`.
+    Newlines in the message become `<br />`. Empty budget +
+    missing image both gracefully omit.
+
+- **Two `JobEvent` variants** + handler dispatch in `core::jobs`:
+  - `InquirySendVerification { inquiry_id }`
+  - `InquiryDeliverToArtist { inquiry_id }`
+  - Handlers load the inquiry + artwork + artist + (artist user)
+    rows via a single join, render the template, call
+    `EmailClient::send`. Reply-to is set to the inquirer's email
+    so the artist can just hit reply.
+
+- **`JobsDeps` extended** with `emails: EmailClient` + `web_base_url:
+  String`. main.rs builds `EmailClient::from_env()`; jobs-worker
+  picks it up; test helpers use `for_tests()`.
+
+- **`Config`** — new `web_base_url` (defaults to
+  `http://localhost:3000`). Read from `WEB_BASE_URL` env var.
+
+- **`inquiries.rs` enqueue sites** — three call sites, one variant
+  each:
+  - Anonymous create → `InquirySendVerification`
+    (replaces the old `TODO(T-032)` comment)
+  - Signed-in create → `InquiryDeliverToArtist`
+    (bypasses verification — Clerk-verified email)
+  - Verify endpoint → `InquiryDeliverToArtist`
+    (fires after the anonymous flow flips `delivered_at`)
+  - All three use idempotency keys (`inquiry_verify:<id>` /
+    `inquiry_deliver:<id>`) so duplicate clicks / double-fires
+    don't send the email twice. Verified by the
+    `idempotency_dedups_double_verify` test.
+
+- **Tests**
+  - 4 integration tests in `tests/inquiry_emails_test.rs` —
+    signed-in path enqueues only deliver; anonymous path enqueues
+    only verification; verify endpoint adds the deliver job; double-
+    verify dedups. All use `app_with_postgres_jobs` (new test
+    helper) so the rows land in the actual `jobs` table for SQL
+    assertions.
+  - 6 new unit tests in `core::emails`.
+  - 226 Rust total (was 216; +10).
+
+- **Env additions** in `api/.env.example` + `api/.env`:
+  - `RESEND_API_KEY` (optional; absent → disabled)
+  - `RESEND_FROM_EMAIL` (required for the real path)
+  - `WEB_BASE_URL` (defaults to `http://localhost:3000`)
+
+How it actually runs locally:
+- Without `RESEND_API_KEY`: every email path logs at info, returns
+  Ok. The jobs row still completes; the artist just never receives
+  an actual email. Same degrade-gracefully shape as Mapbox / Jina.
+- With `RESEND_API_KEY` + a verified domain: real emails sent via
+  Resend. Free tier is 3k/mo + 100/day.
+
+What's deferred:
+- T-008 (Rekognition moderation) — same pattern, one new
+  `JobEvent::ImageModerate` variant + handler. Probably the next
+  thing to pick up.
+- The web `/inquiries/verify/[token]` page already exists from
+  T-001; this work doesn't touch it.
+
+---
+
 ## 2026-05-29 — Jobs queue (T-044): Postgres local, SQS+Lambda prod
 
 Foundation for every future background job. Closes the worker-runtime

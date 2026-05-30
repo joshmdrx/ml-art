@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use ml_art_core::{
     config::Config,
+    emails::EmailClient,
     geocoding::GeocodingClient,
     jobs::{self, JobsDeps},
 };
@@ -27,9 +28,12 @@ async fn main() -> anyhow::Result<()> {
     let cfg = Config::load()?;
     let pool = ml_art_core::db::make_pool(&cfg.database_url).await?;
     let geocoder = GeocodingClient::from_env();
+    let emails = EmailClient::from_env();
     let deps = JobsDeps {
         pool: pool.clone(),
         geocoder,
+        emails,
+        web_base_url: cfg.web_base_url.clone(),
     };
 
     info!(

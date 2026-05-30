@@ -13,6 +13,7 @@ pub mod artwork_embeddings;
 pub mod auth;
 pub mod config;
 pub mod db;
+pub mod emails;
 pub mod embedder;
 pub mod error;
 pub mod geocoding;

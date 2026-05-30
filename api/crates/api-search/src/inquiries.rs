@@ -20,7 +20,11 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use ml_art_core::{error::ApiError, models::InquiryAck};
+use ml_art_core::{
+    error::ApiError,
+    jobs::{EnqueueOpts, JobEvent},
+    models::InquiryAck,
+};
 
 use crate::extractors::AuthedUser;
 use rand::distributions::{Alphanumeric, DistString};
@@ -141,6 +145,22 @@ pub async fn create(
         .fetch_one(&state.pool)
         .await?;
 
+        // Enqueue the artist-notification email. Signed-in case bypasses
+        // the verification round-trip (we trust the Clerk-verified email).
+        state
+            .jobs
+            .enqueue(
+                JobEvent::InquiryDeliverToArtist { inquiry_id: row.id },
+                EnqueueOpts {
+                    // Dedup so a flaky double-click can't fire two
+                    // notification emails for the same inquiry.
+                    idempotency_key: Some(format!("inquiry_deliver:{}", row.id)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("enqueue deliver: {e}")))?;
+
         tracing::info!(
             inquiry_id = %row.id,
             artist_id = %target.artist_id,
@@ -190,9 +210,22 @@ pub async fn create(
     .fetch_one(&state.pool)
     .await?;
 
-    // TODO(T-032): enqueue Inngest `inquiry.send_verification` job to email
-    // the sender a link to /inquiries/verify/<token>. For dev we expose
-    // the token in the response (gated by dev env in a real deploy).
+    // Enqueue the verification email. jobs-worker calls Resend; the
+    // inquirer clicks the link in the email → /v1/inquiries/verify
+    // flips `delivered_at` → that endpoint enqueues the
+    // deliver-to-artist email separately.
+    state
+        .jobs
+        .enqueue(
+            JobEvent::InquirySendVerification { inquiry_id: row.id },
+            EnqueueOpts {
+                idempotency_key: Some(format!("inquiry_verify:{}", row.id)),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("enqueue verification: {e}")))?;
+
     tracing::info!(
         inquiry_id = %row.id,
         token = %token,
@@ -243,7 +276,23 @@ pub async fn verify(
     .await?;
 
     let (id, _) = updated.ok_or(ApiError::NotFound)?;
-    tracing::info!(inquiry_id = %id, "inquiry verified + delivered");
+
+    // Enqueue the deliver-to-artist email. Same `inquiry_deliver:<id>`
+    // idempotency key as the signed-in path, so a verify-link click
+    // that races a re-verify can't double-send.
+    state
+        .jobs
+        .enqueue(
+            JobEvent::InquiryDeliverToArtist { inquiry_id: id },
+            EnqueueOpts {
+                idempotency_key: Some(format!("inquiry_deliver:{id}")),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("enqueue deliver: {e}")))?;
+
+    tracing::info!(inquiry_id = %id, "inquiry verified + delivery enqueued");
 
     Ok(Json(VerifyResponse {
         status: "delivered".to_string(),

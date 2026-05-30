@@ -39,15 +39,15 @@ if the item was dropped, with a one-line reason.
 - Seed at least one `artist_locations` row for the WikiArt demo corpus so the artist-profile map + `/search?map=1` show real pins out of the box
 - Geographic neighborhoods (`neighborhoods.kind = 'geographic'`) — editorial work, still deferred per `99-deferred.md` Phase 1
 
-### `T-032` Real inquiry delivery via Resend
-**Where:** new `JobEvent::InquiryDeliver { inquiry_id }` variant + handler in `core::emails`; enqueue from `api-search::inquiries` at `delivered_at` flip points.
-**Acceptance:**
-- After a signed-in inquiry hits `delivered_at=now()`, the inquiries handler enqueues an `InquiryDeliver` job. jobs-worker calls Resend.
-- After an anonymous inquiry's verify endpoint flips `delivered_at`, same job fires.
-- Email contains: artwork title + thumbnail, sender name + email (reply-to set to sender), message, budget if present.
-- Drop the `debug_verification_token` field from the API response in non-dev envs.
-- `RESEND_API_KEY` unset → handler logs + returns Ok; row's `delivered_at` is already set so we don't retry on missing key.
-- Integration test against an in-memory `JobsBackend::for_tests()` asserting the enqueue happens at both flip points.
+### ~~`T-032` Real inquiry delivery via Resend~~ — shipped 2026-05-29
+
+- ✅ `core::emails` EmailClient enum (Real / Disabled / for_tests) + Resend HTTP send + two templates (verification, deliver-to-artist).
+- ✅ `JobEvent::InquirySendVerification` + `InquiryDeliverToArtist` variants + handler dispatch.
+- ✅ Three enqueue sites in `inquiries.rs`: anonymous create, signed-in create, verify endpoint. Idempotency keys dedupe double-clicks.
+- ✅ Reply-to is set to the inquirer so the artist hitting reply lands in their inbox.
+- ✅ Config gains `web_base_url`; env vars `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `WEB_BASE_URL`.
+- ✅ 4 integration tests (signed-in / anonymous / verify-end-to-end / double-verify dedup) + 6 unit tests.
+- **Deferred:** drop `debug_verification_token` from non-dev response. Currently gated by `cfg.env.is_dev()` already; revisit if it ever shows up in staging.
 
 ---
 

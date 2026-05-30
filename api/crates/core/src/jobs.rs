@@ -41,6 +41,13 @@ pub enum JobEvent {
     /// Forward-geocode a single `artist_locations` row. Was
     /// `trigger_background_geocode`'s `tokio::spawn` (T-038).
     ArtistLocationGeocode { location_id: Uuid },
+    /// Email the inquirer a confirm-your-email link. Fired by the
+    /// anonymous-inquiry create path. T-032.
+    InquirySendVerification { inquiry_id: Uuid },
+    /// Email the artist that they have a new inquiry. Fired when
+    /// `delivered_at` flips — on signed-in inquiry create AND on
+    /// the verify endpoint for anonymous inquiries. T-032.
+    InquiryDeliverToArtist { inquiry_id: Uuid },
 }
 
 impl JobEvent {
@@ -51,6 +58,8 @@ impl JobEvent {
     pub fn kind(&self) -> &'static str {
         match self {
             JobEvent::ArtistLocationGeocode { .. } => "artist_location_geocode",
+            JobEvent::InquirySendVerification { .. } => "inquiry_send_verification",
+            JobEvent::InquiryDeliverToArtist { .. } => "inquiry_deliver_to_artist",
         }
     }
 }
@@ -326,6 +335,10 @@ pub mod postgres {
 pub struct JobsDeps {
     pub pool: Pool,
     pub geocoder: crate::geocoding::GeocodingClient,
+    pub emails: crate::emails::EmailClient,
+    /// `WEB_BASE_URL` — passed in so handlers can build email links
+    /// without re-reading env or threading the whole `Config`.
+    pub web_base_url: String,
 }
 
 /// The dispatch fn — same code path runs from the Postgres worker
@@ -339,8 +352,157 @@ pub async fn handle(event: JobEvent, deps: &JobsDeps) -> Result<(), HandlerError
                 .await
                 .map_err(|e| HandlerError::Domain(e.to_string()))?;
         }
+        JobEvent::InquirySendVerification { inquiry_id } => {
+            inquiry_handlers::send_verification(deps, inquiry_id)
+                .await
+                .map_err(|e| HandlerError::Domain(e.to_string()))?;
+        }
+        JobEvent::InquiryDeliverToArtist { inquiry_id } => {
+            inquiry_handlers::deliver_to_artist(deps, inquiry_id)
+                .await
+                .map_err(|e| HandlerError::Domain(e.to_string()))?;
+        }
     }
     Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inquiry email handlers (T-032)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Inline rather than in `core::emails` because they're driven by jobs
+// + handle DB IO. `core::emails` is the pure HTTP-client + templates
+// surface; this is the orchestration.
+
+mod inquiry_handlers {
+    use super::JobsDeps;
+    use crate::emails::templates;
+    use sqlx::FromRow;
+    use uuid::Uuid;
+
+    /// Row shape for both inquiry email paths. Inquiries that need a
+    /// verification email don't have an artist email yet (we email
+    /// the inquirer); inquiries that need a delivery email do
+    /// (we email the artist). The same row covers both since the
+    /// fetch is the union of fields the templates touch.
+    #[derive(Debug, FromRow)]
+    struct InquiryWithContext {
+        // Inquirer side.
+        from_name: String,
+        from_email: String,
+        message: String,
+        budget_range: Option<serde_json::Value>,
+        verification_token: Option<String>,
+        // Artwork + artist side.
+        artwork_id: Uuid,
+        artwork_title: Option<String>,
+        artist_display_name: String,
+        artist_email: Option<String>,
+        artist_slug: String,
+        primary_s3_key: Option<String>,
+    }
+
+    async fn load(
+        pool: &crate::db::Pool,
+        inquiry_id: Uuid,
+    ) -> Result<InquiryWithContext, sqlx::Error> {
+        sqlx::query_as::<_, InquiryWithContext>(
+            r#"
+            SELECT
+                i.from_name,
+                i.from_email,
+                i.message,
+                i.budget_range,
+                i.verification_token,
+                a.id            AS artwork_id,
+                a.title         AS artwork_title,
+                ar.display_name AS artist_display_name,
+                u.email         AS artist_email,
+                ar.slug         AS artist_slug,
+                ai.s3_key       AS primary_s3_key
+            FROM inquiries i
+            JOIN artworks a   ON a.id = i.artwork_id
+            JOIN artists  ar  ON ar.id = i.artist_id
+            LEFT JOIN users u ON u.id = ar.user_id
+            LEFT JOIN artwork_images ai
+                   ON ai.artwork_id = a.id AND ai.is_primary
+            WHERE i.id = $1
+            "#,
+        )
+        .bind(inquiry_id)
+        .fetch_one(pool)
+        .await
+    }
+
+    pub async fn send_verification(deps: &JobsDeps, inquiry_id: Uuid) -> anyhow::Result<()> {
+        let row = load(&deps.pool, inquiry_id).await?;
+        let Some(token) = row.verification_token.as_deref() else {
+            // No token means this inquiry was already verified (or
+            // is signed-in). Nothing to send; succeed quietly.
+            tracing::info!(%inquiry_id, "skip verification — no token (already verified?)");
+            return Ok(());
+        };
+        let verify_url = format!(
+            "{base}/inquiries/verify/{token}",
+            base = deps.web_base_url.trim_end_matches('/'),
+        );
+        let (subject, body) = templates::verification(
+            &verify_url,
+            &row.from_name,
+            row.artwork_title.as_deref(),
+            &row.artist_display_name,
+        );
+        deps.emails
+            .send(&row.from_email, &subject, &body, None)
+            .await?;
+        tracing::info!(%inquiry_id, to = %row.from_email, "verification email sent");
+        Ok(())
+    }
+
+    pub async fn deliver_to_artist(deps: &JobsDeps, inquiry_id: Uuid) -> anyhow::Result<()> {
+        let row = load(&deps.pool, inquiry_id).await?;
+        let Some(artist_email) = row.artist_email.as_deref() else {
+            // Artist has no linked Clerk user (seeded demo artists),
+            // so no email address. Log + bail — no retry will help.
+            tracing::warn!(
+                %inquiry_id,
+                artist = %row.artist_slug,
+                "skip deliver-to-artist — artist has no user email"
+            );
+            return Ok(());
+        };
+        let artwork_url = format!(
+            "{base}/artworks/{id}",
+            base = deps.web_base_url.trim_end_matches('/'),
+            id = row.artwork_id,
+        );
+        let image_url = row
+            .primary_s3_key
+            .as_deref()
+            .map(crate::images::url_for_s3_key);
+        let budget_str = row
+            .budget_range
+            .as_ref()
+            .and_then(|v| v.as_str().map(String::from));
+        let (subject, body) = templates::delivered_to_artist(
+            &artwork_url,
+            row.artwork_title.as_deref(),
+            image_url.as_deref(),
+            &row.from_name,
+            &row.from_email,
+            &row.message,
+            budget_str.as_deref(),
+        );
+        deps.emails
+            .send(artist_email, &subject, &body, Some(&row.from_email))
+            .await?;
+        tracing::info!(
+            %inquiry_id,
+            to = %artist_email,
+            "inquiry delivered to artist"
+        );
+        Ok(())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -386,6 +548,20 @@ mod tests {
             location_id: Uuid::new_v4(),
         };
         assert_eq!(evt.kind(), "artist_location_geocode");
+        assert_eq!(
+            JobEvent::InquirySendVerification {
+                inquiry_id: Uuid::new_v4()
+            }
+            .kind(),
+            "inquiry_send_verification"
+        );
+        assert_eq!(
+            JobEvent::InquiryDeliverToArtist {
+                inquiry_id: Uuid::new_v4()
+            }
+            .kind(),
+            "inquiry_deliver_to_artist"
+        );
     }
 
     #[tokio::test]

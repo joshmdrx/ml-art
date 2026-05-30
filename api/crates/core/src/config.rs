@@ -52,6 +52,11 @@ pub struct Config {
     /// Public URL prefix for objects in the uploads bucket. Dev is
     /// MinIO; prod is the CloudFront distribution that fronts it.
     pub uploads_public_url_prefix: String,
+    /// Public-facing URL for the web app — what email links resolve
+    /// to. Dev: `http://localhost:3000`. Prod: the platform's
+    /// canonical hostname. Used by the inquiry-email handlers to
+    /// build `…/inquiries/verify/<token>` and artwork-detail links.
+    pub web_base_url: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +132,8 @@ impl Config {
             s3_secret_key: env::var("AWS_SECRET_ACCESS_KEY").ok(),
             uploads_public_url_prefix: env::var("UPLOADS_PUBLIC_URL_PREFIX")
                 .unwrap_or_else(|_| "http://localhost:9000/uploads".to_string()),
+            web_base_url: env::var("WEB_BASE_URL")
+                .unwrap_or_else(|_| "http://localhost:3000".to_string()),
         };
 
         // Production sanity checks. Prevent footguns from a missing secret in prod.
@@ -168,6 +175,7 @@ impl Config {
             s3_access_key: None,
             s3_secret_key: None,
             uploads_public_url_prefix: "https://test.example.com/uploads".to_string(),
+            web_base_url: "https://test.example.com".to_string(),
         }
     }
 }
