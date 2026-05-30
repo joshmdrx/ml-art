@@ -11,6 +11,14 @@ if the item was dropped, with a one-line reason.
 
 ## Now (active build)
 
+### ~~`T-044` Jobs queue — Postgres local, SQS+Lambda prod~~ — shipped 2026-05-29
+
+- ✅ `db/migrations/0012_jobs.sql` + `core::jobs` module (JobEvent + JobsBackend + Postgres driver + handler dispatch)
+- ✅ `api/crates/jobs-worker` polling binary, wired into `scripts/dev.sh`
+- ✅ Canary: geocoding migrated off `tokio::spawn` → `state.jobs.enqueue(JobEvent::ArtistLocationGeocode)`
+- ✅ 4 unit + 6 integration tests; 216 Rust total
+- **Deferred:** `JobsBackend::Sqs` variant + `jobs-lambda` crate. Lands when we deploy.
+
 ### ~~`T-041` + `T-042` + `T-043` Map discovery v1~~ — shipped 2026-05-29
 
 - ✅ **T-041** — `?artist=<slug>` filter on `/v1/search/map`; "See on full map →" CTA on artist profile; scoping pill on the search map view. 3 integration tests.
@@ -31,13 +39,15 @@ if the item was dropped, with a one-line reason.
 - Seed at least one `artist_locations` row for the WikiArt demo corpus so the artist-profile map + `/search?map=1` show real pins out of the box
 - Geographic neighborhoods (`neighborhoods.kind = 'geographic'`) — editorial work, still deferred per `99-deferred.md` Phase 1
 
-### `T-032` Real inquiry delivery via Resend + Inngest
-**Where:** new Inngest function `inquiry.deliver`; Resend HTTP client in `core::email`
+### `T-032` Real inquiry delivery via Resend
+**Where:** new `JobEvent::InquiryDeliver { inquiry_id }` variant + handler in `core::emails`; enqueue from `api-search::inquiries` at `delivered_at` flip points.
 **Acceptance:**
-- After a signed-in inquiry hits `delivered_at=now()`, an Inngest job sends the actual email to the artist via Resend
-- After an anonymous inquiry's verify endpoint flips `delivered_at`, same job fires
-- Email contains: artwork title + thumbnail, sender name + email (reply-to set to sender), message, budget if present
-- Drop the `debug_verification_token` field from the API response in non-dev envs
+- After a signed-in inquiry hits `delivered_at=now()`, the inquiries handler enqueues an `InquiryDeliver` job. jobs-worker calls Resend.
+- After an anonymous inquiry's verify endpoint flips `delivered_at`, same job fires.
+- Email contains: artwork title + thumbnail, sender name + email (reply-to set to sender), message, budget if present.
+- Drop the `debug_verification_token` field from the API response in non-dev envs.
+- `RESEND_API_KEY` unset → handler logs + returns Ok; row's `delivered_at` is already set so we don't retry on missing key.
+- Integration test against an in-memory `JobsBackend::for_tests()` asserting the enqueue happens at both flip points.
 
 ---
 
@@ -65,13 +75,13 @@ if the item was dropped, with a one-line reason.
 **Why:** current design writes all `.npy` files at the end of `embed_images`. A mid-run crash on a 2000-image embed loses everything. Burned us once during the WikiArt pass.
 **Acceptance:** stream-style writes; survives `kill -9` mid-run; existing tests pass; add a partial-completion resume test.
 
-### `T-008` Image moderation Inngest job
-**Where:** `api/crates/api-uploads/` (new binary) + Inngest handler
+### `T-008` Image moderation via Rekognition
+**Where:** new `JobEvent::ImageModerate { image_id, kind }` variant + handler in `core::moderation`; enqueue from `api-search::studio::artworks::add_image` and from `api-search::uploads`.
 **Acceptance:**
-- `image.moderate` job calls AWS Rekognition `DetectModerationLabels` on a new image
-- Sets `artwork_images.moderation_status` or `uploads.moderation_status`
-- Search filters out `moderation_status != 'approved'` artwork images
-- Local dev: stub always-approves (gated by `REKOGNITION_ENABLED=false`)
+- On artwork-image insert OR new visual-search upload, the handler enqueues an `ImageModerate` job. jobs-worker calls AWS Rekognition `DetectModerationLabels` and writes `artwork_images.moderation_status` / `uploads.moderation_status`.
+- Search + public artist payload filter to `moderation_status = 'approved'`.
+- Local dev: stub always-approves (gated by `REKOGNITION_ENABLED=false`); production stub passes when the AWS creds are absent.
+- Integration test against `JobsBackend::for_tests()` asserting enqueue at both insert sites.
 
 ### ~~`T-010` Visual search upload + modifier UI~~ — all four phases shipped
 - ✅ **Phase A:** `POST /v1/uploads/image` — multipart in, S3/MinIO PUT, inline T-036-style embedding into `uploads.embedding`

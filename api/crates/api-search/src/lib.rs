@@ -27,7 +27,7 @@ use ml_art_core::{
     db::Pool,
     embedder::Embedder,
     error::ApiError,
-    geocoding::GeocodingClient,
+    jobs::JobsBackend,
     middleware::{inquiry_limit, search_limit, RateLimiters},
     object_store::ObjectStore,
 };
@@ -43,11 +43,10 @@ pub struct AppState {
     /// Backend for the `uploads/` bucket. Real S3/MinIO in dev + prod;
     /// in-memory stub via `ObjectStore::for_tests` for integration tests.
     pub object_store: ObjectStore,
-    /// Mapbox forward-geocoder. `Disabled` when `MAPBOX_TOKEN` is unset
-    /// (local dev without a paid key); studio location writes still
-    /// succeed, the row just stays hidden from public surfaces until a
-    /// real geocode lands. See `core::geocoding` for the design.
-    pub geocoder: GeocodingClient,
+    /// Jobs queue. Studio handlers enqueue `JobEvent::*` events;
+    /// `jobs-worker` (locally) or a Lambda (in prod) consumes them.
+    /// See `core::jobs` and `decisions.md` 2026-05-29.
+    pub jobs: JobsBackend,
 }
 
 /// Build the full Axum router for this binary. Used by both the runtime

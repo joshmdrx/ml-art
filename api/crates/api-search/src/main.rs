@@ -3,7 +3,7 @@
 
 use api_search::{build_app, AppState};
 use ml_art_core::{
-    auth::JwtVerifier, config::Config, embedder::Embedder, geocoding::GeocodingClient,
+    auth::JwtVerifier, config::Config, embedder::Embedder, jobs::JobsBackend,
     object_store::ObjectStore,
 };
 use std::sync::Arc;
@@ -33,14 +33,14 @@ async fn main() -> anyhow::Result<()> {
         cfg.s3_secret_key.clone(),
     )
     .await;
-    let geocoder = GeocodingClient::from_env();
+    let jobs = JobsBackend::postgres(pool.clone());
     let state = Arc::new(AppState {
         pool,
         embedder,
         jwt_verifier,
         cfg: cfg.clone(),
         object_store,
-        geocoder,
+        jobs,
     });
     let app = build_app(state);
 

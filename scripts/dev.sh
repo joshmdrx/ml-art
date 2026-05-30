@@ -68,6 +68,23 @@ echo "→ starting api (logs: /tmp/api.log)  [auto-reloads on *.rs / *.sql]"
 ) &
 API_PID=$!
 
+# ─── jobs-worker ────────────────────────────────────────────────────────────
+# Polls the jobs table; runs background handlers (geocoding today, email
+# + moderation later). Same handler code that prod runs from Lambda+SQS.
+# Logs go to /tmp/worker.log; cargo-watch restarts on the same triggers
+# as the api so handler edits land instantly.
+echo "→ starting jobs-worker (logs: /tmp/worker.log)  [auto-reloads]"
+(
+  cd api
+  cargo watch \
+    --why \
+    --watch crates \
+    --watch ../db/migrations \
+    -x 'run -p jobs-worker' \
+    >/tmp/worker.log 2>&1
+) &
+WORKER_PID=$!
+
 # ─── web ────────────────────────────────────────────────────────────────────
 echo "→ starting web (logs: /tmp/web.log)"
 (
@@ -107,13 +124,14 @@ done
 
 echo ""
 echo "✔ ml-art is up"
-echo "    web   http://localhost:3000"
-echo "    api   http://localhost:9100/v1/health"
-echo "    minio http://localhost:9001  (dev / devpassword)"
-echo "    mail  http://localhost:8025"
+echo "    web    http://localhost:3000"
+echo "    api    http://localhost:9100/v1/health"
+echo "    worker (background, see /tmp/worker.log)"
+echo "    minio  http://localhost:9001  (dev / devpassword)"
+echo "    mail   http://localhost:8025"
 echo ""
 echo "  tail logs in another terminal:"
-echo "    make logs-api   |   make logs-web"
+echo "    make logs-api   |   make logs-web   |   tail -f /tmp/worker.log"
 echo ""
 echo "  Ctrl-C to stop both."
 

@@ -17,6 +17,7 @@ pub mod embedder;
 pub mod error;
 pub mod geocoding;
 pub mod images;
+pub mod jobs;
 pub mod middleware;
 pub mod models;
 pub mod modifiers;

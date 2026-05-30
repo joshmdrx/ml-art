@@ -3,6 +3,82 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-05-29 — Jobs queue (T-044): Postgres local, SQS+Lambda prod
+
+Foundation for every future background job. Closes the worker-runtime
+question raised in the state-of-the-build review. See `decisions.md`
+2026-05-29 — jobs queue.
+
+- **Migration `0012_jobs.sql`** — `jobs` table with `kind`, `payload`,
+  `status` enum (pending|running|done|failed), `attempts`,
+  `max_attempts`, `next_run_at` (exponential backoff), unique
+  `idempotency_key`, `last_error`. Partial index on
+  `(next_run_at)` where `status = 'pending'` keeps the worker scan
+  constant-cost as `done` rows accumulate.
+
+- **`core::jobs`** — driver-agnostic abstraction:
+  - `JobEvent` tagged enum (`#[serde(tag = "kind", content = "payload")]`).
+    First variant: `ArtistLocationGeocode { location_id }`.
+  - `JobsBackend` enum with `Postgres` and `for_tests` variants.
+    Same shape as `ObjectStore` / `GeocodingClient`.
+  - `enqueue(event, opts)` — opts carry `idempotency_key` +
+    `max_attempts`. `ON CONFLICT DO NOTHING` on the key makes
+    duplicate enqueues a silent no-op.
+  - `postgres::claim_one` — single-statement `UPDATE … RETURNING`
+    over a `FOR UPDATE SKIP LOCKED` subquery so multiple workers
+    can run concurrently. Returns the post-increment `attempts`
+    so callers can correctly decide retry vs fail.
+  - `postgres::mark_done` / `mark_failed_or_retry` — terminal vs
+    backoff (2 → 8 → 32 → 128 … capped at 1h).
+  - `JobsDeps` — minimal struct carrying what handlers need (pool +
+    geocoder for now). Analogous to AppState but stripped to the
+    worker's surface.
+  - `handle(event, deps)` — dispatch fn. New job = new match arm
+    here + new domain-module handler. The driver doesn't grow.
+
+- **`api/crates/jobs-worker`** — new crate, one binary. Polls every
+  2s; on claim, decodes the event, calls `core::jobs::handle()`,
+  marks done / retry / failed. ~100 lines.
+
+- **Canary on geocoding** — replaced `core::geocoding::trigger_background_geocode`
+  (the only `tokio::spawn` in the codebase) with `state.jobs.enqueue()`.
+  Both studio CRUD call sites (POST + PATCH on `/v1/studio/locations`)
+  now go through the queue. The handler `geocode_and_update` is
+  unchanged — just driven differently.
+
+- **`AppState` swap**: dropped the `geocoder: GeocodingClient` field
+  (nothing in api-search read it after the canary) and added
+  `jobs: JobsBackend`. main.rs builds `JobsBackend::postgres(pool)`;
+  test helpers use `JobsBackend::for_tests()` (in-memory capture).
+
+- **`make dev` integration** — `scripts/dev.sh` spawns `jobs-worker`
+  alongside the api under cargo-watch. Handler edits + migration
+  changes both trigger restarts. Logs go to `/tmp/worker.log`.
+
+- **Tests**
+  - 4 unit tests in `core::jobs` (enum serialization, kind dispatch,
+    in-memory backend capture, decode round-trip)
+  - 6 integration tests in `tests/jobs_test.rs` (enqueue, idempotency
+    dedup, claim+running, full enqueue→handle→done loop, retry+terminate
+    via backoff, studio-create enqueue side-effect)
+  - 216 Rust total (was 206; +10)
+
+- **Smoke-tested end-to-end**: enqueued a real `artist_location_geocode`
+  job via psql, observed the local worker pick it up, run the
+  Mapbox-disabled handler, and mark `done` within the poll interval.
+
+What's not built yet:
+- The SQS+Lambda driver (`JobsBackend::Sqs` + `jobs-lambda` crate).
+  Ships when we deploy to AWS — same handler code runs unchanged.
+- Worker observability beyond `tracing` logs. CloudWatch via
+  `tracing-cloudwatch` lands with the prod driver.
+
+Next: T-032 (Resend email delivery) + T-008 (Rekognition moderation)
+become each "add a `JobEvent` variant + handler" — single PRs that
+ride on top of this foundation.
+
+---
+
 ## 2026-05-29 — Artist UX polish: T-039 price input + T-040 location feedback
 
 Two real-artist friction points from the demo session.

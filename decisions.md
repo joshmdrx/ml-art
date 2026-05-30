@@ -17,6 +17,33 @@ Format:
 
 ---
 
+## 2026-05-29 — Jobs queue: Postgres local, SQS + Lambda prod
+
+**Context:** Several v1 surfaces need background work — geocoding `artist_locations` rows (currently `tokio::spawn`, fragile across api restarts), email delivery via Resend (T-032), image moderation via Rekognition (T-008), and the deferred LLM-assisted onboarding (T-012 Phase 2). The state-of-the-build review surfaced the worker-runtime question as the biggest unblocker for those.
+
+The pragmatic options:
+- **Inngest** — 50k step-runs/mo free, excellent step-function model, but no first-class Rust SDK. Handler code would have to live in TypeScript with calls back into the Rust API, doubling the deployable surface.
+- **AWS SQS + Lambda** — fits the existing `04-stack-and-infra.md` AWS targeting. cargo-lambda support is mature. Free at v0 scale (1M Lambda invocations + 1M SQS messages/mo).
+- **Cloudflare Queues** — JS/WASM-centric; awkward for Rust.
+- **Postgres-backed jobs table** — self-contained, zero new infra, slow at high QPS but fine at v1 volume.
+
+**Decided:** Same handler code, two drivers.
+- **Local dev**: Postgres `jobs` table (migration `0012_jobs.sql`) + a sibling Rust binary (`api/crates/jobs-worker`) that polls with `FOR UPDATE SKIP LOCKED`. Zero external dependencies; runs in the same `make dev` loop as the api.
+- **Prod**: SQS queue + cargo-lambda binary triggered on receive. Same `core::jobs::handle` dispatch function runs in both environments.
+
+The abstraction lives in `core::jobs::JobsBackend` — an enum of `Postgres` (today) and `Sqs` (deferred until we deploy), matching the `ObjectStore` / `GeocodingClient` pattern. `JobEvent` is the tagged-enum wire format; the same JSON shape serializes into both a `jobs.payload` jsonb column and an SQS message body. Handlers (`core::geocoding::geocode_and_update` today; future `core::emails::*`, `core::moderation::*`) take a `JobsDeps` struct and return `Result<()>` — no driver knowledge in the handler.
+
+**Alternatives considered + rejected:**
+- **Inngest** — rejected: no Rust SDK means writing handlers in TS, doubling auth + config + deployment. The 50k-runs-free is generous but doesn't pay back the bilingual cost for our Rust-heavy backend. Revisit only if T-012 Phase 2 (LLM extract + scrape) lands as TS for other reasons.
+- **Keep `tokio::spawn`** — rejected: works for geocoding (where re-saves are cheap) but won't extend to email (where a lost message is a missed inquiry) or moderation (where a lost message is unmoderated content reaching the public surface).
+- **One backend now, port later** — rejected for the same reason we picked the enum: we know we'll need a different driver in prod, so the abstraction has to exist from day one. Otherwise every handler call site bakes in the local assumption.
+
+**Why:** Pays back across every future background job. Each new job is one `JobEvent` variant + one handler fn + one match arm in `handle()` — local + prod both just work. The migration to SQS+Lambda when we deploy is a new ~50-line binary + an env flag, not a rewrite.
+
+**Reversibility:** Medium — `core::jobs` is the central abstraction; rewriting it would touch every job-enqueuing site. But the on-the-wire format is plain JSON, so adopting a different orchestrator (Inngest, Trigger.dev, Hatchet) later is just a new driver impl — handler code stays put.
+
+---
+
 ## 2026-05-29 — Map-search filter semantics: per-artist, not per-artwork
 
 **Context:** `/search?q=ukiyo&map=1` could plausibly mean two things: (a) "venues whose artist has *any* artwork matching ukiyo" (per-artist), or (b) "venues with at least one artwork matching ukiyo on display right now" (per-artwork, stricter). The data layer can express either — the EXISTS subquery on `artworks` is a one-line change.

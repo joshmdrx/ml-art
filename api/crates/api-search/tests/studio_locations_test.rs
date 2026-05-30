@@ -1,12 +1,14 @@
 //! T-038 G3 — integration tests for `/v1/studio/locations`.
 //!
 //! Geocoding is intentionally inert in these tests: the helpers we use
-//! (`app_with_test_auth`) construct `GeocodingClient::disabled()`, so
-//! POST / PATCH return rows with NULL lat/lng. That's *exactly* the
-//! "Locating…" state the studio UI surfaces, and lets us assert ownership
-//! and validation behavior deterministically without waiting on a real
-//! HTTP round trip. The full geocode → row-update path is covered in
-//! `tests/geocoding_test.rs`.
+//! (`app_with_test_auth`) construct `JobsBackend::for_tests()`, which
+//! captures enqueued events in memory rather than running them. POST /
+//! PATCH therefore return rows with NULL lat/lng — exactly the
+//! "Locating…" state the studio UI surfaces — and let us assert
+//! ownership + validation behavior deterministically without waiting
+//! on a real HTTP round trip. The full geocode → row-update path is
+//! covered in `tests/geocoding_test.rs`; the enqueue → claim → handle
+//! loop is covered in `tests/jobs_test.rs`.
 
 mod common;
 

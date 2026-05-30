@@ -15,7 +15,7 @@ use axum::{
     Router,
 };
 use ml_art_core::{
-    auth::JwtVerifier, config::Config, db::Pool, embedder::Embedder, geocoding::GeocodingClient,
+    auth::JwtVerifier, config::Config, db::Pool, embedder::Embedder, jobs::JobsBackend,
     object_store::ObjectStore,
 };
 use serde::de::DeserializeOwned;
@@ -42,7 +42,7 @@ pub fn app_keyword_only(pool: Pool) -> Router {
         jwt_verifier,
         cfg,
         object_store: ObjectStore::for_tests("uploads"),
-        geocoder: GeocodingClient::disabled(),
+        jobs: JobsBackend::for_tests(),
     }))
 }
 
@@ -59,7 +59,7 @@ pub fn app_with_test_auth(pool: Pool) -> Router {
         jwt_verifier,
         cfg,
         object_store: ObjectStore::for_tests("uploads"),
-        geocoder: GeocodingClient::disabled(),
+        jobs: JobsBackend::for_tests(),
     }))
 }
 
@@ -139,7 +139,7 @@ pub fn app_with_rate_limit(pool: Pool, search_per_min: u32, inquiry_per_hour: u3
         jwt_verifier,
         cfg,
         object_store: ObjectStore::for_tests("uploads"),
-        geocoder: GeocodingClient::disabled(),
+        jobs: JobsBackend::for_tests(),
     }))
 }
 
@@ -160,7 +160,7 @@ pub fn app_with_fixed_vector(pool: Pool, vec: pgvector::Vector) -> Router {
         jwt_verifier,
         cfg,
         object_store: ObjectStore::for_tests("uploads"),
-        geocoder: GeocodingClient::disabled(),
+        jobs: JobsBackend::for_tests(),
     }))
 }
 
@@ -184,7 +184,7 @@ pub fn app_with_auth_and_fixed_vector(pool: Pool, vec: pgvector::Vector) -> Rout
         jwt_verifier,
         cfg,
         object_store: ObjectStore::for_tests("uploads"),
-        geocoder: GeocodingClient::disabled(),
+        jobs: JobsBackend::for_tests(),
     }))
 }
 

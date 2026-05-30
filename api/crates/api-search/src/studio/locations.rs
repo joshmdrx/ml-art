@@ -6,11 +6,12 @@
 //! including pre-geocode ones — the studio UI shows them as "Locating…"
 //! so the artist gets feedback that the row exists and is queued.
 //!
-//! Background geocoding: POST and PATCH (when `address` changes) call
-//! `trigger_background_geocode`, which `tokio::spawn`s a Mapbox lookup
-//! that writes lat/lng/city/country back to the row. The HTTP response
-//! returns immediately with the un-geocoded row; the studio UI re-polls
-//! or refetches after a short delay to see the pin land.
+//! Background geocoding: POST and PATCH (when `address` changes)
+//! enqueue an `ArtistLocationGeocode` job via `state.jobs`. The local
+//! jobs-worker binary picks it up + calls `geocode_and_update`. The
+//! HTTP response returns immediately with the un-geocoded row; the
+//! studio UI refetches after a short delay to see the pin land. See
+//! `core::jobs` and `decisions.md` 2026-05-29 — jobs queue.
 //!
 //! Ownership: every handler resolves `current_artist_id` first, then
 //! gates every SQL operation on `artist_id = $current_artist_id`. We
@@ -23,7 +24,11 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
-use ml_art_core::{error::ApiError, geocoding::trigger_background_geocode, models::ArtistLocation};
+use ml_art_core::{
+    error::ApiError,
+    jobs::{EnqueueOpts, JobEvent},
+    models::ArtistLocation,
+};
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::FromRow;
 use std::sync::Arc;
@@ -154,9 +159,22 @@ pub async fn create(
     .fetch_one(&state.pool)
     .await?;
 
-    // Fire-and-forget Mapbox lookup. Returns immediately; the UI will
-    // see the unset lat/lng and show "Locating…", then refresh.
-    trigger_background_geocode(state.geocoder.clone(), state.pool.clone(), row.id);
+    // Enqueue the geocode job; the jobs-worker picks it up + calls
+    // `geocode_and_update`. Idempotency key covers the case where
+    // two save clicks land within the polling interval.
+    state
+        .jobs
+        .enqueue(
+            JobEvent::ArtistLocationGeocode {
+                location_id: row.id,
+            },
+            EnqueueOpts {
+                idempotency_key: Some(format!("geocode:{}", row.id)),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("enqueue geocode: {e}")))?;
 
     Ok((StatusCode::CREATED, Json(row.into_dto())))
 }
@@ -252,7 +270,26 @@ pub async fn patch(
     let row = updated.ok_or(ApiError::NotFound)?;
 
     if address_changing {
-        trigger_background_geocode(state.geocoder.clone(), state.pool.clone(), row.id);
+        state
+            .jobs
+            .enqueue(
+                JobEvent::ArtistLocationGeocode {
+                    location_id: row.id,
+                },
+                EnqueueOpts {
+                    // Different key from the create-time enqueue so a
+                    // PATCH after a successful create still produces a
+                    // fresh job for the new address.
+                    idempotency_key: Some(format!(
+                        "geocode:{}:patch:{}",
+                        row.id,
+                        chrono::Utc::now().timestamp()
+                    )),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("enqueue geocode: {e}")))?;
     }
 
     Ok(Json(row.into_dto()))

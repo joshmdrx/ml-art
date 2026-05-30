@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/api-search",
+    "crates/jobs-worker",
 ]
 
 [workspace.package]
