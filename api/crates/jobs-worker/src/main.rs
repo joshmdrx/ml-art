@@ -17,6 +17,7 @@ use ml_art_core::{
     emails::EmailClient,
     geocoding::GeocodingClient,
     jobs::{self, JobsDeps},
+    moderation::ModerationClient,
 };
 use tracing::{debug, error, info, warn};
 
@@ -29,10 +30,12 @@ async fn main() -> anyhow::Result<()> {
     let pool = ml_art_core::db::make_pool(&cfg.database_url).await?;
     let geocoder = GeocodingClient::from_env();
     let emails = EmailClient::from_env();
+    let moderation = ModerationClient::from_env();
     let deps = JobsDeps {
         pool: pool.clone(),
         geocoder,
         emails,
+        moderation,
         web_base_url: cfg.web_base_url.clone(),
     };
 

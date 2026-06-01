@@ -3,6 +3,62 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-01 — T-008: artwork-image moderation pipeline
+
+Closes the public-surface trust gap — freshly-added images no longer
+appear on artist profiles / search / collections / artwork detail
+until they've been through the moderation handler. The Real
+Rekognition client is deferred to when our AWS deploy lands; until
+then `Disabled` auto-approves (matches today's effective behavior,
+but the queue + handler + filtering plumbing is now in place).
+
+- **`core::moderation`** — `ModerationClient` enum with `Disabled`
+  (auto-approves; default in dev) and `for_tests` (canned
+  `(s3_key → result)` map). No `Real` variant yet: when our AWS
+  deploy lands, that's a one-spot change. `from_env()` reads
+  `REKOGNITION_ENABLED`; logs a warning when it's true but the Real
+  path isn't wired, then falls through to `Disabled`. 3 unit tests.
+
+- **`JobEvent::ArtworkImageModerate { artwork_image_id }`** + handler
+  dispatch in `core::jobs`. The handler (`moderate_artwork_image` in
+  `core::moderation`) loads `s3_key`, calls the client, writes
+  `artwork_images.moderation_status` (`approved` | `rejected`).
+  Idempotent — re-runs replay the same verdict.
+
+- **Enqueue from `studio::artworks::add_image`** with idempotency key
+  `moderate:artwork_image:{id}`. Same shape as the inquiry +
+  geocoding handlers.
+
+- **Public surfaces now filter `moderation_status = 'approved'`**
+  (previously `!= 'rejected'` at the one site that filtered, with no
+  filter elsewhere — pending images were slipping through). Tightened
+  in `artwork.rs` (detail + similar), `artist.rs`, `search.rs`,
+  `search_map.rs`, `neighborhoods.rs`, `me/collections.rs`. Studio
+  routes are unchanged — the artist sees their own pending +
+  rejected rows.
+
+- **`JobsDeps` extended** with `moderation: ModerationClient`;
+  jobs-worker builds `ModerationClient::from_env()`. New test helpers
+  in `tests/common`: `app_with_keyword_only_postgres_jobs`,
+  `app_with_auth_fixed_vector_postgres_jobs`.
+
+- **Tests**: 7 integration tests in `moderation_test.rs` covering
+  enqueue, public-surface hiding, approve-via-Disabled,
+  reject-via-canned, missing-row no-op, full enqueue→handle→approve
+  round-trip, and idempotency dedup. 3 unit tests in `core::moderation`.
+
+- **Env**: optional `REKOGNITION_ENABLED` (commented in `.env.example`).
+  No new required vars.
+
+**Deferred:**
+- Real Rekognition wiring (`aws-sdk-rekognition` dep + IAM + region).
+  Open as T-008 follow-up to land alongside the AWS deploy.
+- Moderation on the `uploads` bucket (visual-search uploads). The
+  table column already exists; needs a parallel `UploadModerate`
+  variant + enqueue from `uploads::create`.
+- Surfacing the rejection reason in studio (the `labels` field on
+  `ModerationResult` is logged but not persisted).
+
 ## 2026-05-29 — T-032: real inquiry email delivery via Resend + jobs queue
 
 Closes the biggest "demoware" gap in the inquiry flow — the

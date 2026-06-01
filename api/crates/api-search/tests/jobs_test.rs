@@ -126,6 +126,7 @@ async fn full_loop_geocodes_via_handler(pool: PgPool) {
         pool: pool.clone(),
         geocoder: GeocodingClient::for_tests(canned),
         emails: EmailClient::for_tests(),
+        moderation: ml_art_core::moderation::ModerationClient::disabled(),
         web_base_url: "https://test.example.com".to_string(),
     };
 

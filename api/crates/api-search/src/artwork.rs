@@ -68,7 +68,7 @@ pub async fn detail(
         SELECT id, s3_key, width, height, is_primary, display_order
         FROM artwork_images
         WHERE artwork_id = $1
-          AND moderation_status != 'rejected'
+          AND moderation_status = 'approved'
         ORDER BY is_primary DESC, display_order ASC
         "#,
     )
@@ -133,7 +133,9 @@ pub async fn similar(
         JOIN artworks a  ON a.id = ae.artwork_id
         JOIN artists ar  ON ar.id = a.artist_id
         LEFT JOIN artwork_images ai
-               ON ai.artwork_id = a.id AND ai.is_primary
+               ON ai.artwork_id = a.id
+              AND ai.is_primary
+              AND ai.moderation_status = 'approved'
         WHERE ae.model_name = $2
           AND ae.model_version = $3
           AND a.deleted_at IS NULL

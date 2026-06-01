@@ -272,7 +272,9 @@ async fn run_hybrid(
         FROM artworks a
         JOIN artists ar ON ar.id = a.artist_id
         LEFT JOIN artwork_images ai
-               ON ai.artwork_id = a.id AND ai.is_primary
+               ON ai.artwork_id = a.id
+              AND ai.is_primary
+              AND ai.moderation_status = 'approved'
         LEFT JOIN keyword_ranked  k ON k.id = a.id
         LEFT JOIN semantic_ranked s ON s.id = a.id
         WHERE a.deleted_at IS NULL
@@ -326,7 +328,9 @@ async fn run_no_query(
         FROM artworks a
         JOIN artists ar ON ar.id = a.artist_id
         LEFT JOIN artwork_images ai
-               ON ai.artwork_id = a.id AND ai.is_primary
+               ON ai.artwork_id = a.id
+              AND ai.is_primary
+              AND ai.moderation_status = 'approved'
         WHERE a.deleted_at IS NULL
           AND a.status = 'published'
           AND ar.deleted_at IS NULL

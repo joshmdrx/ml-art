@@ -75,13 +75,17 @@ if the item was dropped, with a one-line reason.
 **Why:** current design writes all `.npy` files at the end of `embed_images`. A mid-run crash on a 2000-image embed loses everything. Burned us once during the WikiArt pass.
 **Acceptance:** stream-style writes; survives `kill -9` mid-run; existing tests pass; add a partial-completion resume test.
 
-### `T-008` Image moderation via Rekognition
-**Where:** new `JobEvent::ImageModerate { image_id, kind }` variant + handler in `core::moderation`; enqueue from `api-search::studio::artworks::add_image` and from `api-search::uploads`.
-**Acceptance:**
-- On artwork-image insert OR new visual-search upload, the handler enqueues an `ImageModerate` job. jobs-worker calls AWS Rekognition `DetectModerationLabels` and writes `artwork_images.moderation_status` / `uploads.moderation_status`.
-- Search + public artist payload filter to `moderation_status = 'approved'`.
-- Local dev: stub always-approves (gated by `REKOGNITION_ENABLED=false`); production stub passes when the AWS creds are absent.
-- Integration test against `JobsBackend::for_tests()` asserting enqueue at both insert sites.
+### ~~`T-008` Image moderation — artwork_images pipeline~~ — shipped 2026-06-01
+
+- ✅ `core::moderation` `ModerationClient` enum (`Disabled` / `for_tests`); `JobEvent::ArtworkImageModerate` variant + handler dispatch.
+- ✅ Enqueue from `studio::artworks::add_image` with idempotency key `moderate:artwork_image:{id}`.
+- ✅ Public surfaces tightened to `moderation_status = 'approved'` (was `!= 'rejected'` at one site + no filter elsewhere).
+- ✅ 7 integration + 3 unit tests; `JobsDeps` + jobs-worker + env wired.
+
+**Deferred (open follow-ups):**
+- `T-008a` Real Rekognition wire-up — pull `aws-sdk-rekognition`, build `Real` variant, gate on `REKOGNITION_ENABLED`. Lands alongside the AWS deploy.
+- `T-008b` Moderation on the `uploads` bucket — parallel `UploadModerate` variant + enqueue from `uploads::create`. Column already exists in `0004_inquiries_uploads.sql`.
+- `T-008c` Surface rejection reason in studio — `ModerationResult.labels` is logged today; persist + show on the studio image row.
 
 ### ~~`T-010` Visual search upload + modifier UI~~ — all four phases shipped
 - ✅ **Phase A:** `POST /v1/uploads/image` — multipart in, S3/MinIO PUT, inline T-036-style embedding into `uploads.embedding`

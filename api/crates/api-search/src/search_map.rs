@@ -117,7 +117,10 @@ pub async fn handle(
         LEFT JOIN LATERAL (
             SELECT s3_key
             FROM artworks aw
-            JOIN artwork_images aii ON aii.artwork_id = aw.id AND aii.is_primary
+            JOIN artwork_images aii
+              ON aii.artwork_id = aw.id
+             AND aii.is_primary
+             AND aii.moderation_status = 'approved'
             WHERE aw.artist_id = ar.id
               AND aw.deleted_at IS NULL
               AND aw.status = 'published'

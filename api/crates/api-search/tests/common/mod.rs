@@ -207,6 +207,47 @@ pub fn app_with_auth_and_fixed_vector(pool: Pool, vec: pgvector::Vector) -> Rout
     }))
 }
 
+/// Keyword-only (disabled embedder, no auth) with a real Postgres jobs
+/// backend. Used by T-008 tests that hit public surfaces (no auth) and
+/// want to insert rows directly via SQL — the AppState still needs to
+/// build, but the jobs backend isn't exercised here.
+pub fn app_with_keyword_only_postgres_jobs(pool: Pool) -> Router {
+    let cfg = Config::for_tests(String::new());
+    let embedder = Embedder::disabled(pool.clone());
+    let jwt_verifier = JwtVerifier::new(None, None, None);
+    build_app(Arc::new(AppState {
+        pool: pool.clone(),
+        embedder,
+        jwt_verifier,
+        cfg,
+        object_store: ObjectStore::for_tests("uploads"),
+        jobs: JobsBackend::postgres(pool),
+    }))
+}
+
+/// Auth + fixed-vector + Postgres-backed jobs. Used by T-008 moderation
+/// tests that hit `/v1/studio/artworks/:id/images` (requires auth + a
+/// real embedder) AND want to assert the enqueued moderation job
+/// against the `jobs` table.
+pub fn app_with_auth_fixed_vector_postgres_jobs(pool: Pool, vec: pgvector::Vector) -> Router {
+    let cfg = Config::for_tests(String::new());
+    let embedder = Embedder::with_fixed_vector(
+        pool.clone(),
+        cfg.embedding_model_name.clone(),
+        cfg.embedding_model_version.clone(),
+        vec,
+    );
+    let jwt_verifier = JwtVerifier::for_tests();
+    build_app(Arc::new(AppState {
+        pool: pool.clone(),
+        embedder,
+        jwt_verifier,
+        cfg,
+        object_store: ObjectStore::for_tests("uploads"),
+        jobs: JobsBackend::postgres(pool),
+    }))
+}
+
 /// Build a standalone `Embedder` with `with_fixed_vector`. For pipeline
 /// tests (`process_image`) that don't need the whole Axum router.
 pub fn embedder_with_fixed_vector(pool: Pool, vec: pgvector::Vector) -> Embedder {

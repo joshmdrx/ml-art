@@ -55,6 +55,9 @@ pub enum JobEvent {
     /// `delivered_at` flips — on signed-in inquiry create AND on
     /// the verify endpoint for anonymous inquiries. T-032.
     InquiryDeliverToArtist { inquiry_id: Uuid },
+    /// Run the moderation client against a freshly-added artwork
+    /// image. Writes back `artwork_images.moderation_status`. T-008.
+    ArtworkImageModerate { artwork_image_id: Uuid },
 }
 
 impl JobEvent {
@@ -67,6 +70,7 @@ impl JobEvent {
             JobEvent::ArtistLocationGeocode { .. } => "artist_location_geocode",
             JobEvent::InquirySendVerification { .. } => "inquiry_send_verification",
             JobEvent::InquiryDeliverToArtist { .. } => "inquiry_deliver_to_artist",
+            JobEvent::ArtworkImageModerate { .. } => "artwork_image_moderate",
         }
     }
 }
@@ -343,6 +347,7 @@ pub struct JobsDeps {
     pub pool: Pool,
     pub geocoder: crate::geocoding::GeocodingClient,
     pub emails: crate::emails::EmailClient,
+    pub moderation: crate::moderation::ModerationClient,
     /// `WEB_BASE_URL` — passed in so handlers can build email links
     /// without re-reading env or threading the whole `Config`.
     pub web_base_url: String,
@@ -368,6 +373,15 @@ pub async fn handle(event: JobEvent, deps: &JobsDeps) -> Result<(), HandlerError
             inquiry_handlers::deliver_to_artist(deps, inquiry_id)
                 .await
                 .map_err(|e| HandlerError::Domain(e.to_string()))?;
+        }
+        JobEvent::ArtworkImageModerate { artwork_image_id } => {
+            crate::moderation::moderate_artwork_image(
+                &deps.moderation,
+                &deps.pool,
+                artwork_image_id,
+            )
+            .await
+            .map_err(|e| HandlerError::Domain(e.to_string()))?;
         }
     }
     Ok(())
@@ -568,6 +582,13 @@ mod tests {
             }
             .kind(),
             "inquiry_deliver_to_artist"
+        );
+        assert_eq!(
+            JobEvent::ArtworkImageModerate {
+                artwork_image_id: Uuid::new_v4()
+            }
+            .kind(),
+            "artwork_image_moderate"
         );
     }
 

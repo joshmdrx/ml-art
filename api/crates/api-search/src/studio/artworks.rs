@@ -24,7 +24,13 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
-use ml_art_core::{artwork_embeddings, error::ApiError, images::url_for_s3_key, models::Paginated};
+use ml_art_core::{
+    artwork_embeddings,
+    error::ApiError,
+    images::url_for_s3_key,
+    jobs::{EnqueueOpts, JobEvent},
+    models::Paginated,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use std::sync::Arc;
@@ -512,6 +518,24 @@ pub async fn add_image(
                 .map_err(|e| ApiError::Internal(anyhow::anyhow!("embed failed: {e}")))?;
         }
     }
+
+    // T-008: enqueue a moderation job. The row lands as
+    // `moderation_status='pending'`; the worker flips it to
+    // `approved` or `rejected`. Idempotency key on the image id so
+    // double-enqueue (retry, duplicate POST) dedups in the `jobs` table.
+    state
+        .jobs
+        .enqueue(
+            JobEvent::ArtworkImageModerate {
+                artwork_image_id: row.id,
+            },
+            EnqueueOpts {
+                idempotency_key: Some(format!("moderate:artwork_image:{}", row.id)),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("enqueue moderation: {e}")))?;
 
     Ok((StatusCode::CREATED, Json(row.into_studio_image())))
 }

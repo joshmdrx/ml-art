@@ -21,6 +21,7 @@ pub mod images;
 pub mod jobs;
 pub mod middleware;
 pub mod models;
+pub mod moderation;
 pub mod modifiers;
 pub mod object_store;
 pub mod telemetry;

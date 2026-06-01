@@ -294,7 +294,9 @@ pub async fn detail(
         JOIN artworks a   ON a.id = ca.artwork_id
         JOIN artists ar   ON ar.id = a.artist_id
         LEFT JOIN artwork_images ai
-               ON ai.artwork_id = a.id AND ai.is_primary
+               ON ai.artwork_id = a.id
+              AND ai.is_primary
+              AND ai.moderation_status = 'approved'
         WHERE ca.collection_id = $1
           AND a.deleted_at IS NULL
           AND a.status = 'published'
@@ -456,7 +458,9 @@ async fn fetch_collection_covers(
                 ) AS rk
             FROM collection_artworks ca
             JOIN artwork_images ai
-              ON ai.artwork_id = ca.artwork_id AND ai.is_primary
+              ON ai.artwork_id = ca.artwork_id
+             AND ai.is_primary
+             AND ai.moderation_status = 'approved'
             WHERE ca.collection_id = ANY($1)
         ) ranked
         WHERE rk <= $2
