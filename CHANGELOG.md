@@ -3,6 +3,36 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-01 — T-033: anonymous-trail merge on sign-in
+
+Closes the "I signed up but my anonymous saves are gone" papercut.
+Anything the user did keyed off the `anon_id` cookie (uploads today;
+events tomorrow when T-016 writers land) gets stamped with their
+now-known `user_id` once they sign in.
+
+- **`POST /v1/me/merge-anonymous`** — auth-required, takes the calling
+  user's `X-Anonymous-Id` header. Transactionally updates both
+  `uploads` and `events` rows where `anonymous_id = $anon AND
+  user_id IS NULL`. Returns the merged counts. Idempotent — second
+  call is a no-op because the `IS NULL` predicate has nothing left
+  to match. Ownership-safe: never overwrites an existing `user_id`,
+  so a shared-machine anon cookie can't steal another user's rows.
+
+- **`POST /api/me/merge-anonymous`** Next.js route handler bridges
+  the client → API call (server-to-server via `apiFetch` which
+  already attaches Bearer + anon-id).
+
+- **`<AnonymousMergeBridge />`** client component mounted in the
+  root layout. On sign-in, fires the bridge once per browser session
+  (gated by `sessionStorage['mlart_anon_merged']`). Errors re-arm the
+  marker so the next navigation retries; the underlying API is
+  idempotent so re-firing is safe.
+
+- **8 Rust integration tests** covering happy path, no-anon-header
+  no-op, no-rows no-op, second-call idempotency, ownership-safety
+  (Bob's rows don't flip to Alice), per-user anon isolation, 401 for
+  unauthed, 400 for malformed anon header.
+
 ## 2026-06-01 — T-011 Phase 4: studio inquiries inbox
 
 Closes the loop on T-032 — artists now have an in-app view of every

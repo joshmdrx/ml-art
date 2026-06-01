@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
+import { AnonymousMergeBridge } from "@/components/AnonymousMergeBridge";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -44,7 +45,11 @@ export default function RootLayout({
         lang="en"
         className={`${geistSans.variable} ${geistMono.variable} ${serif.variable} h-full antialiased`}
       >
-        <body className="min-h-full flex flex-col font-sans">{children}</body>
+        <body className="min-h-full flex flex-col font-sans">
+          {/* T-033: silent post-signin merge of the anon_id trail */}
+          <AnonymousMergeBridge />
+          {children}
+        </body>
       </html>
     </ClerkProvider>
   );

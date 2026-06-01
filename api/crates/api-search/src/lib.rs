@@ -87,6 +87,10 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route("/v1/neighborhoods", get(neighborhoods::index))
         .route("/v1/neighborhoods/:slug", get(neighborhoods::detail))
         .route("/v1/me", get(me::current_user))
+        // T-033: called once after sign-in to copy behavioral signal
+        // keyed on the anon_id cookie onto the now-known user. Body-
+        // less + idempotent — the anon_id comes from `X-Anonymous-Id`.
+        .route("/v1/me/merge-anonymous", post(me::merge_anonymous))
         .route(
             "/v1/me/collections",
             get(me::collections::list).post(me::collections::create),

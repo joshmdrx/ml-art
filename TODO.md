@@ -97,9 +97,13 @@ if the item was dropped, with a one-line reason.
 
 ## Auth + identity follow-ups
 
-### `T-033` Merge anonymous behavior into user on sign-in
-**Where:** `POST /v1/me/merge-anonymous`, called from Clerk's sign-in callback
-**Acceptance:** Reads `anon_id` cookie, copies behavioral signal (searches, saves intent, anything keyed off anon_id) to the now-known `user_id`. Idempotent.
+### ~~`T-033` Merge anonymous behavior into user on sign-in~~ — shipped 2026-06-01
+
+- ✅ `POST /v1/me/merge-anonymous` — transactional UPDATE on uploads + events keyed on `(anonymous_id = $anon AND user_id IS NULL)`. Idempotent + ownership-safe (never overwrites an existing link).
+- ✅ Next.js route handler + `<AnonymousMergeBridge />` client component mounted in the root layout. Fires once per browser session via `sessionStorage` marker.
+- ✅ 8 Rust integration tests covering happy path, no-anon no-op, no-rows no-op, second-call idempotency, never-overwrite-Bob, per-user isolation, 401, 400 malformed.
+
+**Deferred:** the `events` writer doesn't exist yet (T-016 partitioning track) so the events_merged count is always 0 today. The merge code is already in place so it'll start working when events writes land.
 
 ### `T-014` Dev login-as-artist (partly obsolete now)
 **State:** real Clerk auth works; for testing the *artist studio* we may still want a way to assume a specific artist without signing up with their email. Defer until studio lands; possibly fold into `T-031` (web test-mode bypass).

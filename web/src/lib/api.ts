@@ -834,6 +834,31 @@ export async function completeOnboarding(): Promise<StudioArtist> {
   return (await res.json()) as StudioArtist;
 }
 
+/** T-033 — copy behavioral signal keyed on the caller's anon_id over
+ * to their now-known user_id. Idempotent: a second call is a no-op
+ * because the WHERE clause server-side filters on `user_id IS NULL`.
+ * Returns the counts so callers can log "merged N uploads". */
+export interface MergeAnonymousResponse {
+  uploads_merged: number;
+  events_merged: number;
+}
+
+export async function mergeAnonymous(
+  init?: RequestInit
+): Promise<MergeAnonymousResponse> {
+  const res = await apiFetch("/v1/me/merge-anonymous", {
+    ...init,
+    method: "POST",
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `me/merge-anonymous ${res.status}: ${text || res.statusText}`
+    );
+  }
+  return (await res.json()) as MergeAnonymousResponse;
+}
+
 export async function getStudioMe(
   init?: RequestInit
 ): Promise<StudioArtist | null> {
