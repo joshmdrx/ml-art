@@ -42,6 +42,7 @@ use axum::{
 use ml_art_core::{
     auth::{OptionalAnonId, User},
     error::ApiError,
+    jobs::{EnqueueOpts, JobEvent},
 };
 use pgvector::Vector;
 use serde::Serialize;
@@ -178,6 +179,21 @@ pub async fn create(
     .bind(&vector)
     .execute(&state.pool)
     .await?;
+
+    // T-008b: enqueue moderation. Row lands as `moderation_status='pending'`;
+    // the worker flips it to `approved` or `rejected`. Idempotency key on
+    // the upload id so a retry can't fire two jobs for the same row.
+    state
+        .jobs
+        .enqueue(
+            JobEvent::UploadModerate { upload_id },
+            EnqueueOpts {
+                idempotency_key: Some(format!("moderate:upload:{upload_id}")),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("enqueue moderation: {e}")))?;
 
     let image_url = state.object_store.public_url(&s3_key);
 

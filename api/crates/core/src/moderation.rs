@@ -203,6 +203,52 @@ pub async fn moderate_artwork_image(
     Ok(())
 }
 
+/// T-008b — moderate one visual-search upload row.
+///
+/// Mirrors `moderate_artwork_image` but targets the `uploads` table
+/// (visual-search anchor images). On rejection, the search path's
+/// `moderation_status != 'rejected'` filter starts hiding the row;
+/// the public S3 object is left in place (the cleanup job evicts it
+/// via `expires_at`).
+///
+/// `Ok(())` on missing row — same noop semantics as the artwork
+/// variant.
+pub async fn moderate_upload(
+    client: &ModerationClient,
+    pool: &crate::db::Pool,
+    upload_id: uuid::Uuid,
+) -> Result<(), ModerationError> {
+    let row: Option<(String,)> =
+        sqlx::query_as(r#"SELECT s3_key FROM uploads WHERE id = $1"#)
+            .bind(upload_id)
+            .fetch_optional(pool)
+            .await?;
+
+    let Some((s3_key,)) = row else {
+        tracing::debug!(%upload_id, "upload row gone before moderation ran");
+        return Ok(());
+    };
+
+    let result = client.moderate(&s3_key).await?;
+
+    if matches!(result.status, ModerationStatus::Rejected) {
+        tracing::warn!(
+            %upload_id,
+            labels = ?result.labels,
+            "upload rejected by moderation",
+        );
+    } else {
+        tracing::debug!(%upload_id, "upload approved");
+    }
+
+    sqlx::query(r#"UPDATE uploads SET moderation_status = $2 WHERE id = $1"#)
+        .bind(upload_id)
+        .bind(result.status.as_str())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -239,6 +285,19 @@ mod tests {
         // Unknown s3_key falls back to approved.
         let other = c.moderate("uploads/other.jpg").await.unwrap();
         assert_eq!(other.status, ModerationStatus::Approved);
+    }
+
+    #[tokio::test]
+    async fn test_client_canned_works_for_uploads_keys_too() {
+        // The same client is used for artwork_images + uploads.
+        // Sanity-check that an `uploads/...` s3_key resolves to the
+        // canned verdict — used in the T-008b integration tests.
+        let c = ModerationClient::for_tests(vec![(
+            "uploads/abc.jpg".to_string(),
+            ModerationResult::rejected(vec!["Violence".to_string()]),
+        )]);
+        let r = c.moderate("uploads/abc.jpg").await.unwrap();
+        assert_eq!(r.status, ModerationStatus::Rejected);
     }
 
     #[test]

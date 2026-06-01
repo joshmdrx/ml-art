@@ -3,6 +3,28 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-01 — T-008b: uploads-bucket moderation
+
+Parallels T-008 for the visual-search `uploads` bucket. Closes the
+abuse vector where anonymous users could upload arbitrary images and
+use them as search anchors before any moderation ran.
+
+- **`JobEvent::UploadModerate { upload_id }`** + handler dispatch in
+  `core::jobs`. New `moderate_upload` handler in `core::moderation`
+  mirrors `moderate_artwork_image`.
+- **`uploads::create`** enqueues with idempotency key
+  `moderate:upload:{id}` after the row + S3 PUT land.
+- **Visual-search anchor lookup** (`/v1/search?image_upload_id=…`)
+  filters `moderation_status != 'rejected'` — rejected rows return
+  404, same shape as a non-existent upload (so the abuse path can't
+  tell whether the upload landed). Pending + approved still resolve
+  so the uploader's own immediate search doesn't 404 during the
+  upload→worker race window.
+- **8 integration tests**: enqueue + payload + pending default,
+  Disabled approves, canned rejects, missing-row no-op, rejected
+  → 404, pending → 200, approved → 200, idempotency dedup. 1 new
+  unit test on `ModerationClient`.
+
 ## 2026-06-01 — T-033: anonymous-trail merge on sign-in
 
 Closes the "I signed up but my anonymous saves are gone" papercut.

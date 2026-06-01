@@ -116,15 +116,19 @@ pub async fn handle(
     //   1. `image_upload_id` → look up `uploads.embedding`. Unknown id
     //      → 404 (capability-style; UUIDs are unguessable). Row exists
     //      but embedding NULL → 400 (the upload is mid-flight, retry).
+    //      A `moderation_status = 'rejected'` row is treated as if it
+    //      didn't exist (T-008b) — same 404 so the abuse path can't
+    //      tell whether the upload landed.
     //   2. `q` → call `embed_text`. Returns None when the embedder is
     //      disabled in dev (no JINA_API_KEY); search degrades to
     //      keyword-only via the existing branch.
     let upload_vec: Option<Vector> = if let Some(id) = params.image_upload_id {
-        let row: Option<(Option<Vector>,)> =
-            sqlx::query_as("SELECT embedding FROM uploads WHERE id = $1")
-                .bind(id)
-                .fetch_optional(&state.pool)
-                .await?;
+        let row: Option<(Option<Vector>,)> = sqlx::query_as(
+            "SELECT embedding FROM uploads WHERE id = $1 AND moderation_status != 'rejected'",
+        )
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?;
         match row {
             Some((Some(v),)) => Some(v),
             Some((None,)) => {

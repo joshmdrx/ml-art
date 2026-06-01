@@ -58,6 +58,9 @@ pub enum JobEvent {
     /// Run the moderation client against a freshly-added artwork
     /// image. Writes back `artwork_images.moderation_status`. T-008.
     ArtworkImageModerate { artwork_image_id: Uuid },
+    /// Run the moderation client against a freshly-PUT visual-search
+    /// upload. Writes back `uploads.moderation_status`. T-008b.
+    UploadModerate { upload_id: Uuid },
 }
 
 impl JobEvent {
@@ -71,6 +74,7 @@ impl JobEvent {
             JobEvent::InquirySendVerification { .. } => "inquiry_send_verification",
             JobEvent::InquiryDeliverToArtist { .. } => "inquiry_deliver_to_artist",
             JobEvent::ArtworkImageModerate { .. } => "artwork_image_moderate",
+            JobEvent::UploadModerate { .. } => "upload_moderate",
         }
     }
 }
@@ -383,6 +387,11 @@ pub async fn handle(event: JobEvent, deps: &JobsDeps) -> Result<(), HandlerError
             .await
             .map_err(|e| HandlerError::Domain(e.to_string()))?;
         }
+        JobEvent::UploadModerate { upload_id } => {
+            crate::moderation::moderate_upload(&deps.moderation, &deps.pool, upload_id)
+                .await
+                .map_err(|e| HandlerError::Domain(e.to_string()))?;
+        }
     }
     Ok(())
 }
@@ -589,6 +598,13 @@ mod tests {
             }
             .kind(),
             "artwork_image_moderate"
+        );
+        assert_eq!(
+            JobEvent::UploadModerate {
+                upload_id: Uuid::new_v4()
+            }
+            .kind(),
+            "upload_moderate"
         );
     }
 

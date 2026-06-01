@@ -84,7 +84,7 @@ if the item was dropped, with a one-line reason.
 
 **Deferred (open follow-ups):**
 - `T-008a` Real Rekognition wire-up — pull `aws-sdk-rekognition`, build `Real` variant, gate on `REKOGNITION_ENABLED`. Lands alongside the AWS deploy.
-- `T-008b` Moderation on the `uploads` bucket — parallel `UploadModerate` variant + enqueue from `uploads::create`. Column already exists in `0004_inquiries_uploads.sql`.
+- ~~`T-008b` Moderation on the `uploads` bucket~~ — shipped 2026-06-01. `JobEvent::UploadModerate` + `moderate_upload` handler + enqueue from `uploads::create` + visual-search anchor refuses rejected rows. 8 integration tests.
 - `T-008c` Surface rejection reason in studio — `ModerationResult.labels` is logged today; persist + show on the studio image row.
 
 ### ~~`T-010` Visual search upload + modifier UI~~ — all four phases shipped
