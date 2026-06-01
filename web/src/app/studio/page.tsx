@@ -83,12 +83,20 @@ export default async function StudioPage({
                 : "Your portfolio"}
             </p>
           </div>
-          <Link
-            href="/studio/settings"
-            className="text-sm underline underline-offset-2 text-muted hover:text-foreground"
-          >
-            Settings →
-          </Link>
+          <nav className="flex items-center gap-4">
+            <Link
+              href="/studio/inquiries"
+              className="text-sm underline underline-offset-2 text-muted hover:text-foreground"
+            >
+              Inquiries →
+            </Link>
+            <Link
+              href="/studio/settings"
+              className="text-sm underline underline-offset-2 text-muted hover:text-foreground"
+            >
+              Settings →
+            </Link>
+          </nav>
         </header>
 
         <StudioPortfolio artist={artist} items={items} status={status} />

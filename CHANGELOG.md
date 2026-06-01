@@ -3,6 +3,32 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-01 — T-011 Phase 4: studio inquiries inbox
+
+Closes the loop on T-032 — artists now have an in-app view of every
+inquiry addressed to them, not just the Resend email notification.
+
+- **`GET /v1/studio/inquiries`** — read-only list, newest first, with
+  `?status=pending|delivered|all` filter. Returns artwork title +
+  primary image (filtered through the T-008 `approved` guard) +
+  inquirer name/email + message + budget + derived status
+  (`"delivered"` when `delivered_at IS NOT NULL`, else
+  `"pending_verification"`). 50-row hard cap; cursor lands with T-037.
+- **`/studio/inquiries` Next.js page** — server-rendered list with
+  filter-pill links (matches `/studio` toolbar style). Each card shows
+  thumbnail + sender (mailto link) + relative timestamp + budget +
+  full message + status badge.
+- **Studio nav** gains an Inquiries → link next to Settings →.
+- **9 Rust integration tests** covering ownership boundary (Bruno's
+  inquiries don't leak into Alice's inbox), the three status modes,
+  newest-first ordering, derived `status` string, `budget_range`
+  jsonb round-trip, 401 for anonymous, 404 for non-artist users, and
+  tolerance on unknown `status` query values.
+
+**Deferred:** reply-from-inbox UX, mark-as-read, archive, and analytics
+dashboards. All blocked on the events-table writes that haven't
+landed yet (Phase 4b).
+
 ## 2026-06-01 — T-008: artwork-image moderation pipeline
 
 Closes the public-surface trust gap — freshly-added images no longer

@@ -139,6 +139,10 @@ pub fn build_app(state: Arc<AppState>) -> Router {
             "/v1/studio/settings",
             axum::routing::patch(studio::settings::patch),
         )
+        // ── Studio inquiries inbox (T-011 Phase 4). Read-only list of
+        // every inquiry addressed to the calling artist. Companion to
+        // the T-032 email — artists can re-read past inquiries here.
+        .route("/v1/studio/inquiries", get(studio::inquiries::list))
         // ── Studio locations (T-038 G3): galleries / studios where
         // this artist's work can be seen in person. Public listing on
         // the artist profile only includes geocoded rows; the studio

@@ -11,6 +11,7 @@
 //! and bulk uploads live in later phases.
 
 pub mod artworks;
+pub mod inquiries;
 pub mod locations;
 pub mod me;
 pub mod settings;

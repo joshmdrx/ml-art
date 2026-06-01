@@ -272,6 +272,26 @@ export interface CreateArtworkBody {
   external_url?: string;
 }
 
+/** A row in `GET /v1/studio/inquiries` (T-011 Phase 4). The artist's
+ * inquiry inbox — read-only. `status` is derived from `delivered_at`
+ * server-side: `"delivered"` for anything that's been sent to the
+ * artist (signed-in inquiries land here immediately; anonymous after
+ * the inquirer clicks the verification link), `"pending_verification"`
+ * while we're still waiting on the anon round-trip. */
+export interface StudioInquiry {
+  id: string;
+  artwork_id: string;
+  artwork_title: string | null;
+  artwork_primary_image_url: string | null;
+  from_name: string;
+  from_email: string;
+  message: string;
+  budget_range: string | null;
+  status: "delivered" | "pending_verification";
+  created_at: string;
+  delivered_at: string | null;
+}
+
 // Studio locations (T-038 G3) — "Where to see my work" CRUD.
 
 /** A row in `GET /v1/studio/locations`. Mirrors the public `ArtistLocation`
@@ -911,6 +931,30 @@ export async function patchStudioArtwork(
     throw new Error(`studio/artworks/:id ${res.status}: ${text || res.statusText}`);
   }
   return (await res.json()) as StudioArtworkSummary;
+}
+
+/** List the calling artist's inquiry inbox (T-011 Phase 4). `null`
+ * means "not an artist" — same collapsed-failure pattern as
+ * `getStudioMe()`. */
+export async function listStudioInquiries(opts?: {
+  status?: "pending" | "delivered" | "all";
+  init?: RequestInit;
+}): Promise<Paginated<StudioInquiry> | null> {
+  const usp = new URLSearchParams();
+  if (opts?.status && opts.status !== "all") usp.set("status", opts.status);
+  const qs = usp.toString();
+  const res = await apiFetch(
+    `/v1/studio/inquiries${qs ? `?${qs}` : ""}`,
+    opts?.init
+  );
+  if (res.status === 401 || res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `studio/inquiries ${res.status}: ${text || res.statusText}`
+    );
+  }
+  return (await res.json()) as Paginated<StudioInquiry>;
 }
 
 export async function deleteStudioArtwork(id: string): Promise<void> {
