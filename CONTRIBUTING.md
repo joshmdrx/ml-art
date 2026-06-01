@@ -153,6 +153,70 @@ A new behavior PR should add tests at the lowest tier that can prove
 the change. Don't add a Playwright test if a Vitest unit + Rust
 integration combo would catch the regression.
 
+## Background jobs
+
+Anything that should run *outside* a request — sending an email, calling
+Mapbox, calling Rekognition, sending a webhook, scraping a URL — goes
+through the jobs queue. Never `tokio::spawn` from a request handler; the
+spawn dies on api restart and there's no retry. See `decisions.md`
+2026-05-29 — jobs queue.
+
+Same handler code runs against:
+
+- **Local dev**: `JobsBackend::Postgres` (the `jobs` table) +
+  `jobs-worker` binary polling with `SKIP LOCKED`.
+- **Prod (when we deploy)**: `JobsBackend::Sqs` + a `cargo-lambda`
+  binary triggered on SQS receive.
+
+### Adding a new background job — checklist
+
+The pattern is proven by `ArtistLocationGeocode` (T-038),
+`InquirySendVerification` + `InquiryDeliverToArtist` (T-032). Every new
+job follows the same four steps:
+
+1. **Add the variant** in `core::jobs::JobEvent` — pick a snake-case
+   name matching `#[serde(rename_all = "snake_case")]`. Update the
+   `kind()` match arm in the same file.
+2. **Write the handler** in its domain module (`core::emails`,
+   `core::moderation`, etc — not in `core::jobs`). Signature:
+   `async fn(deps: &JobsDeps, …) -> anyhow::Result<()>`. Idempotent —
+   re-runs after a worker crash must not double up.
+3. **Wire dispatch** in `core::jobs::handle()` — one new match arm
+   calling your handler.
+4. **Enqueue from the call site** with
+   `state.jobs.enqueue(JobEvent::Foo {..}, opts).await?`. Use an
+   `idempotency_key` whenever a single logical event might be fired
+   twice (double-click, retry, re-verify).
+
+Things that fall out of this:
+
+- **Dependencies**: if the handler needs a new client (Resend, etc),
+  build the `Real / Disabled / for_tests` enum the same way
+  `EmailClient` / `GeocodingClient` are built, and add it to
+  `JobsDeps`. The Disabled path lets local dev work without a paid key.
+- **Tests**: write integration tests using
+  `app_with_postgres_jobs(pool)` (from `tests/common/mod.rs`) so the
+  enqueue rows land in the actual `jobs` table and you can assert
+  via SQL. Test (a) the right `kind` lands, (b) idempotency dedups
+  double-fires, (c) handler runs successfully end-to-end against a
+  `for_tests` client variant.
+- **Docs**: CHANGELOG entry; if the job adds a new env var, update
+  `api/.env.example` + `05-local-dev.md`. Update CONTRIBUTING **only**
+  if a new code convention emerges (e.g. a non-obvious DB-load
+  pattern, a new error-handling shape).
+
+### Worth knowing
+
+- **No `tokio::spawn` in request handlers** — period. The audit catches
+  it (see the state-of-the-build review pattern); CI will eventually
+  too.
+- **`make dev` spawns the worker** alongside the api under cargo-watch.
+  Logs at `/tmp/worker.log`. Handler edits trigger a worker restart.
+- **One-shot ops binary**: `cargo run -p api-search --bin regeocode --
+  <uuid>` is the canonical example of a "force-run this handler now"
+  CLI. Follow the same pattern when an ops tool needs to manually
+  trigger a job kind.
+
 ## Commits & PRs
 
 - **Commits**: present-tense, imperative subject line (`add filter param

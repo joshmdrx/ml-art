@@ -20,6 +20,13 @@
 //! big to keep on `tokio::spawn` — those die on api restart and have
 //! no retries. See `decisions.md` 2026-05-29 — jobs queue:
 //! Postgres local, SQS+Lambda prod.
+//!
+//! **Adding a new job kind?** See `CONTRIBUTING.md` →
+//! "Background jobs — Adding a new background job — checklist".
+//! Four steps: new `JobEvent` variant + handler in domain module +
+//! match arm in `handle()` below + `enqueue` at the call site.
+//! Existing examples: `ArtistLocationGeocode` (T-038),
+//! `InquirySendVerification` / `InquiryDeliverToArtist` (T-032).
 
 use crate::db::Pool;
 use serde::{Deserialize, Serialize};
