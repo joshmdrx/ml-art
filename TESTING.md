@@ -113,6 +113,8 @@ misconfigurations that integration tests can't see.
 9. Anonymous Inquire end-to-end: open modal → submit → "Check your inbox" state → dev verify link resolves
 10. Signed-out Save click → redirect to `/sign-in?redirect_url=…`
 11. Verify page with bogus token → "Link doesn't look right"
+12. `/studio/inquiries` non-artist redirect + route reachable (signed-in)
+13. `/api/me/merge-anonymous` bridge fires once on sign-in + sessionStorage marker (signed-in)
 
 **Gap: signed-in flows.** Save-modal interactions (open, toggle, create-with-first-artwork), Inquire when signed-in (email pre-filled, immediate "Sent"), and the future studio surfaces all need a way to drive Playwright as a signed-in user without Clerk's real OTP flow. Tracked as `T-031` in `TODO.md` (web test-mode session bypass mirroring the Rust `JwtVerifier::for_tests()` pattern).
 
@@ -222,6 +224,118 @@ still in a better place than now.
 - **Tests fail loud.** No silent retries inside test code. If a test
   needs to wait, use `until { … } else timeout`.
 - **No `#[ignore]` checked in.** If a test is skipped, fix or delete.
+
+---
+
+## Manual smoke checklist
+
+The automated tiers catch contract + regression bugs. They don't catch
+"this whole flow feels wrong" — that's still a human job. Walk this
+list:
+
+- Before any meaningful demo
+- After landing a change that touches more than one journey
+- Before tagging a release once we have one
+
+Two flavours: a **5-min smoke** for casual sanity, a **30-min
+walkthrough** that exercises the four cross-cutting systems
+(jobs queue, moderation, email delivery, anon→user merge) end-to-end
+in a way no single Playwright spec covers.
+
+### Pre-flight
+
+```bash
+make dev                     # docker + migrate + seed + api + worker + web
+tail -f /tmp/worker.log      # so you see queue jobs land in real time
+```
+
+Expected: web on `:3000`, api on `:9100`, worker polling every 2s.
+
+### 5-minute smoke — anonymous browse
+
+1. `http://localhost:3000` → hero search + Near-me/Map row render
+2. Search "blue" → grid populates (RRF score > 0 on hover-debug if dev tools)
+3. Toggle **Map** → pins cluster, pan/zoom updates `?bbox=…`, city pills strip shows top cities
+4. Click a popup → artwork detail; scroll → "More like this" populates
+5. Click the artist name → portfolio; map widget renders pins
+6. `/neighborhoods` → click a card → detail renders
+
+**Pass:** no console errors, no 404s on image URLs, no `Internal Server Error`.
+
+### 30-minute walkthrough — the systems
+
+#### A. Moderation pipeline (T-008 + T-008b) — 5 min
+
+1. Sign in as the seeded test artist (or any artist you've onboarded)
+2. `/studio` → edit an artwork → add image with any `s3_key` (or `uploads/test.jpg`)
+3. Worker log: `artwork_image_moderate` job claimed + run + done within 2s
+4. `SELECT moderation_status FROM artwork_images ORDER BY created_at DESC LIMIT 1;` → `approved`
+5. Manually flip: `UPDATE artwork_images SET moderation_status='rejected' WHERE id = '…';`
+6. Public `/artworks/[id]` no longer shows the image ✓
+7. Homepage → camera icon → upload an image
+8. Worker log: `upload_moderate`; psql shows `uploads.moderation_status = 'approved'`
+9. `UPDATE uploads SET moderation_status='rejected' WHERE id = '…';`
+10. `GET /v1/search?image_upload_id=<that-id>` → 404 (not 200, not 400 — same shape as not-found)
+
+#### B. Inquiries inbox + email loop (T-011 P4a + T-032) — 5 min
+
+1. From a **logged-out** tab, inquire on one of the artist's artworks
+2. Worker log: `inquiry_send_verification` (no actual email unless `RESEND_API_KEY` set)
+3. Dev response body has `debug_verification_token`; visit `/inquiries/verify/<token>`
+4. Worker log: `inquiry_deliver_to_artist`
+5. Sign back in as the artist → `/studio/inquiries`
+6. Card appears with **Delivered** badge, mailto link, message body
+7. Filter pills (`All / Pending / Delivered`) toggle the URL + the list
+
+#### C. Anon→user merge (T-033) — 3 min
+
+1. Brand new **private window** (no Clerk session)
+2. Upload an image via visual search; psql: `uploads.user_id IS NULL`, `anonymous_id` populated
+3. Sign in/up in the same window
+4. Dev tools → Network → `POST /api/me/merge-anonymous` fires once after sign-in (returns 200 with `uploads_merged: 1`)
+5. psql: `uploads.user_id` now populated, `anonymous_id` preserved
+6. Refresh — no second POST (`sessionStorage['mlart_anon_merged']` set)
+
+#### D. Signed-in inquiry — direct delivery (3 min)
+
+1. Different signed-in user (collector) inquires on an artist's work
+2. Worker log: only `inquiry_deliver_to_artist` (no verification — Clerk email pre-trusted)
+3. Artist's `/studio/inquiries` shows the row immediately as **Delivered**
+
+#### E. Onboarding (5 min)
+
+1. Sign up a brand-new user (no artist row)
+2. Visit `/studio` → server redirects to `/onboarding`
+3. Walk the 5 steps: identity → profile → artworks → locations → review
+4. Verify in psql: `artists` row exists with `status='active'`, `user_id` linked
+5. `/studio` opens to an empty portfolio
+6. Add a location with a real address → "Locating…" → after worker runs, "Pin set · {city, country}"
+
+#### F. Sanity sweeps (5 min)
+
+- Hit `/v1/search` ~100 times fast → 429 after ~60/min
+- >3 anon inquiries/hr from same anon cookie → 429
+- `/studio` logged out → redirects to sign-in
+- `/v1/me/merge-anonymous` without bearer → 401
+- `/v1/studio/inquiries` as non-artist → 404
+- Every page in journeys A–E: no console errors, no broken images
+
+### Failure-mode catalogue
+
+| Symptom | Likely cause |
+|---|---|
+| Jobs accumulate as `pending`, never run | jobs-worker not running. `ps aux \| grep jobs-worker` |
+| Search returns keyword-only (no RRF) | `JINA_API_KEY` unset → degraded mode (expected, not a bug) |
+| Location rows stuck at "Locating…" forever | `MAPBOX_TOKEN` unset → geocode no-ops |
+| Inquiry verification email never arrives | `RESEND_API_KEY` unset → handler logs + returns Ok; use `debug_verification_token` from API response |
+| Map widgets show list fallback only | `NEXT_PUBLIC_MAPBOX_TOKEN` not in `web/.env.local` |
+| `/api/me/merge-anonymous` returns 401 | Browser dropped Clerk session; sign in again |
+
+### What this catches that the automated tiers don't
+
+- **Cross-system flows** — the moderation worker + the artist's experience seeing the result; the email worker + the artist's inbox showing the inquiry. Each side is unit/integration-tested; the join between them is human-only.
+- **Visual regressions** — broken layouts, missing styles, hover states. We deliberately don't do screenshot diff (TESTING.md "We don't do").
+- **Wrong data feeling** — "this should have 5 results, why does it show 50?" is a question only a human asks.
 
 ---
 
