@@ -40,7 +40,7 @@ interface FilterBarProps {
 export function FilterBar({ availableFilters, basePath }: FilterBarProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [isPending, startTransition] = useTransition();
+  const [, startTransition] = useTransition();
 
   /** Push a single-key URL update through the router, preserving everything else. */
   function push(update: Record<string, string | null | undefined>) {
@@ -59,10 +59,7 @@ export function FilterBar({ availableFilters, basePath }: FilterBarProps) {
 
   return (
     <div
-      className={clsx(
-        "mb-6 flex flex-wrap items-center gap-2",
-        isPending && "opacity-60"
-      )}
+      className="mb-6 flex flex-wrap items-center gap-2"
       role="toolbar"
       aria-label="Filters"
     >
@@ -186,36 +183,40 @@ function PillMenu({
   onClear: () => void;
   children: React.ReactNode;
 }) {
+  // Wrapper is a styled <div>, not a <button>, so the "clear" button
+  // can sit as a sibling. Original shape (button-inside-button) was
+  // invalid HTML — browsers swallowed the inner button's click event,
+  // which is why the × didn't actually clear the filter.
   return (
     <DropdownMenu.Root>
-      <DropdownMenu.Trigger asChild>
-        <button
-          type="button"
-          aria-pressed={active}
-          className={clsx(
-            "inline-flex items-center gap-1 px-3 py-1.5 border text-sm transition-colors",
-            active
-              ? "border-foreground bg-foreground text-background"
-              : "border-border bg-surface hover:bg-background"
-          )}
-        >
-          <span>{label}</span>
-          {active && (
-            <button
-              type="button"
-              aria-label="Clear filter"
-              onClick={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                onClear();
-              }}
-              className="ml-1 -mr-1 hover:opacity-80"
-            >
-              ×
-            </button>
-          )}
-        </button>
-      </DropdownMenu.Trigger>
+      <div
+        className={clsx(
+          "inline-flex items-center border text-sm transition-colors",
+          active
+            ? "border-foreground bg-foreground text-background"
+            : "border-border bg-surface hover:bg-background"
+        )}
+      >
+        <DropdownMenu.Trigger asChild>
+          <button
+            type="button"
+            aria-pressed={active}
+            className="px-3 py-1.5"
+          >
+            {label}
+          </button>
+        </DropdownMenu.Trigger>
+        {active && (
+          <button
+            type="button"
+            aria-label="Clear filter"
+            onClick={onClear}
+            className="pr-3 pl-1 py-1.5 hover:opacity-80"
+          >
+            ×
+          </button>
+        )}
+      </div>
       <DropdownMenu.Portal>
         <DropdownMenu.Content
           align="start"
@@ -248,36 +249,40 @@ function LocationPill({
   }, [editing]);
 
   if (!editing) {
+    // Wrapper div + sibling buttons — same shape as PillMenu so the
+    // clear × actually fires (a nested button-in-button would have
+    // its inner click swallowed by the browser).
     return (
-      <button
-        type="button"
-        aria-pressed={Boolean(current)}
-        onClick={() => {
-          setDraft(current ?? "");
-          setEditing(true);
-        }}
+      <div
         className={clsx(
-          "inline-flex items-center gap-1 px-3 py-1.5 border text-sm",
+          "inline-flex items-center border text-sm",
           current
             ? "border-foreground bg-foreground text-background"
             : "border-border bg-surface hover:bg-background"
         )}
       >
-        <span>{current ? `Location: ${current}` : "Location"}</span>
+        <button
+          type="button"
+          aria-pressed={Boolean(current)}
+          onClick={() => {
+            setDraft(current ?? "");
+            setEditing(true);
+          }}
+          className="px-3 py-1.5"
+        >
+          {current ? `Location: ${current}` : "Location"}
+        </button>
         {current && (
-          <span
-            role="button"
+          <button
+            type="button"
             aria-label="Clear location"
-            onClick={(e) => {
-              e.stopPropagation();
-              onSubmit("");
-            }}
-            className="ml-1 -mr-1 hover:opacity-80"
+            onClick={() => onSubmit("")}
+            className="pr-3 pl-1 py-1.5 hover:opacity-80"
           >
             ×
-          </span>
+          </button>
         )}
-      </button>
+      </div>
     );
   }
 
