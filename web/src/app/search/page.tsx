@@ -133,7 +133,7 @@ export default async function SearchPage({
         artist: sp.artist?.trim() || undefined,
         bbox: sp.bbox?.trim() || undefined,
       }),
-      listMapCities(),
+      listMapCities({ q: params.q, medium: params.medium }),
     ]);
     if (pinsResult.status === "fulfilled") {
       mapPins = pinsResult.value;

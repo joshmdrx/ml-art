@@ -6,16 +6,18 @@
 //! of city pills like "London (12) · Berlin (8) · Lisbon (3)"; click
 //! one and the map zooms there.
 //!
-//! Cheap query: groups by `artist_locations.city` filtering out
-//! pre-geocode rows and inactive artists. No bbox / search-context
-//! params here — this is intentionally a static "what's on offer"
-//! pivot, not a dynamic filter on the active search.
+//! Accepts the same `q` + `medium` filters as `/v1/search/map` so the
+//! pivots reflect the active search: a city only appears if at least
+//! one artist there has an artwork matching the filter. Without this
+//! the strip lies — it'd say "Basingstoke (1)" for `?q=blue` even
+//! when the Basingstoke artist has no "blue" works, so clicking the
+//! pill would zoom to an empty map.
 
 use crate::AppState;
 use axum::{extract::State, Json};
 use ml_art_core::error::ApiError;
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use sqlx::{AssertSqlSafe, FromRow};
 use std::sync::Arc;
 
 /// Default + max for `?limit=`. We don't expect more than a few dozen
@@ -28,6 +30,14 @@ pub struct CitiesParams {
     /// How many cities to return (default 12, max 100).
     #[serde(default)]
     pub limit: Option<i64>,
+    /// Full-text search query — must match an artwork's `search_tsv`
+    /// on at least one of the artist's published works for the city
+    /// to count.
+    #[serde(default)]
+    pub q: Option<String>,
+    /// Restrict to artists with at least one artwork of this medium.
+    #[serde(default)]
+    pub medium: Option<String>,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -54,10 +64,25 @@ pub async fn handle(
     axum::extract::Query(params): axum::extract::Query<CitiesParams>,
 ) -> Result<Json<Vec<CityPivot>>, ApiError> {
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    let q = params
+        .q
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let medium = params
+        .medium
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
 
-    let rows: Vec<CityPivot> = sqlx::query_as(
-        r#"
-        SELECT
+    // Build the SQL incrementally so the artwork-matching EXISTS only
+    // appears when there's an actual filter. Mirrors the shape used
+    // by `search_map::handle` for the same join — see comment there
+    // re: why EXISTS over JOIN (avoids duplicate-per-artwork rows).
+    let mut sql = String::from(
+        "SELECT
             al.city                       AS city,
             al.country                    AS country,
             count(*)::bigint              AS count,
@@ -74,15 +99,42 @@ pub async fn handle(
           AND al.lng IS NOT NULL
           AND al.city IS NOT NULL
           AND ar.deleted_at IS NULL
-          AND ar.status = 'active'
-        GROUP BY al.city, al.country
-        ORDER BY count DESC, al.city ASC
-        LIMIT $1
-        "#,
-    )
-    .bind(limit)
-    .fetch_all(&state.pool)
-    .await?;
+          AND ar.status = 'active'",
+    );
 
+    if q.is_some() || medium.is_some() {
+        sql.push_str(
+            " AND EXISTS (
+                SELECT 1 FROM artworks aw
+                WHERE aw.artist_id = ar.id
+                  AND aw.deleted_at IS NULL
+                  AND aw.status = 'published'",
+        );
+        // Param indices: $1 = limit (bound first below). q is always
+        // $2 when present; medium is $2 if q is None, else $3.
+        let mut idx = 1usize;
+        if q.is_some() {
+            idx += 1;
+            sql.push_str(&format!(
+                " AND aw.search_tsv @@ plainto_tsquery('english', ${idx})"
+            ));
+        }
+        if medium.is_some() {
+            idx += 1;
+            sql.push_str(&format!(" AND aw.medium = ${idx}"));
+        }
+        sql.push(')');
+    }
+
+    sql.push_str(" GROUP BY al.city, al.country ORDER BY count DESC, al.city ASC LIMIT $1");
+
+    let mut qb = sqlx::query_as::<_, CityPivot>(AssertSqlSafe(sql)).bind(limit);
+    if let Some(q) = q {
+        qb = qb.bind(q);
+    }
+    if let Some(m) = medium {
+        qb = qb.bind(m);
+    }
+    let rows: Vec<CityPivot> = qb.fetch_all(&state.pool).await?;
     Ok(Json(rows))
 }

@@ -126,3 +126,45 @@ async fn multi_pin_city_has_real_bbox(pool: PgPool) {
     );
     assert!(london.north - london.south > 0.0);
 }
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn q_filter_restricts_to_cities_with_matching_artwork(pool: PgPool) {
+    // Seed: alice in London has "Blue Morning" + "Crimson Field"; bruno
+    // in Berlin has "Stone Form I" + "Stone Form II". `q=blue` → only
+    // alice's London location should appear.
+    let app = app_keyword_only(pool);
+    let (_, cities): (_, Vec<City>) = get_json(app, "/v1/search/map/cities?q=blue").await;
+    assert_eq!(cities.len(), 1);
+    assert_eq!(cities[0].city, "London");
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn q_with_no_matches_returns_empty(pool: PgPool) {
+    // No artwork in the seed matches "zzznonexistent"; pivot strip
+    // must come back empty rather than lying with "London (1)".
+    let app = app_keyword_only(pool);
+    let (status, cities): (_, Vec<City>) =
+        get_json(app, "/v1/search/map/cities?q=zzznonexistent").await;
+    assert_eq!(status, 200);
+    assert!(cities.is_empty());
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn medium_filter_restricts_cities(pool: PgPool) {
+    // Sculpture → only bruno (Berlin).
+    let app = app_keyword_only(pool);
+    let (_, cities): (_, Vec<City>) =
+        get_json(app, "/v1/search/map/cities?medium=Sculpture").await;
+    assert_eq!(cities.len(), 1);
+    assert_eq!(cities[0].city, "Berlin");
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn q_and_medium_compose(pool: PgPool) {
+    // q=blue matches alice's London; medium=Sculpture matches bruno's
+    // Berlin. Intersected → empty.
+    let app = app_keyword_only(pool);
+    let (_, cities): (_, Vec<City>) =
+        get_json(app, "/v1/search/map/cities?q=blue&medium=Sculpture").await;
+    assert!(cities.is_empty(), "q + medium intersect, no city matches both");
+}

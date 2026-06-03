@@ -460,9 +460,21 @@ export async function searchArtworks(
  * city-pill strip. Empty array on success-with-no-cities (the
  * cold-start case before any artist has geocoded locations). */
 export async function listMapCities(
+  filters?: { q?: string; medium?: string },
   init?: RequestInit
 ): Promise<CityPivot[]> {
-  const res = await apiFetch("/v1/search/map/cities", init);
+  // Forward the active text/medium filter so the pivot strip only
+  // surfaces cities that actually have matching results — otherwise a
+  // "Basingstoke (1)" pill leads to an empty map when the artist in
+  // Basingstoke has no works matching the search.
+  const usp = new URLSearchParams();
+  if (filters?.q?.trim()) usp.set("q", filters.q.trim());
+  if (filters?.medium?.trim()) usp.set("medium", filters.medium.trim());
+  const qs = usp.toString();
+  const res = await apiFetch(
+    `/v1/search/map/cities${qs ? `?${qs}` : ""}`,
+    init
+  );
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(
