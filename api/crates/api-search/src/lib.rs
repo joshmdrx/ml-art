@@ -32,7 +32,10 @@ use ml_art_core::{
     object_store::ObjectStore,
 };
 use std::sync::Arc;
-use tower_http::trace::TraceLayer;
+use tower_http::{
+    cors::{Any, CorsLayer},
+    trace::TraceLayer,
+};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -174,6 +177,20 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route("/v1/modifiers", get(meta::list_modifiers))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
+        // CORS: browser-direct calls from the Next dev server / future web
+        // origin. `searchMapClient` hits `/v1/search/map` straight from
+        // the browser (no server-side proxy) — without this layer the
+        // browser blocks the response and the client gets "Failed to
+        // fetch." Permissive in v1: any origin can read; no credentialed
+        // cross-origin requests so this is safe. Tighten to an
+        // allowlist (`AllowOrigin::list(...)`) when prod origins are
+        // pinned.
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
 }
 
 pub async fn health(

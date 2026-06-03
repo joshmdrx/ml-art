@@ -55,7 +55,9 @@ export function VisualSearchUpload({ size }: { size: Size }) {
     <form
       ref={formRef}
       action={uploadAndStartVisualSearch}
-      encType="multipart/form-data"
+      // React 19 server-action forms manage their own encType + method;
+      // setting them explicitly triggers a "you can't override these"
+      // console warning. Multipart is implied by the <input type="file">.
       className="inline-flex flex-col items-center"
     >
       <input

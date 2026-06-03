@@ -268,7 +268,12 @@ function SearchMapboxMap({ initial, filters }: Props) {
               { padding: 40, duration: 0 }
             );
           }
-        } else if (initial.length > 1) {
+        } else if (initial.length >= 1) {
+          // Fit to all pins — including the single-pin case. Without
+          // `>= 1`, a 1-result search stays at the world view (z=1.4)
+          // and the pin is invisible. We already nudge `initialZoom`
+          // to 9 in that case, but fitBounds gives the correct
+          // framing.
           const bounds = new mapboxgl.LngLatBounds();
           for (const p of initial) bounds.extend([p.lng, p.lat]);
           map.fitBounds(bounds, { padding: 60, maxZoom: 12, duration: 0 });
@@ -302,9 +307,32 @@ function SearchMapboxMap({ initial, filters }: Props) {
     src.setData(toFeatureCollection(pins));
   }, [pins]);
 
-  // Sync `router.refresh()` when filters change (not needed today —
-  // the server-side page does the initial fetch — but documented for
-  // when a filter chip changes outside of map mode).
+  // When the server hands us a fresh `initial` (URL bbox / filters
+  // changed → page re-rendered with new server data), pull it into
+  // the local `pins` state. Without this, clicking a CityPivotStrip
+  // link or "Near me" updates the URL + server but the map stays
+  // stuck on the first-mount pins.
+  useEffect(() => {
+    setPins(initial);
+  }, [initial]);
+
+  // When the URL bbox changes after mount (city pivot click, Near me,
+  // back/forward nav), recenter the map on that bbox. Without this,
+  // the URL updates but the camera stays on the previous view.
+  const urlBboxKey = searchParams.get("bbox") ?? "";
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !urlBboxKey) return;
+    const parts = urlBboxKey.split(",").map(Number);
+    if (parts.length !== 4 || !parts.every(Number.isFinite)) return;
+    map.fitBounds(
+      [
+        [parts[0], parts[1]],
+        [parts[2], parts[3]],
+      ],
+      { padding: 40, duration: 600, maxZoom: 12 }
+    );
+  }, [urlBboxKey]);
 
   return (
     <section className="relative">
