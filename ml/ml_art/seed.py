@@ -183,7 +183,10 @@ def main() -> None:
     )
     parser.add_argument(
         "--database-url",
-        default=os.environ.get("DATABASE_URL", "postgres://ml_art:dev@localhost:5432/ml_art_dev"),
+        # Default matches the compose stack (Makefile + docker-compose
+        # both bind Postgres to host port 5433 to avoid colliding with
+        # a system Postgres on 5432). DATABASE_URL env wins.
+        default=os.environ.get("DATABASE_URL", "postgres://ml_art:dev@localhost:5433/ml_art_dev"),
     )
     args = parser.parse_args()
 

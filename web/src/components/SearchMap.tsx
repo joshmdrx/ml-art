@@ -185,7 +185,12 @@ function SearchMapboxMap({ initial, filters }: Props) {
             },
           });
 
-          // Click cluster → zoom in.
+          // Click cluster → zoom in, OR if the underlying points are
+          // coincident (same lat/lng — e.g. multiple demo galleries
+          // pinned to the same city centroid), show a list popup of
+          // the leaves instead. Without this fallback the cluster
+          // re-clusters at every zoom level and the click does
+          // nothing visible past street zoom.
           map.on("click", "clusters", (e) => {
             const features = map.queryRenderedFeatures(e.point, {
               layers: ["clusters"],
@@ -193,12 +198,38 @@ function SearchMapboxMap({ initial, filters }: Props) {
             const cluster = features[0];
             if (!cluster?.properties) return;
             const clusterId = cluster.properties.cluster_id as number;
-            (
-              map.getSource("pins") as import("mapbox-gl").GeoJSONSource
-            ).getClusterExpansionZoom(clusterId, (err, zoom) => {
-              if (err || zoom == null) return;
-              const coords = pointCoords(cluster.geometry);
-              if (coords) map.easeTo({ center: coords, zoom });
+            const pointCount = Number(cluster.properties.point_count ?? 0);
+            const source = map.getSource(
+              "pins"
+            ) as import("mapbox-gl").GeoJSONSource;
+
+            source.getClusterExpansionZoom(clusterId, (err, expansionZoom) => {
+              if (err || expansionZoom == null) return;
+              const currentZoom = map.getZoom();
+              // If clustering would still group these points even
+              // after we zoom in (i.e. expansionZoom isn't actually
+              // higher than where we are), pull the leaves directly
+              // and render a list popup.
+              const cantExpandFurther = expansionZoom <= currentZoom + 0.01;
+              if (cantExpandFurther) {
+                source.getClusterLeaves(
+                  clusterId,
+                  pointCount || 50, // cap at 50 — enough for any same-city cluster
+                  0,
+                  (leafErr, leaves) => {
+                    if (leafErr || !leaves || leaves.length === 0) return;
+                    const coords = pointCoords(cluster.geometry);
+                    if (!coords) return;
+                    new mapboxgl.Popup({ offset: 14, closeButton: true })
+                      .setLngLat(coords)
+                      .setHTML(renderClusterListHtml(leaves))
+                      .addTo(map);
+                  }
+                );
+              } else {
+                const coords = pointCoords(cluster.geometry);
+                if (coords) map.easeTo({ center: coords, zoom: expansionZoom });
+              }
             });
           });
           map.on("mouseenter", "clusters", () => {
@@ -402,6 +433,42 @@ function toFeatureCollection(pins: MapPin[]): GeoJSON.FeatureCollection {
       },
     })),
   };
+}
+
+/** Popup body for a cluster of coincident pins — a compact list of
+ * each underlying venue. Triggered when the cluster can't expand
+ * any further (multiple artists sharing the same lat/lng, common
+ * for the demo seed where every gallery is anchored on a city
+ * centroid). Each row is a clickable artist link so the user can
+ * dive into a portfolio without having to dismiss the popup. */
+function renderClusterListHtml(
+  leaves: GeoJSON.Feature<GeoJSON.Geometry>[]
+): string {
+  const rows = leaves
+    .map((leaf) => {
+      const p = (leaf.properties ?? {}) as Record<string, unknown>;
+      const name = String(p.name ?? "");
+      const kindRaw = String(p.kind ?? "gallery");
+      const kindLabel = kindRaw === "gallery" ? "Gallery" : "Studio";
+      const artistName = String(p.artist_name ?? "");
+      const artistSlug = String(p.artist_slug ?? "");
+      return `
+        <li style="padding: 8px 0; border-top: 1px solid #eee;">
+          <p style="font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: #666; margin: 0;">${kindLabel}</p>
+          <p style="font-weight: 600; margin: 2px 0 0;">${escapeHtml(name)}</p>
+          <a href="/artists/${encodeURIComponent(artistSlug)}" style="font-size: 13px; text-decoration: underline;">${escapeHtml(artistName)} →</a>
+        </li>`;
+    })
+    .join("");
+  const headerLabel = `${leaves.length} venues at this location`;
+  return `
+    <div style="font-family: inherit; min-width: 220px; max-width: 280px;">
+      <p style="font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #666; margin: 0 0 4px;">${headerLabel}</p>
+      <ul style="list-style: none; padding: 0; margin: 0; max-height: 320px; overflow-y: auto;">
+        ${rows}
+      </ul>
+    </div>
+  `;
 }
 
 function renderPinPopupHtml(props: {
