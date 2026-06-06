@@ -409,10 +409,13 @@ function SearchMapBlock({
           >
             <p className="font-medium">No public venues for these results.</p>
             <p className="mt-1 text-muted">
-              {gridResultCount}{" "}
-              {gridResultCount === 1 ? "work matches" : "works match"} this
-              search, but the artists haven&apos;t shared a studio or gallery
-              location yet.{" "}
+              {/* Single-string template — splitting across JSX text
+                  nodes was eating the space between "match" and
+                  "this" because of how React collapses whitespace
+                  around `{...}` expressions on broken lines. */}
+              {`${gridResultCount} ${
+                gridResultCount === 1 ? "work matches" : "works match"
+              } this search, but the keyword map can’t see semantic-only matches yet — and some of these artists may not have shared a public studio or gallery location.`}{" "}
               <Link
                 href={clearMapHref(searchParams)}
                 className="underline underline-offset-2 hover:text-foreground"
