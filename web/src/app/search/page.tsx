@@ -222,6 +222,12 @@ export default async function SearchPage({
             cities={mapCities}
             searchParams={sp}
             error={mapError}
+            gridResultCount={resp.items.length}
+            hasActiveFilter={
+              Boolean(params.q) ||
+              Boolean(params.medium) ||
+              Boolean(params.location)
+            }
           />
         ) : resp.items.length === 0 && !error ? (
           <EmptyState
@@ -267,6 +273,11 @@ function ViewToggle({
         aria-label="Result view"
         className="inline-flex border border-border"
       >
+      {/* Labels lean into "two lenses on different data" rather than
+          "same data, two views" — the map shows where to see the
+          artists in person, which is a smaller set than the artwork
+          results (only artists with geocoded locations appear). URL
+          token stays `?map=1` for backward compatibility. */}
       <Link
         href={hrefFor(false)}
         role="tab"
@@ -275,7 +286,7 @@ function ViewToggle({
           !mapMode ? "bg-fg text-bg" : "hover:bg-surface"
         }`}
       >
-        Grid
+        Works
       </Link>
       <Link
         href={hrefFor(true)}
@@ -285,7 +296,7 @@ function ViewToggle({
           mapMode ? "bg-fg text-bg" : "hover:bg-surface"
         }`}
       >
-        Map
+        Where to see them
       </Link>
       </div>
       {/* Near-me button only makes sense in map mode (T-043). */}
@@ -301,6 +312,8 @@ function SearchMapBlock({
   cities,
   searchParams,
   error,
+  gridResultCount,
+  hasActiveFilter,
 }: {
   pins: MapPin[];
   filters: {
@@ -319,6 +332,16 @@ function SearchMapBlock({
    * every other filter the artist had set. */
   searchParams: Search;
   error: string | null;
+  /** How many works the parallel grid query returned. Used for the
+   * disconnect explainer: if the grid has results but the map is
+   * empty, we tell the user why instead of leaving them staring at
+   * a silent blank globe. */
+  gridResultCount: number;
+  /** Whether any text/medium/location filter was applied. The
+   * disconnect explainer only fires when the user actually
+   * searched — otherwise we'd show it on cold-start with no pins,
+   * which is misleading (the right copy is "no venues yet"). */
+  hasActiveFilter: boolean;
 }) {
   if (error) {
     return (
@@ -370,10 +393,52 @@ function SearchMapBlock({
           </Link>
         </div>
       )}
+      {/* Disconnect explainer: grid has matches but the map doesn't.
+          Two distinct queries (Works = RRF over artworks; Where to
+          see them = artist_locations of matching artists), so a
+          search that lands in the grid can still leave the map empty.
+          Without this, users see "Map" silently render zero pins and
+          assume it's broken. */}
+      {pins.length === 0 &&
+        gridResultCount > 0 &&
+        hasActiveFilter &&
+        !artistSlug && (
+          <div
+            role="status"
+            className="mb-4 border border-border bg-surface px-4 py-3 text-sm"
+          >
+            <p className="font-medium">No public venues for these results.</p>
+            <p className="mt-1 text-muted">
+              {gridResultCount}{" "}
+              {gridResultCount === 1 ? "work matches" : "works match"} this
+              search, but the artists haven&apos;t shared a studio or gallery
+              location yet.{" "}
+              <Link
+                href={clearMapHref(searchParams)}
+                className="underline underline-offset-2 hover:text-foreground"
+              >
+                Back to Works →
+              </Link>
+            </p>
+          </div>
+        )}
       <CityPivotStrip cities={cities} />
       <SearchMap initial={pins} filters={filters} />
     </>
   );
+}
+
+/** Build the "go back to the works grid" href, preserving every URL
+ * param except `map` + `bbox` (those are map-mode only). Defined at
+ * module scope so the SearchMapBlock JSX stays focused. */
+function clearMapHref(searchParams: Search): string {
+  const usp = new URLSearchParams();
+  for (const [k, v] of Object.entries(searchParams)) {
+    if (k === "map" || k === "bbox") continue;
+    if (typeof v === "string" && v.length > 0) usp.set(k, v);
+  }
+  const qs = usp.toString();
+  return `/search${qs ? `?${qs}` : ""}`;
 }
 
 function EmptyState({

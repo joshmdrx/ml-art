@@ -12,37 +12,41 @@ import { test, expect } from "@playwright/test";
  *   - Manual smoke against a real Mapbox token + seeded location row
  *
  * What this spec asserts:
- *   - The Grid / Map view toggle renders on `/search`
- *   - Clicking "Map" navigates to `?map=1` and the toggle reflects
- *     the new state
+ *   - The "Works / Where to see them" view toggle renders on `/search`
+ *     (labels renamed from Grid/Map to communicate "two different
+ *     lenses on different data"; URL token is still `?map=1`)
+ *   - Clicking "Where to see them" navigates to `?map=1` and the
+ *     toggle reflects the new state
  *   - Filters in the URL are preserved across the toggle
  *   - The map region (or fallback) is present without runtime errors
  */
 
-test("search page renders the Grid / Map view toggle", async ({ page }) => {
-  await page.goto("/search");
-  await expect(
-    page.getByRole("tab", { name: "Grid", exact: true })
-  ).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByRole("tab", { name: "Map", exact: true })).toBeVisible();
-  // Grid is the default selection.
-  await expect(
-    page.getByRole("tab", { name: "Grid", exact: true })
-  ).toHaveAttribute("aria-selected", "true");
-});
-
-test("Map toggle navigates to ?map=1 and reflects selection", async ({
+test("search page renders the Works / Where-to-see-them toggle", async ({
   page,
 }) => {
   await page.goto("/search");
-  await page.getByRole("tab", { name: "Map", exact: true }).click();
+  await expect(
+    page.getByRole("tab", { name: "Works", exact: true })
+  ).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("tab", { name: "Where to see them", exact: true })).toBeVisible();
+  // Grid is the default selection.
+  await expect(
+    page.getByRole("tab", { name: "Works", exact: true })
+  ).toHaveAttribute("aria-selected", "true");
+});
+
+test("Where-to-see-them toggle navigates to ?map=1 and reflects selection", async ({
+  page,
+}) => {
+  await page.goto("/search");
+  await page.getByRole("tab", { name: "Where to see them", exact: true }).click();
   await page.waitForURL(/\?map=1/);
 
   await expect(
-    page.getByRole("tab", { name: "Map", exact: true })
+    page.getByRole("tab", { name: "Where to see them", exact: true })
   ).toHaveAttribute("aria-selected", "true");
   await expect(
-    page.getByRole("tab", { name: "Grid", exact: true })
+    page.getByRole("tab", { name: "Works", exact: true })
   ).toHaveAttribute("aria-selected", "false");
 
   // The page either renders the Mapbox region (token set) or the
@@ -56,14 +60,14 @@ test("Map toggle navigates to ?map=1 and reflects selection", async ({
   await expect(mapRegion.or(fallbackEmpty)).toBeVisible({ timeout: 10_000 });
 });
 
-test("toggling between Grid and Map preserves the query filter", async ({
+test("toggling between Works and Where-to-see-them preserves the query filter", async ({
   page,
 }) => {
   await page.goto("/search?q=ukiyo");
-  await page.getByRole("tab", { name: "Map", exact: true }).click();
+  await page.getByRole("tab", { name: "Where to see them", exact: true }).click();
   await page.waitForURL(/q=ukiyo.*map=1|map=1.*q=ukiyo/);
 
-  await page.getByRole("tab", { name: "Grid", exact: true }).click();
+  await page.getByRole("tab", { name: "Works", exact: true }).click();
   await page.waitForURL(/q=ukiyo/);
   // `map=1` must be gone (we drop it when leaving map mode).
   expect(page.url()).not.toMatch(/[?&]map=/);
