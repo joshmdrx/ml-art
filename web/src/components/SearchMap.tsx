@@ -191,6 +191,12 @@ function SearchMapboxMap({ initial, filters }: Props) {
           // the leaves instead. Without this fallback the cluster
           // re-clusters at every zoom level and the click does
           // nothing visible past street zoom.
+          //
+          // We check coincidence directly on leaf geometry rather
+          // than trusting getClusterExpansionZoom: supercluster
+          // returns `clusterMaxZoom + 1` for coincident points,
+          // which always reads as "can expand" to a naive `>`
+          // comparison and easeTo'd into a same-cluster forever loop.
           map.on("click", "clusters", (e) => {
             const features = map.queryRenderedFeatures(e.point, {
               layers: ["clusters"],
@@ -203,34 +209,34 @@ function SearchMapboxMap({ initial, filters }: Props) {
               "pins"
             ) as import("mapbox-gl").GeoJSONSource;
 
-            source.getClusterExpansionZoom(clusterId, (err, expansionZoom) => {
-              if (err || expansionZoom == null) return;
-              const currentZoom = map.getZoom();
-              // If clustering would still group these points even
-              // after we zoom in (i.e. expansionZoom isn't actually
-              // higher than where we are), pull the leaves directly
-              // and render a list popup.
-              const cantExpandFurther = expansionZoom <= currentZoom + 0.01;
-              if (cantExpandFurther) {
-                source.getClusterLeaves(
+            source.getClusterLeaves(
+              clusterId,
+              pointCount || 50, // cap at 50 — enough for any same-city cluster
+              0,
+              (leafErr, leaves) => {
+                if (leafErr || !leaves || leaves.length === 0) return;
+                if (leavesAreCoincident(leaves)) {
+                  const coords = pointCoords(cluster.geometry);
+                  if (!coords) return;
+                  new mapboxgl.Popup({ offset: 14, closeButton: true })
+                    .setLngLat(coords)
+                    .setHTML(renderClusterListHtml(leaves))
+                    .addTo(map);
+                  return;
+                }
+                // Organic cluster (geographically spread) — zoom in
+                // to the level supercluster says will break it apart.
+                source.getClusterExpansionZoom(
                   clusterId,
-                  pointCount || 50, // cap at 50 — enough for any same-city cluster
-                  0,
-                  (leafErr, leaves) => {
-                    if (leafErr || !leaves || leaves.length === 0) return;
+                  (zErr, expansionZoom) => {
+                    if (zErr || expansionZoom == null) return;
                     const coords = pointCoords(cluster.geometry);
-                    if (!coords) return;
-                    new mapboxgl.Popup({ offset: 14, closeButton: true })
-                      .setLngLat(coords)
-                      .setHTML(renderClusterListHtml(leaves))
-                      .addTo(map);
+                    if (coords)
+                      map.easeTo({ center: coords, zoom: expansionZoom });
                   }
                 );
-              } else {
-                const coords = pointCoords(cluster.geometry);
-                if (coords) map.easeTo({ center: coords, zoom: expansionZoom });
               }
-            });
+            );
           });
           map.on("mouseenter", "clusters", () => {
             map.getCanvas().style.cursor = "pointer";
@@ -433,6 +439,26 @@ function toFeatureCollection(pins: MapPin[]): GeoJSON.FeatureCollection {
       },
     })),
   };
+}
+
+/** Are all leaves at effectively the same lat/lng? "Effectively"
+ * means within ~10m (1e-4 degrees). Demo seed pins galleries at city
+ * centroids — those are exact-equal — but a tolerance also handles
+ * real-world cases like two galleries on the same street getting
+ * geocoded to the same building. */
+function leavesAreCoincident(
+  leaves: GeoJSON.Feature<GeoJSON.Geometry>[]
+): boolean {
+  if (leaves.length < 2) return false;
+  const first = leaves[0].geometry;
+  if (first.type !== "Point") return false;
+  const [lng0, lat0] = first.coordinates as [number, number];
+  const EPS = 1e-4;
+  return leaves.every((leaf) => {
+    if (leaf.geometry.type !== "Point") return false;
+    const [lng, lat] = leaf.geometry.coordinates as [number, number];
+    return Math.abs(lng - lng0) < EPS && Math.abs(lat - lat0) < EPS;
+  });
 }
 
 /** Popup body for a cluster of coincident pins — a compact list of
