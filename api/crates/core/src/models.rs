@@ -10,6 +10,11 @@ use uuid::Uuid;
 pub struct ArtworkSummary {
     pub id: Uuid,
     pub title: Option<String>,
+    /// Stable artist id. Lets surfaces that show the grid feed a
+    /// secondary view (e.g. the search map) without re-querying the
+    /// artwork set — the consumer just collects the distinct
+    /// `artist_id`s and asks the map endpoint for those.
+    pub artist_id: Uuid,
     pub artist_name: String,
     pub artist_slug: String,
     pub primary_image_url: Option<String>,

@@ -118,22 +118,50 @@ export default async function SearchPage({
   // the initial render has data even before the client's Mapbox
   // module loads; the client component takes over for pan/zoom
   // refetches.
+  //
+  // "Map = view of grid result": when the search has any filter
+  // (q / medium / location), we forward the distinct artist_ids from
+  // the grid response into the map fetch. That way the map mirrors
+  // the same RRF/vector retrieval the grid ran — no second embed,
+  // no diverging result sets. The plain "Explore the map" path
+  // (no filter) skips this so the cold-start view still shows every
+  // geocoded artist.
   const mapMode = sp.map === "1";
   let mapPins: MapPin[] = [];
   let mapError: string | null = null;
   let mapCities: CityPivot[] = [];
+  const hasGridFilter =
+    Boolean(params.q) ||
+    Boolean(params.medium) ||
+    Boolean(params.location);
+  const gridArtistIds: string[] = hasGridFilter
+    ? Array.from(new Set(resp.items.map((a) => a.artist_id)))
+    : [];
+  const artistIdsParam =
+    gridArtistIds.length > 0 ? gridArtistIds.join(",") : undefined;
   if (mapMode) {
     // Fetch pins + city pivots in parallel — both small reads, both
     // needed for first paint.
     const [pinsResult, citiesResult] = await Promise.allSettled([
       searchMap({
-        q: params.q,
-        medium: params.medium,
-        location: params.location,
+        // When artist_ids is set, the API ignores q/medium/location
+        // for filtering (the upstream grid has already applied them
+        // to derive the id set). We still forward `artist` (single
+        // slug) + `bbox` because those compose orthogonally.
+        artist_ids: artistIdsParam,
+        q: artistIdsParam ? undefined : params.q,
+        medium: artistIdsParam ? undefined : params.medium,
+        location: artistIdsParam ? undefined : params.location,
         artist: sp.artist?.trim() || undefined,
         bbox: sp.bbox?.trim() || undefined,
       }),
-      listMapCities({ q: params.q, medium: params.medium }),
+      listMapCities({
+        // Mirror the same filter selection as the pins query so the
+        // city strip and the map agree on which artists are in play.
+        q: artistIdsParam ? undefined : params.q,
+        medium: artistIdsParam ? undefined : params.medium,
+        artist_ids: artistIdsParam ? gridArtistIds : undefined,
+      }),
     ]);
     if (pinsResult.status === "fulfilled") {
       mapPins = pinsResult.value;
@@ -213,9 +241,14 @@ export default async function SearchPage({
           <SearchMapBlock
             pins={mapPins}
             filters={{
-              q: params.q,
-              medium: params.medium,
-              location: params.location,
+              // Same logic as the server-side fetch above: when
+              // artist_ids drives the result set, q/medium/location
+              // are upstream-applied and would only confuse the
+              // refetch on pan/zoom.
+              artist_ids: artistIdsParam,
+              q: artistIdsParam ? undefined : params.q,
+              medium: artistIdsParam ? undefined : params.medium,
+              location: artistIdsParam ? undefined : params.location,
               artist: sp.artist?.trim() || undefined,
             }}
             artistSlug={sp.artist?.trim() || undefined}
@@ -321,6 +354,8 @@ function SearchMapBlock({
     medium?: string;
     location?: string;
     artist?: string;
+    /** Comma-joined artist UUIDs — "map = view of grid result". */
+    artist_ids?: string;
   };
   /** Same as `filters.artist` but lifted out so the scoping pill can
    * derive the "Clear filter" link without duplicating the prop. */
@@ -415,7 +450,7 @@ function SearchMapBlock({
                   around `{...}` expressions on broken lines. */}
               {`${gridResultCount} ${
                 gridResultCount === 1 ? "work matches" : "works match"
-              } this search, but the keyword map can’t see semantic-only matches yet — and some of these artists may not have shared a public studio or gallery location.`}{" "}
+              } this search, but the artists haven’t shared a public studio or gallery location yet.`}{" "}
               <Link
                 href={clearMapHref(searchParams)}
                 className="underline underline-offset-2 hover:text-foreground"

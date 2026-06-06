@@ -164,9 +164,23 @@ _NEIGHBORHOODS: list[tuple[str, str, str, list[str]]] = [
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--data-dir", type=Path, required=True, help="Directory of WikiArt JPEGs")
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=None,
+        help="Directory of WikiArt JPEGs (required unless --locations-only)",
+    )
     parser.add_argument("--reset", action="store_true", help="Delete existing demo rows first")
     parser.add_argument("--limit", type=int, default=None, help="Cap artworks ingested (debug)")
+    parser.add_argument(
+        "--locations-only",
+        action="store_true",
+        help=(
+            "Skip corpus + embedding. Just insert one artist_locations "
+            "row per existing demo artist that lacks one. Use after an "
+            "older seed run to backfill the search map."
+        ),
+    )
     parser.add_argument(
         "--database-url",
         default=os.environ.get("DATABASE_URL", "postgres://ml_art:dev@localhost:5432/ml_art_dev"),
@@ -179,6 +193,21 @@ def main() -> None:
     # BEGIN/COMMIT — with autocommit=False, conn.transaction() only opens
     # a savepoint inside an implicit outer transaction that never commits.
     conn = psycopg.connect(args.database_url, autocommit=True)
+
+    # Backfill-only path: skip corpus/embedder/S3 entirely. Walks
+    # existing `demo-*` artists and adds a location for any that
+    # lack one. Safe to re-run.
+    if args.locations_only:
+        try:
+            with conn.transaction():
+                _ensure_locations_backfill(conn)
+        finally:
+            conn.close()
+        print("done.")
+        return
+
+    if args.data_dir is None:
+        sys.exit("--data-dir is required unless --locations-only is set")
 
     # S3 / MinIO
     s3 = boto3.client(
@@ -231,6 +260,7 @@ def main() -> None:
             artists_by_style = _ensure_artists(conn, grouped.keys())
             _ensure_artworks(conn, s3, bucket, grouped, artists_by_style, sha_to_vec, embedder)
             _ensure_neighborhoods(conn, grouped)
+            _ensure_locations(conn, artists_by_style)
     finally:
         conn.close()
     print("done.")
@@ -271,6 +301,10 @@ def _reset_demo(conn: psycopg.Connection) -> None:
                 "(SELECT id FROM artworks WHERE is_demo = true)"
             )
             cur.execute("DELETE FROM artworks WHERE is_demo = true")
+            cur.execute(
+                "DELETE FROM artist_locations "
+                "WHERE artist_id IN (SELECT id FROM artists WHERE slug LIKE 'demo-%%')"
+            )
             cur.execute("DELETE FROM artists WHERE slug LIKE 'demo-%%'")
 
 
@@ -479,6 +513,91 @@ def _ensure_neighborhoods(
                 [(nb_id, aid) for aid in artwork_ids],
             )
     print(f"neighborhoods: {len(_NEIGHBORHOODS)} ensured")
+
+
+def _ensure_locations_backfill(conn: psycopg.Connection) -> None:
+    """Run `_ensure_locations` against whatever demo artists already
+    exist in the DB. Used by the `--locations-only` CLI path to
+    upgrade an older seed without re-embedding the entire corpus.
+
+    Reconstructs the `style → artist_id` map from the artist's
+    `demo-<style-with-hyphens>` slug.
+    """
+    artists_by_style: dict[str, str] = {}
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT slug, id FROM artists "
+            "WHERE slug LIKE 'demo-%%' AND deleted_at IS NULL"
+        )
+        for slug, artist_id in cur.fetchall():
+            # synthetic_artist_for_style builds the slug as
+            # "demo-" + style.lower().replace("_", "-"). Invert.
+            style = slug.removeprefix("demo-").replace("-", "_")
+            artists_by_style[style] = str(artist_id)
+    if not artists_by_style:
+        print("no demo artists found — nothing to backfill")
+        return
+    print(f"backfilling locations for {len(artists_by_style)} demo artists")
+    _ensure_locations(conn, artists_by_style)
+
+
+def _ensure_locations(
+    conn: psycopg.Connection,
+    artists_by_style: dict[str, str],
+) -> None:
+    """Insert one `artist_locations` gallery per demo artist, so the
+    search-map view has pins to render. Idempotent: an artist that
+    already has at least one location is skipped, so re-running the
+    seed without ``--reset`` doesn't create duplicates.
+
+    Each demo artist's `artists.lat/lng/city/country` (assigned by
+    ``synthetic_artist_for_style``) already pins them to a deterministic
+    city. We mirror that location into ``artist_locations`` as a
+    "gallery showing" so the public map endpoints see it.
+    """
+    inserted = 0
+    with conn.cursor() as cur:
+        for style, artist_id in artists_by_style.items():
+            # Skip when this artist already has a location (idempotency).
+            cur.execute(
+                "SELECT 1 FROM artist_locations "
+                "WHERE artist_id = %s AND deleted_at IS NULL LIMIT 1",
+                (artist_id,),
+            )
+            if cur.fetchone() is not None:
+                continue
+
+            a = synthetic_artist_for_style(style)
+            if a.lat is None or a.lng is None or a.city is None:
+                continue  # artist has no anchor city, nothing to pin
+
+            pretty = style.replace("_", " ").title()
+            cur.execute(
+                """
+                INSERT INTO artist_locations (
+                    artist_id, kind, name, address,
+                    city, country, lat, lng, geocoded_at
+                )
+                VALUES (
+                    %s, 'gallery', %s, %s,
+                    %s, %s, %s, %s, now()
+                )
+                """,
+                (
+                    artist_id,
+                    f"{pretty} Gallery (Demo)",
+                    # Address is the "based in" string — good enough for
+                    # demo content; the real geocoded lat/lng comes from
+                    # synthetic_artist_for_style's curated city list.
+                    f"{a.city}, {a.country}",
+                    a.city,
+                    a.country,
+                    a.lat,
+                    a.lng,
+                ),
+            )
+            inserted += 1
+    print(f"artist_locations: {inserted} new (existing rows preserved)")
 
 
 def _vec_to_pgvector(v: np.ndarray) -> str:

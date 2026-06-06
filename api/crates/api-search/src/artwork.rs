@@ -123,6 +123,7 @@ pub async fn similar(
         SELECT
             a.id,
             a.title,
+            ar.id           AS artist_id,
             ar.display_name AS artist_name,
             ar.slug         AS artist_slug,
             ai.s3_key       AS primary_s3_key,
@@ -249,6 +250,7 @@ impl ImageRow {
 struct SimilarRow {
     id: Uuid,
     title: Option<String>,
+    artist_id: Uuid,
     artist_name: String,
     artist_slug: String,
     primary_s3_key: Option<String>,
@@ -262,6 +264,7 @@ impl SimilarRow {
         ArtworkSummary {
             id: self.id,
             title: self.title,
+            artist_id: self.artist_id,
             artist_name: self.artist_name,
             artist_slug: self.artist_slug,
             primary_image_url: self.primary_s3_key.map(|k| url_for_s3_key(&k)),

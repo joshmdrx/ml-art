@@ -266,6 +266,7 @@ async fn run_hybrid(
             a.id,
             a.title,
             ar.display_name AS artist_name,
+            ar.id           AS artist_id,
             ar.slug         AS artist_slug,
             ai.s3_key       AS primary_s3_key,
             a.price_cents,
@@ -323,6 +324,7 @@ async fn run_no_query(
             a.id,
             a.title,
             ar.display_name AS artist_name,
+            ar.id           AS artist_id,
             ar.slug         AS artist_slug,
             ai.s3_key       AS primary_s3_key,
             a.price_cents,
@@ -453,6 +455,7 @@ impl ArgIndex {
 struct Row {
     id: Uuid,
     title: Option<String>,
+    artist_id: Uuid,
     artist_name: String,
     artist_slug: String,
     primary_s3_key: Option<String>,
@@ -469,6 +472,7 @@ impl Row {
         ArtworkSummary {
             id: self.id,
             title: self.title,
+            artist_id: self.artist_id,
             artist_name: self.artist_name,
             artist_slug: self.artist_slug,
             primary_image_url: self

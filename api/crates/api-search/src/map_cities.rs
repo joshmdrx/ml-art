@@ -19,6 +19,7 @@ use ml_art_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 use sqlx::{AssertSqlSafe, FromRow};
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// Default + max for `?limit=`. We don't expect more than a few dozen
 /// cities at v0 scale; the cap keeps the response small + cheap.
@@ -38,6 +39,12 @@ pub struct CitiesParams {
     /// Restrict to artists with at least one artwork of this medium.
     #[serde(default)]
     pub medium: Option<String>,
+    /// Comma-separated UUID list — same shape + semantics as
+    /// `/v1/search/map?artist_ids=`. When set, the strip aggregates
+    /// only cities containing those artists (so the strip matches
+    /// the map pins beneath it when both are fed the same id set).
+    #[serde(default)]
+    pub artist_ids: Option<String>,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -76,11 +83,17 @@ pub async fn handle(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
+    let artist_ids = parse_artist_ids(params.artist_ids.as_deref())?;
 
     // Build the SQL incrementally so the artwork-matching EXISTS only
     // appears when there's an actual filter. Mirrors the shape used
     // by `search_map::handle` for the same join — see comment there
     // re: why EXISTS over JOIN (avoids duplicate-per-artwork rows).
+    //
+    // Param binding order (stable, in case we change clauses later):
+    //   $1 = limit (always)
+    //   $2 = artist_ids (when set)
+    //   then $N for q, then $N for medium
     let mut sql = String::from(
         "SELECT
             al.city                       AS city,
@@ -102,6 +115,12 @@ pub async fn handle(
           AND ar.status = 'active'",
     );
 
+    let mut idx = 1usize; // $1 is limit
+    if artist_ids.is_some() {
+        idx += 1;
+        sql.push_str(&format!(" AND ar.id = ANY(${idx})"));
+    }
+
     if q.is_some() || medium.is_some() {
         sql.push_str(
             " AND EXISTS (
@@ -110,9 +129,6 @@ pub async fn handle(
                   AND aw.deleted_at IS NULL
                   AND aw.status = 'published'",
         );
-        // Param indices: $1 = limit (bound first below). q is always
-        // $2 when present; medium is $2 if q is None, else $3.
-        let mut idx = 1usize;
         if q.is_some() {
             idx += 1;
             sql.push_str(&format!(
@@ -129,6 +145,9 @@ pub async fn handle(
     sql.push_str(" GROUP BY al.city, al.country ORDER BY count DESC, al.city ASC LIMIT $1");
 
     let mut qb = sqlx::query_as::<_, CityPivot>(AssertSqlSafe(sql)).bind(limit);
+    if let Some(ids) = artist_ids {
+        qb = qb.bind(ids);
+    }
     if let Some(q) = q {
         qb = qb.bind(q);
     }
@@ -137,4 +156,29 @@ pub async fn handle(
     }
     let rows: Vec<CityPivot> = qb.fetch_all(&state.pool).await?;
     Ok(Json(rows))
+}
+
+/// Parse a `?artist_ids=uuid1,uuid2` value. Mirrors the helper in
+/// `search_map` but inlined to avoid making that one `pub` for the
+/// sake of a single caller — duplication is cheap here.
+fn parse_artist_ids(raw: Option<&str>) -> Result<Option<Vec<Uuid>>, ApiError> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let mut ids: Vec<Uuid> = Vec::new();
+    for tok in raw.split(',') {
+        let tok = tok.trim();
+        if tok.is_empty() {
+            continue;
+        }
+        let parsed = Uuid::parse_str(tok)
+            .map_err(|_| ApiError::BadRequest(format!("artist_ids: invalid uuid '{tok}'")))?;
+        ids.push(parsed);
+    }
+    ids.sort();
+    ids.dedup();
+    if ids.len() > 500 {
+        ids.truncate(500);
+    }
+    Ok(if ids.is_empty() { None } else { Some(ids) })
 }

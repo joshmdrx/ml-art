@@ -17,6 +17,11 @@ export type SortOrder =
 export interface ArtworkSummary {
   id: string;
   title: string | null;
+  /** Stable artist id. Powers the "Where to see them" map view: the
+   * search page collects the distinct artist ids from a grid result
+   * and passes them to /v1/search/map?artist_ids=… so the map mirrors
+   * the grid without re-running the embedding. */
+  artist_id: string;
   artist_name: string;
   artist_slug: string;
   primary_image_url: string | null;
@@ -120,6 +125,12 @@ export interface MapSearchParams {
   /** Pin down to a single artist by slug (T-041). Set by the
    * "See on map" CTA on `/artists/[slug]`. */
   artist?: string;
+  /** "uuid1,uuid2,…" — the "map = view of grid result" path. When
+   * set, the map shows venues for exactly these artists. Used by
+   * /search?map=1 to keep map + grid consistent: the search page
+   * collects ArtworkSummary.artist_id from the grid response and
+   * passes them here. */
+  artist_ids?: string;
 }
 
 export interface Dimensions {
@@ -460,16 +471,19 @@ export async function searchArtworks(
  * city-pill strip. Empty array on success-with-no-cities (the
  * cold-start case before any artist has geocoded locations). */
 export async function listMapCities(
-  filters?: { q?: string; medium?: string },
+  filters?: { q?: string; medium?: string; artist_ids?: string[] },
   init?: RequestInit
 ): Promise<CityPivot[]> {
-  // Forward the active text/medium filter so the pivot strip only
-  // surfaces cities that actually have matching results — otherwise a
-  // "Basingstoke (1)" pill leads to an empty map when the artist in
-  // Basingstoke has no works matching the search.
+  // Forward the active filters so the pivot strip mirrors what the
+  // map underneath it actually shows. `artist_ids` (when present)
+  // wins: it carries the upstream grid's RRF/vector result set, so
+  // the strip + map both restrict to those artists.
   const usp = new URLSearchParams();
   if (filters?.q?.trim()) usp.set("q", filters.q.trim());
   if (filters?.medium?.trim()) usp.set("medium", filters.medium.trim());
+  if (filters?.artist_ids && filters.artist_ids.length > 0) {
+    usp.set("artist_ids", filters.artist_ids.join(","));
+  }
   const qs = usp.toString();
   const res = await apiFetch(
     `/v1/search/map/cities${qs ? `?${qs}` : ""}`,

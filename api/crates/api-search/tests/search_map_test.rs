@@ -218,3 +218,52 @@ async fn pre_geocode_rows_are_hidden(pool: PgPool) {
     let (_, pins): (_, Vec<Pin>) = get_json(app, "/v1/search/map?bbox=-180,-90,180,90").await;
     assert!(!pins.iter().any(|p| p.name == "Studio (by appointment)"));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ?artist_ids= — the "map = view of grid result" thread-through path
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn artist_ids_restricts_pins_to_those_artists(pool: PgPool) {
+    // Seed has Alice in London + Bruno in Berlin. Pass only Alice's
+    // id → only the London pin.
+    let app = app_keyword_only(pool);
+    let (_, pins): (_, Vec<Pin>) = get_json(
+        app,
+        "/v1/search/map?artist_ids=aaa11111-1111-1111-1111-111111111111",
+    )
+    .await;
+    assert_eq!(pins.len(), 1);
+    assert_eq!(pins[0].city.as_deref(), Some("London"));
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn artist_ids_composes_with_bbox(pool: PgPool) {
+    // Both artists' ids, but bbox excludes Berlin → only London comes
+    // back. Ensures artist_ids isn't short-circuiting the bbox filter.
+    let app = app_keyword_only(pool);
+    let url = "/v1/search/map?artist_ids=aaa11111-1111-1111-1111-111111111111,aaa22222-2222-2222-2222-222222222222&bbox=-1,51,1,52";
+    let (_, pins): (_, Vec<Pin>) = get_json(app, url).await;
+    assert_eq!(pins.len(), 1);
+    assert_eq!(pins[0].city.as_deref(), Some("London"));
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn artist_ids_unknown_id_returns_empty(pool: PgPool) {
+    // A real-but-not-in-DB UUID → zero matches, no error.
+    let app = app_keyword_only(pool);
+    let (_, pins): (_, Vec<Pin>) = get_json(
+        app,
+        "/v1/search/map?artist_ids=00000000-0000-0000-0000-000000000000",
+    )
+    .await;
+    assert!(pins.is_empty());
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn artist_ids_invalid_uuid_is_400(pool: PgPool) {
+    use common::get_status;
+    let app = app_keyword_only(pool);
+    let (status, _) = get_status(app, "/v1/search/map?artist_ids=not-a-uuid").await;
+    assert_eq!(status, 400);
+}

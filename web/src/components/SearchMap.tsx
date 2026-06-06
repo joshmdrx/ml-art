@@ -38,6 +38,10 @@ interface Props {
     /** Set by the "See on map" CTA on `/artists/[slug]`. When present,
      * the map only shows that artist's venues. */
     artist?: string;
+    /** Comma-joined uuid list — the "map = view of grid result"
+     * thread-through. Persisted across pan/zoom so the artists pinned
+     * on first paint stay pinned as the user moves the map. */
+    artist_ids?: string;
   };
 }
 
@@ -70,6 +74,7 @@ function SearchMapboxMap({ initial, filters }: Props) {
           medium: filters.medium,
           location: filters.location,
           artist: filters.artist,
+          artist_ids: filters.artist_ids,
           bbox,
         });
         setPins(next);
@@ -81,7 +86,13 @@ function SearchMapboxMap({ initial, filters }: Props) {
         setLoading(false);
       }
     },
-    [filters.q, filters.medium, filters.location, filters.artist]
+    [
+      filters.q,
+      filters.medium,
+      filters.location,
+      filters.artist,
+      filters.artist_ids,
+    ]
   );
 
   // One-time map setup.

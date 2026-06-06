@@ -65,6 +65,20 @@ pub struct MapSearchParams {
     /// still requires alice to have an artwork matching cobalt.
     #[serde(default)]
     pub artist: Option<String>,
+    /// Comma-separated list of artist UUIDs. When set, the map shows
+    /// venues for *exactly these artists* and ignores `q`/`medium`
+    /// (which the upstream caller — typically the /search page — has
+    /// already applied to produce this id set). This is the path the
+    /// web app takes when "Where to see them" is toggled while a
+    /// search is active: the grid already ran the hybrid retrieval,
+    /// the map just renders pins for the artists it found. Keeps the
+    /// two surfaces in sync without re-running the embed.
+    ///
+    /// Compatible with `q`/`medium` for the rare API caller that
+    /// wants to intersect — we don't strip them; they just compose.
+    /// Max ~500 ids per request (well under URL length caps).
+    #[serde(default)]
+    pub artist_ids: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -179,6 +193,17 @@ pub async fn handle(
         );
     }
 
+    // Artist-id set (the "map = view of grid result" path). When the
+    // /search page is in map mode it forwards the artist ids it just
+    // pulled out of the grid response — that means the map shows
+    // exactly the artists that matched the user's search, hybrid
+    // ranking and all, without re-running the embedding.
+    if let Some(ids) = parse_artist_ids(params.artist_ids.as_deref())? {
+        sql.push_str(" AND ar.id = ANY(");
+        push(&mut sql, &mut binds, &mut next, BoundParam::UuidArr(ids));
+        sql.push(')');
+    }
+
     // Keyword / medium filters require the artist to have at least one
     // matching artwork. We express that with an EXISTS subquery so the
     // join stays a per-location row and we don't double-count.
@@ -242,6 +267,7 @@ pub async fn handle(
             BoundParam::F64(v) => q.bind(v),
             BoundParam::Text(v) => q.bind(v),
             BoundParam::I64(v) => q.bind(v),
+            BoundParam::UuidArr(v) => q.bind(v),
         };
     }
     let rows: Vec<MapPinRow> = q.fetch_all(&state.pool).await?;
@@ -321,11 +347,48 @@ fn location_filter(input: Option<&str>) -> Option<String> {
     Some(format!("%{}%", escaped.to_lowercase()))
 }
 
+/// Parse the `?artist_ids=uuid1,uuid2,…` query param. Returns:
+///   - `None` when absent / empty (no filter)
+///   - `Some(vec)` of parsed UUIDs (deduped + capped at 500)
+///   - `Err` if any token isn't a valid UUID (we'd rather 400 than
+///     silently drop ids — caller likely sent a bug)
+fn parse_artist_ids(raw: Option<&str>) -> Result<Option<Vec<Uuid>>, ApiError> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let mut ids: Vec<Uuid> = Vec::new();
+    for tok in raw.split(',') {
+        let tok = tok.trim();
+        if tok.is_empty() {
+            continue;
+        }
+        let parsed = Uuid::parse_str(tok)
+            .map_err(|_| ApiError::BadRequest(format!("artist_ids: invalid uuid '{tok}'")))?;
+        ids.push(parsed);
+    }
+    ids.sort();
+    ids.dedup();
+    // Cap to keep the URL + IN-list reasonable. 500 mirrors
+    // MAP_PIN_LIMIT — there's no point asking for more pins than
+    // there are artists that could place them.
+    if ids.len() > 500 {
+        ids.truncate(500);
+    }
+    if ids.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(ids))
+    }
+}
+
 #[derive(Debug)]
 enum BoundParam {
     F64(f64),
     Text(String),
     I64(i64),
+    /// Bound as `uuid[]` for `WHERE ar.id = ANY($N)` filters. Used by
+    /// the `?artist_ids=` thread-through path.
+    UuidArr(Vec<Uuid>),
 }
 
 #[derive(FromRow)]
