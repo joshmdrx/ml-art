@@ -311,6 +311,23 @@ Cost impact: Mapbox geocoding is free up to 100k requests/month, well above any 
 
 ---
 
+## 2026-06-07 — Search + map are one surface, viewed two ways
+
+**Context:** `/search` shipped with a `Works` / `Where to see them` toggle — two tabs over the same logical query (artworks + their artist locations). UX kept forcing users to choose between "what does it look like" and "where can I see it," and the two endpoints (grid + map) had drifted in subtle ways (different filter semantics, different result sets) that we patched piecemeal (artist_ids thread-through, q-filtered city pivots, disconnect-explainer banner).
+
+**Decided:** the toggle stays as the affordance, but `?map=1` becomes a **split view** — the grid moves to a scrollable side panel (~40% width on desktop, stacked on mobile) and the map fills the rest. Hover/click syncs in both directions: card-hover emphasises pins, pin-hover scrolls the panel; click on either opens detail in the other. State of truth is a single `highlightedArtistId` lifted to the SearchPage; neither half mutates from a hover that originated in itself.
+
+**Alternatives:**
+1. Keep the tabs. Loses the relationship between an artwork and its venue — the disconnect-explainer hack proved we'd be papering over the gap forever.
+2. Map-as-default with a tab to grid. Too aggressive — users browsing without a geographic intent want the simpler grid.
+3. Full Airbnb (map dominant, list as overlay sheet). Right for travel sites where the map IS the product; wrong here because the artwork visual carries primary value.
+
+**Why:** the split view models the relationship as it actually is — every artwork has an artist, every artist may have a location, the user wants both lenses simultaneously when they're searching geographically. The toggle preserves the lighter "just show me artworks" path for users who don't care where to physically encounter the work.
+
+**Reversibility:** Medium. The split layout is a swap in `/search/page.tsx`'s render path; we keep the grid component and the map component separately usable, so falling back to the tab model is a layout change, not a data-model change.
+
+**Implementation:** four slices (L1–L4) in `TODO.md` `T-045`. L1 (layout shell, no sync) is the smallest releasable unit and the right thing to ship first.
+
 ## 2026-05-25 — Postgres-backed text query embedding cache
 
 **Context:** Search endpoints need to embed the user's text query at request time. Jina API takes 100–300ms per call. This dominates search latency.

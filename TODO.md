@@ -53,6 +53,23 @@ if the item was dropped, with a one-line reason.
 
 ## Soon (this milestone)
 
+### `T-045` Integrated map + grid layout (Airbnb-style "Where to see them")
+**Where:** `web/src/app/search/page.tsx` + new `web/src/components/SearchSplitView/` + small updates to `SearchMap` + (eventually) `<ArtworkGrid>`.
+
+**Why:** the Works tab and the Where-to-see-them tab show different views of the same query — forcing the user to choose between "what does it look like" and "where can I see it." Merging them into a single split view (grid as side panel + map as main) makes the relationship between an artwork and its venue navigable in one glance.
+
+**State:** plan + decision logged 2026-06-07. Slice-by-slice plan below; each slice independently shippable.
+
+- **L1 — Layout shell.** Two-column grid when `?map=1`; grid moves to a scrollable side panel (~40% width on desktop), map fills the rest. Mobile stacks (grid above, map below). No interactivity changes yet. ~half-day.
+- **L2 — Hover sync.** Card hover → emphasize artist's pin(s) via Mapbox `feature-state`. Pin hover → scroll panel to first matching card + border highlight. Source-of-truth pattern (lifted `highlightedArtistId`) to prevent ping-pong loops. ~half-day.
+- **L3 — Click sync.** Click card → map `flyTo` artist's first location + open popup. Click pin → panel filters to "Showing {Artist}" via the existing scoping-pill machinery. ~half-day.
+- **L4 — Polish.** Pan-aware sort (when no filter), mobile bottom-sheet for the panel, "7 of 24 works have a public location" caption (retiring the disconnect explainer). ~half-day.
+
+**Risks captured up-front:**
+- Bidirectional sync loops — mitigate via a single `highlightedArtistId` state in SearchPage, both panels read it, only originating-event hovers write it.
+- GeoJSON pin styling by id needs Mapbox `feature-state` setup in the existing layers.
+- Grid layout at ~520px panel width needs to adapt from 4 columns to 2.
+
 ### `T-022` Pricing/dimensions polish (partial — formatters in place, seed data null)
 **Where:** seed script (optional) + `lib/api.ts` (done) + ArtworkDetail panel (done)
 **State:** `formatDimensions` and `formatPrice` work; the seeded demo artworks have null dimensions/price. Either backfill in `seed.py` with plausible random values, or leave demo content as-is (price/dim only matter for real artists). Decide before launch.

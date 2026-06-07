@@ -4,7 +4,6 @@ import { ArtworkGrid } from "@/components/ArtworkGrid";
 import { FilterBar } from "@/components/FilterBar";
 import { ModifierBar } from "@/components/ModifierBar";
 import { CityPivotStrip } from "@/components/CityPivotStrip";
-import { NearMeButton } from "@/components/NearMeButton";
 import { SearchMap } from "@/components/SearchMap";
 import {
   listMapCities,
@@ -18,6 +17,12 @@ import {
 } from "@/lib/api";
 import { priceParamsFromToken } from "@/lib/filterBar";
 import { reportError } from "@/lib/reportError";
+
+/** Page size for the grid query. Surfaced as a named const because
+ * the disconnect explainer needs to know whether the result set is
+ * "exactly N" or "N+ (we capped)" — those read very differently to a
+ * user staring at zero map pins. */
+const GRID_PAGE_LIMIT = 24;
 
 /**
  * /search?q=...&location=...&medium=...&price=...&availability=...
@@ -89,7 +94,7 @@ export default async function SearchPage({
       | undefined,
     image_upload_id: sp.image_upload_id?.trim() || undefined,
     modifiers: sp.modifiers?.trim() || undefined,
-    limit: 24,
+    limit: GRID_PAGE_LIMIT,
   };
 
   let resp;
@@ -238,30 +243,66 @@ export default async function SearchPage({
         )}
 
         {mapMode ? (
-          <SearchMapBlock
-            pins={mapPins}
-            filters={{
-              // Same logic as the server-side fetch above: when
-              // artist_ids drives the result set, q/medium/location
-              // are upstream-applied and would only confuse the
-              // refetch on pan/zoom.
-              artist_ids: artistIdsParam,
-              q: artistIdsParam ? undefined : params.q,
-              medium: artistIdsParam ? undefined : params.medium,
-              location: artistIdsParam ? undefined : params.location,
-              artist: sp.artist?.trim() || undefined,
-            }}
-            artistSlug={sp.artist?.trim() || undefined}
-            cities={mapCities}
-            searchParams={sp}
-            error={mapError}
-            gridResultCount={resp.items.length}
-            hasActiveFilter={
-              Boolean(params.q) ||
-              Boolean(params.medium) ||
-              Boolean(params.location)
-            }
-          />
+          /* L1 split view (T-045): grid moves to a side panel, map
+             takes the rest. Stacked on mobile (map first, then
+             cards), two-column on lg+ (cards left, map right).
+             Hover/click sync between the two panes comes in L2/L3 —
+             this slice is layout-only.
+
+             Order: map first in source order, but visually flipped
+             to "cards left, map right" on lg+ via `lg:order-*`. This
+             keeps mobile users scrolling map → cards (the map is
+             the cue for why they tapped "Where to see them"). */
+          <div className="flex flex-col gap-6 lg:grid lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] lg:gap-6 lg:items-start">
+            <aside
+              aria-label="Search results"
+              className="order-2 lg:order-1 lg:sticky lg:top-4 lg:max-h-[640px] lg:overflow-y-auto lg:pr-2"
+            >
+              {resp.items.length > 0 ? (
+                <>
+                  <p className="mb-3 text-xs uppercase tracking-wider text-muted">
+                    {resp.items.length}
+                    {resp.items.length >= GRID_PAGE_LIMIT ? "+" : ""} work
+                    {resp.items.length === 1 ? "" : "s"}
+                  </p>
+                  <ArtworkGrid items={resp.items} density="compact" />
+                </>
+              ) : !error ? (
+                <EmptyState
+                  hasTextQuery={hasTextQuery}
+                  query={params.q}
+                  embedderEnabled={embedderEnabled}
+                />
+              ) : null}
+            </aside>
+            <div className="order-1 lg:order-2">
+              <SearchMapBlock
+                pins={mapPins}
+                filters={{
+                  // Same logic as the server-side fetch above: when
+                  // artist_ids drives the result set, q/medium/location
+                  // are upstream-applied and would only confuse the
+                  // refetch on pan/zoom.
+                  artist_ids: artistIdsParam,
+                  q: artistIdsParam ? undefined : params.q,
+                  medium: artistIdsParam ? undefined : params.medium,
+                  location: artistIdsParam ? undefined : params.location,
+                  artist: sp.artist?.trim() || undefined,
+                }}
+                artistSlug={sp.artist?.trim() || undefined}
+                cities={mapCities}
+                searchParams={sp}
+                error={mapError}
+                gridResultCount={resp.items.length}
+                gridHitLimit={resp.items.length >= GRID_PAGE_LIMIT}
+                hasActiveFilter={
+                  Boolean(params.q) ||
+                  Boolean(params.medium) ||
+                  Boolean(params.location)
+                }
+              />
+            </div>
+          </div>
         ) : resp.items.length === 0 && !error ? (
           <EmptyState
             hasTextQuery={hasTextQuery}
@@ -332,8 +373,9 @@ function ViewToggle({
         Where to see them
       </Link>
       </div>
-      {/* Near-me button only makes sense in map mode (T-043). */}
-      {mapMode && <NearMeButton variant="inline" />}
+      {/* Near-me lives inside the map's control stack now (T-043
+          revisited) — see `SearchMap`. Keeps the page toolbar clean
+          and matches the Google-Maps / Mapbox convention. */}
     </div>
   );
 }
@@ -346,6 +388,7 @@ function SearchMapBlock({
   searchParams,
   error,
   gridResultCount,
+  gridHitLimit,
   hasActiveFilter,
 }: {
   pins: MapPin[];
@@ -372,6 +415,11 @@ function SearchMapBlock({
    * empty, we tell the user why instead of leaving them staring at
    * a silent blank globe. */
   gridResultCount: number;
+  /** True when the grid response was capped at `GRID_PAGE_LIMIT`,
+   * meaning the real number of matching works is unknown. Lets the
+   * disconnect explainer render "N+ works" instead of lying with a
+   * precise number. */
+  gridHitLimit: boolean;
   /** Whether any text/medium/location filter was applied. The
    * disconnect explainer only fires when the user actually
    * searched — otherwise we'd show it on cold-start with no pins,
@@ -448,7 +496,7 @@ function SearchMapBlock({
                   nodes was eating the space between "match" and
                   "this" because of how React collapses whitespace
                   around `{...}` expressions on broken lines. */}
-              {`${gridResultCount} ${
+              {`${gridResultCount}${gridHitLimit ? "+" : ""} ${
                 gridResultCount === 1 ? "work matches" : "works match"
               } this search, but the artists haven’t shared a public studio or gallery location yet.`}{" "}
               <Link
