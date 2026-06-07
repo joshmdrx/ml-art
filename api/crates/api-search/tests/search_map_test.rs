@@ -267,3 +267,43 @@ async fn artist_ids_invalid_uuid_is_400(pool: PgPool) {
     let (status, _) = get_status(app, "/v1/search/map?artist_ids=not-a-uuid").await;
     assert_eq!(status, 400);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ?location= — now matches ISO codes + country-name synonyms, not just city
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn location_filter_matches_iso_country_code(pool: PgPool) {
+    // Seed has alice in London (country='GB'). `?location=GB` should
+    // find her even though no city contains "gb".
+    let app = app_keyword_only(pool);
+    let (_, pins): (_, Vec<Pin>) = get_json(app, "/v1/search/map?location=GB").await;
+    assert!(pins.iter().any(|p| p.city.as_deref() == Some("London")));
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn location_filter_matches_country_synonym_uk(pool: PgPool) {
+    // `uk` → expand to ISO `GB` via synonym table.
+    let app = app_keyword_only(pool);
+    let (_, pins): (_, Vec<Pin>) = get_json(app, "/v1/search/map?location=uk").await;
+    assert!(pins.iter().any(|p| p.city.as_deref() == Some("London")));
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn location_filter_matches_country_synonym_germany(pool: PgPool) {
+    // `Germany` → expand to ISO `DE`.
+    let app = app_keyword_only(pool);
+    let (_, pins): (_, Vec<Pin>) = get_json(app, "/v1/search/map?location=Germany").await;
+    assert!(pins.iter().any(|p| p.city.as_deref() == Some("Berlin")));
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn location_filter_matches_free_text_based_in(pool: PgPool) {
+    // Alice's `artists.location` is "London, GB". A query of "GB"
+    // should match via the substring path on ar.location even if the
+    // ISO path didn't (it does — covered above — this just confirms
+    // the OR composes).
+    let app = app_keyword_only(pool);
+    let (_, pins): (_, Vec<Pin>) = get_json(app, "/v1/search/map?location=GB").await;
+    assert!(!pins.is_empty());
+}

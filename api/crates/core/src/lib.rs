@@ -9,6 +9,7 @@
 //! - `error`    — `ApiError` + RFC 7807 problem+json conversion
 //! - `models`   — shared domain types serialised over the wire
 
+pub mod artist_ids;
 pub mod artwork_embeddings;
 pub mod auth;
 pub mod config;
@@ -19,6 +20,7 @@ pub mod error;
 pub mod geocoding;
 pub mod images;
 pub mod jobs;
+pub mod location_search;
 pub mod middleware;
 pub mod models;
 pub mod moderation;

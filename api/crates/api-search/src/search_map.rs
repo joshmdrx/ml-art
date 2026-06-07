@@ -25,7 +25,10 @@ use axum::{
     extract::{Query, State},
     Json,
 };
-use ml_art_core::{error::ApiError, images::url_for_s3_key};
+use ml_art_core::{
+    artist_ids::parse_artist_ids, error::ApiError, images::url_for_s3_key,
+    location_search::LocationTerms,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::{AssertSqlSafe, FromRow};
 use std::sync::Arc;
@@ -170,9 +173,42 @@ pub async fn handle(
         push(&mut sql, &mut binds, &mut next, BoundParam::F64(bbox.north));
     }
 
-    if let Some(loc) = location_filter(params.location.as_deref()) {
-        sql.push_str(" AND lower(al.city) LIKE");
-        push(&mut sql, &mut binds, &mut next, BoundParam::Text(loc));
+    // Location filter: substring on the venue's city OR free-text
+    // "based in" on the artist, OR exact match on the venue's ISO
+    // country code (with synonym expansion: "uk" → "GB"). Catches
+    // the common user cases that the old city-only path missed.
+    if let Some(loc) = params.location.as_deref().and_then(LocationTerms::from_query) {
+        sql.push_str(" AND (");
+        // City substring (on the artist_locations row).
+        sql.push_str("lower(al.city) LIKE");
+        push(
+            &mut sql,
+            &mut binds,
+            &mut next,
+            BoundParam::Text(loc.pattern.clone()),
+        );
+        // Free-text 'based in' on the artist row — covers strings like
+        // "London, GB" so "gb" still finds a hit even without ISO.
+        sql.push_str(" OR (ar.location IS NOT NULL AND lower(ar.location) LIKE");
+        push(
+            &mut sql,
+            &mut binds,
+            &mut next,
+            BoundParam::Text(loc.pattern),
+        );
+        sql.push(')');
+        // ISO country exact-match, when the term looks like a country.
+        if !loc.iso_codes.is_empty() {
+            sql.push_str(" OR upper(coalesce(al.country, '')) = ANY(");
+            push(
+                &mut sql,
+                &mut binds,
+                &mut next,
+                BoundParam::TextArr(loc.iso_codes),
+            );
+            sql.push(')');
+        }
+        sql.push(')');
     }
 
     // Artist filter (T-041) — exact-match on slug. Uses the existing
@@ -268,6 +304,7 @@ pub async fn handle(
             BoundParam::Text(v) => q.bind(v),
             BoundParam::I64(v) => q.bind(v),
             BoundParam::UuidArr(v) => q.bind(v),
+            BoundParam::TextArr(v) => q.bind(v),
         };
     }
     let rows: Vec<MapPinRow> = q.fetch_all(&state.pool).await?;
@@ -329,58 +366,6 @@ fn parse_bbox(input: Option<&str>) -> Result<Option<Bbox>, ApiError> {
     }))
 }
 
-/// Build the `LIKE` filter for the location column. Returns the
-/// pattern (lowercased + wildcard-wrapped) or `None` when the input is
-/// empty / whitespace.
-fn location_filter(input: Option<&str>) -> Option<String> {
-    let v = input?.trim();
-    if v.is_empty() {
-        return None;
-    }
-    // Escape `%` and `_` in user input so they can't accidentally
-    // widen the match. (Postgres doesn't ESCAPE by default; we wrap
-    // with `%…%`.)
-    let escaped = v
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    Some(format!("%{}%", escaped.to_lowercase()))
-}
-
-/// Parse the `?artist_ids=uuid1,uuid2,…` query param. Returns:
-///   - `None` when absent / empty (no filter)
-///   - `Some(vec)` of parsed UUIDs (deduped + capped at 500)
-///   - `Err` if any token isn't a valid UUID (we'd rather 400 than
-///     silently drop ids — caller likely sent a bug)
-fn parse_artist_ids(raw: Option<&str>) -> Result<Option<Vec<Uuid>>, ApiError> {
-    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
-        return Ok(None);
-    };
-    let mut ids: Vec<Uuid> = Vec::new();
-    for tok in raw.split(',') {
-        let tok = tok.trim();
-        if tok.is_empty() {
-            continue;
-        }
-        let parsed = Uuid::parse_str(tok)
-            .map_err(|_| ApiError::BadRequest(format!("artist_ids: invalid uuid '{tok}'")))?;
-        ids.push(parsed);
-    }
-    ids.sort();
-    ids.dedup();
-    // Cap to keep the URL + IN-list reasonable. 500 mirrors
-    // MAP_PIN_LIMIT — there's no point asking for more pins than
-    // there are artists that could place them.
-    if ids.len() > 500 {
-        ids.truncate(500);
-    }
-    if ids.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(ids))
-    }
-}
-
 #[derive(Debug)]
 enum BoundParam {
     F64(f64),
@@ -389,6 +374,9 @@ enum BoundParam {
     /// Bound as `uuid[]` for `WHERE ar.id = ANY($N)` filters. Used by
     /// the `?artist_ids=` thread-through path.
     UuidArr(Vec<Uuid>),
+    /// Bound as `text[]` for `WHERE col = ANY($N)` filters — used by
+    /// the location ISO-codes set.
+    TextArr(Vec<String>),
 }
 
 #[derive(FromRow)]
@@ -472,20 +460,7 @@ mod tests {
         assert!(parse_bbox(Some("0,10,1,5")).is_err());
     }
 
-    #[test]
-    fn location_filter_escapes_wildcards() {
-        // Raw `%` from the user must not turn into a wildcard.
-        let pat = location_filter(Some("100% pure")).unwrap();
-        assert!(pat.starts_with('%') && pat.ends_with('%'));
-        assert!(pat.contains("100\\%"));
-        // Underscore likewise.
-        let pat2 = location_filter(Some("a_b")).unwrap();
-        assert!(pat2.contains("a\\_b"));
-    }
-
-    #[test]
-    fn location_filter_empty_is_none() {
-        assert!(location_filter(None).is_none());
-        assert!(location_filter(Some("   ")).is_none());
-    }
+    // Wildcard-escape + empty-input behaviour now lives in
+    // `core::location_search::LocationTerms` tests (unit-tested
+    // directly there, not via this endpoint).
 }

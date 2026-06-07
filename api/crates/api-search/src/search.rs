@@ -24,6 +24,7 @@ use axum::{
 use ml_art_core::{
     auth::OptionalAnonId,
     error::ApiError,
+    location_search::LocationTerms,
     models::{ArtworkSummary, Paginated, SortOrder},
     modifiers::{self, DEFAULT_ALPHA},
 };
@@ -383,13 +384,24 @@ fn build_filters(
         clauses.push(format!("AND a.availability = ${idx}"));
     }
 
-    if let Some(loc) = p.location.as_deref().filter(|s| !s.is_empty()) {
-        // ILIKE against a normalized "city, country" string on the artist.
-        let pat = format!("%{}%", loc.trim());
-        let idx = next.bind(args, pat)?;
-        clauses.push(format!(
-            "AND (coalesce(ar.city, '') || ', ' || coalesce(ar.country, '')) ILIKE ${idx}"
-        ));
+    if let Some(loc) = p.location.as_deref().and_then(LocationTerms::from_query) {
+        // OR across three paths so common user terms all land:
+        //   - substring on city + the artist's free-text "based in"
+        //     (catches "London", "berlin", "GB" inside "London, GB")
+        //   - exact-match on the ISO country code (catches "UK"→GB,
+        //     "Germany"→DE via the synonym table)
+        let pat_idx = next.bind(args, loc.pattern.clone())?;
+        let mut sub = format!(
+            "AND ((coalesce(ar.city, '') || ', ' || coalesce(ar.country, '')) ILIKE ${pat_idx} OR lower(coalesce(ar.location, '')) LIKE ${pat_idx}"
+        );
+        if !loc.iso_codes.is_empty() {
+            let iso_idx = next.bind(args, loc.iso_codes.clone())?;
+            sub.push_str(&format!(
+                " OR upper(coalesce(ar.country, '')) = ANY(${iso_idx})"
+            ));
+        }
+        sub.push(')');
+        clauses.push(sub);
     }
 
     if let (Some(lat), Some(lng)) = (p.near_lat, p.near_lng) {

@@ -17,9 +17,9 @@ use crate::AppState;
 use axum::{extract::State, Json};
 use ml_art_core::error::ApiError;
 use serde::{Deserialize, Serialize};
+use ml_art_core::artist_ids::parse_artist_ids;
 use sqlx::{AssertSqlSafe, FromRow};
 use std::sync::Arc;
-use uuid::Uuid;
 
 /// Default + max for `?limit=`. We don't expect more than a few dozen
 /// cities at v0 scale; the cap keeps the response small + cheap.
@@ -158,27 +158,3 @@ pub async fn handle(
     Ok(Json(rows))
 }
 
-/// Parse a `?artist_ids=uuid1,uuid2` value. Mirrors the helper in
-/// `search_map` but inlined to avoid making that one `pub` for the
-/// sake of a single caller — duplication is cheap here.
-fn parse_artist_ids(raw: Option<&str>) -> Result<Option<Vec<Uuid>>, ApiError> {
-    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
-        return Ok(None);
-    };
-    let mut ids: Vec<Uuid> = Vec::new();
-    for tok in raw.split(',') {
-        let tok = tok.trim();
-        if tok.is_empty() {
-            continue;
-        }
-        let parsed = Uuid::parse_str(tok)
-            .map_err(|_| ApiError::BadRequest(format!("artist_ids: invalid uuid '{tok}'")))?;
-        ids.push(parsed);
-    }
-    ids.sort();
-    ids.dedup();
-    if ids.len() > 500 {
-        ids.truncate(500);
-    }
-    Ok(if ids.is_empty() { None } else { Some(ids) })
-}

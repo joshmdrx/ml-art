@@ -149,6 +149,33 @@ async fn search_location_filter_string_match(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_location_matches_iso_country_code(pool: PgPool) {
+    let app = app_keyword_only(pool);
+    let (_, page): (_, Page) = get_json(app, "/v1/search?location=DE").await;
+    // `DE` is the ISO code for Bruno's "Berlin, DE" location.
+    assert!(!page.items.is_empty());
+    assert!(page.items.iter().all(|i| i.artist_slug == "bruno-test"));
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_location_matches_country_synonym(pool: PgPool) {
+    // `uk` → synonym → GB → matches Alice's London.
+    let app = app_keyword_only(pool);
+    let (_, page): (_, Page) = get_json(app, "/v1/search?location=uk").await;
+    assert!(page.items.iter().all(|i| i.artist_slug == "alice-test"));
+    assert!(!page.items.is_empty(), "uk should match Alice via GB");
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_location_full_country_name(pool: PgPool) {
+    // `Germany` → DE → Bruno.
+    let app = app_keyword_only(pool);
+    let (_, page): (_, Page) = get_json(app, "/v1/search?location=Germany").await;
+    assert!(page.items.iter().all(|i| i.artist_slug == "bruno-test"));
+    assert!(!page.items.is_empty());
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn search_near_me_haversine(pool: PgPool) {
     let app = app_keyword_only(pool);
     // Center on Berlin, 50km radius — Bruno only.

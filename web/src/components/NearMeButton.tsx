@@ -25,7 +25,7 @@ import { useRouter } from "next/navigation";
 import { reportError } from "@/lib/reportError";
 
 interface Props {
-  variant?: "hero" | "inline";
+  variant?: "hero" | "inline" | "map-overlay";
 }
 
 /** Radius around the user's coords, in degrees. ~0.05° ≈ 5km at
@@ -93,7 +93,45 @@ export function NearMeButton({ variant = "inline" }: Props) {
     "inline-flex items-center gap-2 border border-border bg-surface hover:bg-fg/10 px-4 py-2 text-sm";
   const inlineClass =
     "inline-flex items-center gap-1.5 border border-border bg-bg hover:bg-surface px-3 py-1.5 text-sm";
-  const className = variant === "hero" ? heroClass : inlineClass;
+  // map-overlay matches Mapbox's stock control look (square white
+  // button, subtle shadow). Icon-only, with an `aria-label` instead
+  // of visible text. Caller positions absolutely over the map.
+  const mapOverlayClass =
+    "inline-flex items-center justify-center w-[29px] h-[29px] bg-white border border-black/10 shadow-sm hover:bg-neutral-100";
+  const className =
+    variant === "hero"
+      ? heroClass
+      : variant === "map-overlay"
+        ? mapOverlayClass
+        : inlineClass;
+
+  if (variant === "map-overlay") {
+    // No visible label — match Mapbox controls' look. Error state
+    // renders as a small toast under the button so it doesn't push
+    // map content around when geolocation is denied.
+    return (
+      <div className="inline-flex flex-col items-end gap-1">
+        <button
+          type="button"
+          onClick={onClick}
+          disabled={isPending}
+          aria-label={isPending ? "Locating…" : "Center map on my location"}
+          title="Center map on my location"
+          className={`${className} disabled:opacity-50`}
+        >
+          <PinIcon />
+        </button>
+        {error && (
+          <p
+            className="text-xs text-amber-700 bg-white border border-amber-300 px-2 py-1 shadow-sm whitespace-nowrap"
+            role="status"
+          >
+            {error}
+          </p>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="inline-flex flex-col gap-1">
