@@ -19,7 +19,7 @@
  * the page stays useful in restricted-network environments.
  */
 
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 
 import type { MapPin } from "@/lib/api";
@@ -56,6 +56,11 @@ interface Props {
    * the artist's first pin and open its popup. Each click bumps
    * `signal.tick` so re-clicks re-fire. T-045 L3. */
   focusSignal?: FocusSignal | null;
+  /** Fires whenever the live pin set changes (initial server payload
+   * or post-pan refetch). Lets the parent SplitView compute panel-
+   * side captions ("N of M mapped") and sort cards by what's
+   * currently visible. T-045 L4. */
+  onPinsChanged?: (pins: MapPin[]) => void;
 }
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
@@ -65,7 +70,14 @@ export function SearchMap({
   filters,
   highlightedArtistSlug,
   focusSignal,
+  onPinsChanged,
 }: Props) {
+  // Surface the initial pin set on the fallback path too, so the
+  // side-panel caption stays correct in restricted-network
+  // environments (no Mapbox token). Effect, not render-time call,
+  // so we don't violate React's no-side-effects-in-render rule.
+  useFallbackPinsNotifier(!MAPBOX_TOKEN, initial, onPinsChanged);
+
   if (!MAPBOX_TOKEN) {
     return <PinListFallback pins={initial} />;
   }
@@ -75,6 +87,7 @@ export function SearchMap({
       filters={filters}
       highlightedArtistSlug={highlightedArtistSlug}
       focusSignal={focusSignal}
+      onPinsChanged={onPinsChanged}
     />
   );
 }
@@ -84,6 +97,7 @@ function SearchMapboxMap({
   filters,
   highlightedArtistSlug,
   focusSignal,
+  onPinsChanged,
 }: Props) {
   const searchParams = useSearchParams();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -123,6 +137,13 @@ function SearchMapboxMap({
   useHighlightedArtist(map, pins, highlightedArtistSlug ?? null);
   useFocusArtist(map, pins, focusSignal ?? null);
 
+  // Mirror the live pin set up to the parent SplitView. T-045 L4
+  // uses it for the "N of M mapped" caption and (later) for the
+  // pan-aware sort. Effect ensures we never call during render.
+  useEffect(() => {
+    onPinsChanged?.(pins);
+  }, [pins, onPinsChanged]);
+
   const displayError = initError ?? error;
 
   return (
@@ -157,4 +178,21 @@ function SearchMapboxMap({
       </div>
     </section>
   );
+}
+
+/**
+ * Tiny helper used by the no-Mapbox fallback path. Conditional hook
+ * call would violate React's rules, so the hook always runs but
+ * gates its side effect on `active`. Lets us notify the parent
+ * of the initial pin set even when we render the PinListFallback
+ * instead of the live map.
+ */
+function useFallbackPinsNotifier(
+  active: boolean,
+  initial: MapPin[],
+  onPinsChanged?: (pins: MapPin[]) => void
+): void {
+  useEffect(() => {
+    if (active) onPinsChanged?.(initial);
+  }, [active, initial, onPinsChanged]);
 }

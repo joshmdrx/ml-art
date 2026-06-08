@@ -271,12 +271,6 @@ export default async function SearchPage({
               cities: mapCities,
               searchParams: sp,
               error: mapError,
-              gridResultCount: resp.items.length,
-              gridHitLimit: resp.items.length >= GRID_PAGE_LIMIT,
-              hasActiveFilter:
-                Boolean(params.q) ||
-                Boolean(params.medium) ||
-                Boolean(params.location),
             }}
           />
         ) : resp.items.length === 0 && !error ? (

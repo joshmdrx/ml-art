@@ -58,14 +58,17 @@ if the item was dropped, with a one-line reason.
 
 **Why:** the Works tab and the Where-to-see-them tab show different views of the same query — forcing the user to choose between "what does it look like" and "where can I see it." Merging them into a single split view (grid as side panel + map as main) makes the relationship between an artwork and its venue navigable in one glance.
 
-**State:** L1 shipped 2026-06-07; L2 + L3 (plus city-pivot-as-filter + location-filter parity) shipped 2026-06-08. L4 still open.
+**State:** L1 shipped 2026-06-07; L2 + L3 + L4 (and city-pivot-as-filter + location-filter parity) shipped 2026-06-08. **Closed.**
 
 - ✅ **L1 — Layout shell.** Two-column on desktop (`lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]`), stacked on mobile. Inset shadow used for card highlight so the scrollable panel can clip flush at the edges.
 - ✅ **L2 — Hover sync.** `useHighlightedArtist` + `promoteId: "location_id"` on the clustered source. Inset shadow on the card; `feature-state.highlighted` scales the pin + thickens the stroke.
 - ✅ **L3 — Click sync.** `useFocusArtist(map, pins, { artistSlug, tick })`. Popup opens immediately and is anchored via `setLngLat`; `flyTo({ essential: true })` for users with reduced-motion preferences.
 - ✅ **City pivot is a filter.** Chip click sets `location` + `bbox`; clear via the FilterBar facet (single source of truth). `useFitToInitialPins` handles camera refit on clear regardless of who dropped the param.
 - ✅ **`/v1/search` location filter parity** with `/v1/search/map` + `/v1/search/map/cities`: now ORs in an `EXISTS (SELECT 1 FROM artist_locations …)` clause, so grid + map + strip agree on what "in X" means.
-- **L4 — Polish.** Pan-aware sort (when no filter), mobile bottom-sheet for the panel, "7 of 24 works have a public location" caption (retiring the disconnect explainer). ~half-day. **Open.**
+- ✅ **L4 — Polish.**
+  - **Caption.** `<SearchMap>` exposes its live pin set via `onPinsChanged`; `<SearchSplitView>` mirrors it as `visiblePins` (derived-state synced to the server prop) and computes "N of M mapped". Replaces the old "24+ WORKS" line *and* the disconnect-explainer in one shot. Reads `N of M[+] mapped` always — never `All M+ mapped` (contradictory).
+  - **Mobile bottom-sheet.** On `<lg` the side panel is a fixed-bottom sheet with peek (3rem handle) / expanded (~70dvh) snap states. Tap the handle to toggle. Map fills the viewport behind it. Desktop layout unchanged.
+  - **Pan-aware sort: prototyped, removed.** Cards jumping mid-scroll was disorienting; the sidebar stays stable now, with pan only updating the caption count. Comment left in `SearchSplitView` so the next person doesn't re-add it.
 
 **Risks captured up-front:**
 - ~~Bidirectional sync loops~~ — handled via the single `highlightedArtistSlug` state in `SearchSplitView`; panel hovers are the only originators today.

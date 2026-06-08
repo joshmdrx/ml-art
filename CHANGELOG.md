@@ -3,6 +3,54 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-08 — T-045 L4: split-view polish (caption, mobile bottom-sheet)
+
+Closes T-045. Two of the three planned sub-items shipped; the third
+(pan-aware sort) was prototyped and pulled.
+
+- **"N of M mapped" caption.** Replaces both the old "24+ WORKS"
+  count line and the disconnect-explainer status box ("No public
+  venues for these results") in one shot. Compares the loaded
+  artworks against the live pin set: an item is "mapped" when its
+  artist has at least one pin currently visible on the map. Reads
+  as `N of M mapped` always — never `All M+ mapped` (which would
+  be a contradiction: `+` means truncated, `all` implies complete).
+  When `mappedCount === 0` and there are items, an inline
+  "Back to Works →" link preserves the disconnect-explainer's
+  affordance to escape map mode without the hostile copy.
+
+- **Pin set lifted from SearchMap → SearchSplitView.** New
+  `onPinsChanged?: (pins: MapPin[]) => void` prop on `<SearchMap>`
+  fires whenever `useRefetchPins` updates its internal state (and
+  also from the no-Mapbox-token fallback path via a small
+  `useFallbackPinsNotifier` helper, so the caption is correct in
+  restricted-network environments too). SearchSplitView holds the
+  shadow copy with a prev-prop derived-state sync so a navigation
+  that pushes new server-side pins lands in the same render.
+
+- **Mobile bottom-sheet.** On `<lg` viewports the side panel
+  becomes a fixed-bottom sheet with two snap states: **peek**
+  (3rem handle showing the mapped count + chevron) and **expanded**
+  (~70dvh, cards scrollable inside). Tap the handle to toggle.
+  Map fills the viewport above so the user sees geography first
+  and pulls up cards on demand. Desktop layout (sticky left
+  column) is unchanged. CSS-driven via `overflow-hidden` +
+  `transition-[max-height]`; no JS-driven animation.
+
+- **Pan-aware sort: prototyped, removed.** First draft floated
+  cards-with-visible-pins to the top of the sidebar on every pan.
+  In practice the cards jumping mid-scroll was disorienting —
+  the user expects the sidebar to stay stable, with pan only
+  changing what's visible on the map. Reverted, left a comment
+  in `SearchSplitView` explaining why so the next person doesn't
+  reintroduce it.
+
+- **Disconnect explainer retired** from `SearchMapBlock` — the
+  caption carries the same info more honestly. Three props that
+  fed it (`gridResultCount`, `gridHitLimit`, `hasActiveFilter`)
+  removed from `SearchMapBlockProps` and from `page.tsx`'s
+  `mapBlockProps` payload.
+
 ## 2026-06-08 — T-045 L2 + L3: split-view interactivity, city-pivot-as-filter, location-filter parity
 
 Builds on the L1 layout shell shipped 2026-06-07. The Works tab and the

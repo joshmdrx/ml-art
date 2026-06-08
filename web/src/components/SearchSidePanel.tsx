@@ -19,6 +19,8 @@
  * ring-offset on cards at the panel's left edge).
  */
 
+import Link from "next/link";
+
 import type { ArtworkSummary } from "@/lib/api";
 import { formatPrice } from "@/lib/format";
 
@@ -33,9 +35,16 @@ interface Props {
   /** Called on card click. The parent uses this to fly the map to
    * the artist's first pin and open its popup. */
   onFocusArtist: (slug: string) => void;
-  /** Page-size cap from the search page. Used to show "N+ works"
+  /** Page-size cap from the search page. Used to show "M+ works"
    * when we know the result was truncated. */
   pageLimit: number;
+  /** How many of `items` have at least one pin in the map's current
+   * visible set. Drives the "N of M mapped" caption (T-045 L4). */
+  mappedCount: number;
+  /** Set when there are items but none of them are mapped (a useless
+   * map view). Renders the inline "Back to Works →" link. Replaces
+   * the disconnect-explainer's hostile copy. */
+  backToWorksHref?: string;
 }
 
 export function SearchSidePanel({
@@ -44,14 +53,17 @@ export function SearchSidePanel({
   onHighlightArtist,
   onFocusArtist,
   pageLimit,
+  mappedCount,
+  backToWorksHref,
 }: Props) {
   return (
     <>
-      <p className="mb-3 text-xs uppercase tracking-wider text-muted">
-        {items.length}
-        {items.length >= pageLimit ? "+" : ""} work
-        {items.length === 1 ? "" : "s"}
-      </p>
+      <ResultsCaption
+        total={items.length}
+        mapped={mappedCount}
+        hitLimit={items.length >= pageLimit}
+        backToWorksHref={backToWorksHref}
+      />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {items.map((a) => (
           <SidePanelCard
@@ -66,6 +78,66 @@ export function SearchSidePanel({
       </div>
     </>
   );
+}
+
+/**
+ * "N of M mapped" caption. Replaces the old "24+ WORKS" line and
+ * the disconnect explainer in one shot — same information, less
+ * shouting. The "Back to Works →" link only renders when there are
+ * items but none of them are mapped (i.e. the map view is useless
+ * right now and the user wants an exit).
+ */
+function ResultsCaption({
+  total,
+  mapped,
+  hitLimit,
+  backToWorksHref,
+}: {
+  total: number;
+  mapped: number;
+  hitLimit: boolean;
+  backToWorksHref?: string;
+}) {
+  if (total === 0) return null;
+  return (
+    // Hidden on mobile: the bottom-sheet's handle in SearchSplitView
+    // shows the count instead, so we don't render the caption twice.
+    <p className="hidden lg:block mb-3 text-xs uppercase tracking-wider text-muted">
+      {mappedCountLabel(mapped, total, hitLimit)}
+      {backToWorksHref && (
+        <>
+          {" — "}
+          <Link
+            href={backToWorksHref}
+            className="underline underline-offset-2 hover:text-foreground normal-case tracking-normal"
+          >
+            Back to Works →
+          </Link>
+        </>
+      )}
+    </p>
+  );
+}
+
+/**
+ * Shared text helper for the "N of M mapped" caption. Used by the
+ * desktop ResultsCaption above and the mobile bottom-sheet handle
+ * in SearchSplitView — same wording in both places so they read
+ * consistently.
+ *
+ * Note we deliberately never say "All X+ mapped" — the `+` means
+ * "the result was truncated, more works exist" and "all" implies
+ * completeness. Saying both is a contradiction. The honest form
+ * is always `N of M[+] mapped`, even when `N === M`.
+ */
+export function mappedCountLabel(
+  mapped: number,
+  total: number,
+  hitLimit: boolean,
+): string {
+  const totalLabel = `${total}${hitLimit ? "+" : ""}`;
+  if (mapped === 0) return `None of ${totalLabel} mapped`;
+  return `${mapped} of ${totalLabel} mapped`;
 }
 
 /**
