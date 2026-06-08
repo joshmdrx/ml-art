@@ -27,6 +27,12 @@ import { NearMeButton } from "@/components/NearMeButton";
 
 import { PinListFallback } from "./SearchMap/PinListFallback";
 import { useClusterAndPinClicks } from "./SearchMap/useClusterAndPinClicks";
+import { useFitToInitialPins } from "./SearchMap/useFitToInitialPins";
+import {
+  useFocusArtist,
+  type FocusSignal,
+} from "./SearchMap/useFocusArtist";
+import { useHighlightedArtist } from "./SearchMap/useHighlightedArtist";
 import { useMapBboxSync } from "./SearchMap/useMapBboxSync";
 import { useMapInstance } from "./SearchMap/useMapInstance";
 import { useMapPinsSource } from "./SearchMap/useMapPinsSource";
@@ -42,18 +48,43 @@ interface Props {
   initial: MapPin[];
   /** Non-bbox filters the map should re-apply on every refetch. */
   filters: MapFilters;
+  /** When set, pins belonging to this artist render in their
+   * highlighted state (scaled + thicker stroke). Lets the side
+   * panel's card-hover light up matching pins. T-045 L2. */
+  highlightedArtistSlug?: string | null;
+  /** When the side panel signals "focus this artist", we flyTo
+   * the artist's first pin and open its popup. Each click bumps
+   * `signal.tick` so re-clicks re-fire. T-045 L3. */
+  focusSignal?: FocusSignal | null;
 }
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 
-export function SearchMap({ initial, filters }: Props) {
+export function SearchMap({
+  initial,
+  filters,
+  highlightedArtistSlug,
+  focusSignal,
+}: Props) {
   if (!MAPBOX_TOKEN) {
     return <PinListFallback pins={initial} />;
   }
-  return <SearchMapboxMap initial={initial} filters={filters} />;
+  return (
+    <SearchMapboxMap
+      initial={initial}
+      filters={filters}
+      highlightedArtistSlug={highlightedArtistSlug}
+      focusSignal={focusSignal}
+    />
+  );
 }
 
-function SearchMapboxMap({ initial, filters }: Props) {
+function SearchMapboxMap({
+  initial,
+  filters,
+  highlightedArtistSlug,
+  focusSignal,
+}: Props) {
   const searchParams = useSearchParams();
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -85,6 +116,12 @@ function SearchMapboxMap({ initial, filters }: Props) {
   useClusterAndPinClicks(map);
   useMapBboxSync(map, refetch, !hasActiveFilter);
   useUrlBboxFitBounds(map, searchParams.get("bbox") ?? "");
+  // Catches the "filter cleared → no URL bbox → camera stranded"
+  // case that useUrlBboxFitBounds can't see. Listens to `initial`
+  // identity so a pan-driven refetch doesn't yank the camera.
+  useFitToInitialPins(map, initial, searchParams.get("bbox") ?? "");
+  useHighlightedArtist(map, pins, highlightedArtistSlug ?? null);
+  useFocusArtist(map, pins, focusSignal ?? null);
 
   const displayError = initError ?? error;
 

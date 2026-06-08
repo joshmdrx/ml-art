@@ -17,6 +17,12 @@ Thumbs.db
 # Lefthook local state (the binary itself, dev-installed)
 lefthook-local.yml
 
+# Per-developer Compose overrides — e.g. host-port shifts to coexist
+# with a parallel project's stack. Committed compose lives in
+# docker-compose.dev.yml; *.local.yml is intentionally out.
+docker-compose.local.yml
+docker-compose.*.local.yml
+
 # Misc tmp
 *.log
 .tmp/

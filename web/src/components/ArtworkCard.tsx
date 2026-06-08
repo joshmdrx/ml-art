@@ -1,6 +1,9 @@
 import Link from "next/link";
+// Type-only import is erased at compile time, so `lib/api`'s
+// runtime Clerk import doesn't follow into the client bundle.
 import type { ArtworkSummary } from "@/lib/api";
-import { formatPrice } from "@/lib/api";
+// Pure formatter, no server-only deps — safe in client components.
+import { formatPrice } from "@/lib/format";
 
 /**
  * Card used in every grid view.

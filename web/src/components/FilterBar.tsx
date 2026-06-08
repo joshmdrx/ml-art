@@ -137,7 +137,16 @@ export function FilterBar({ availableFilters, basePath }: FilterBarProps) {
       {availableFilters.includes("location") && (
         <LocationPill
           current={currentLocation}
-          onSubmit={(v) => push({ location: v || null })}
+          // `bbox: null` because location and bbox are conceptually
+          // linked: the bbox in the URL is the viewport hint that
+          // belongs to the *current* location (set by the city pivot
+          // or by panning inside the filter). Changing or clearing
+          // the location means the bbox is now stale — leaving it
+          // would make the server-side map fetch keep spatially
+          // clipping pins to the old city, and the camera would
+          // refit to that local subset instead of the new global
+          // (or new-city) result.
+          onSubmit={(v) => push({ location: v || null, bbox: null })}
         />
       )}
 
@@ -153,7 +162,10 @@ export function FilterBar({ availableFilters, basePath }: FilterBarProps) {
               "price_min",
               "price_max",
               "availability",
-              ...(availableFilters.includes("location") ? ["location"] : []),
+              ...(availableFilters.includes("location")
+                ? // bbox rides with location — see LocationPill above.
+                  ["location", "bbox"]
+                : []),
             ]) {
               clear[k] = null;
             }

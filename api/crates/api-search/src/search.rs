@@ -385,21 +385,44 @@ fn build_filters(
     }
 
     if let Some(loc) = p.location.as_deref().and_then(LocationTerms::from_query) {
-        // OR across three paths so common user terms all land:
-        //   - substring on city + the artist's free-text "based in"
-        //     (catches "London", "berlin", "GB" inside "London, GB")
+        // OR across four paths so common user terms all land:
+        //   - substring on the artist's "based in" city + country
+        //     (catches "London" / "berlin" / "GB" inside "London, GB")
+        //   - substring on the artist's free-text "based in" string
         //   - exact-match on the ISO country code (catches "UK"→GB,
         //     "Germany"→DE via the synonym table)
+        //   - EXISTS against artist_locations so a venue in
+        //     Basingstoke makes the artist's works findable under
+        //     `?location=Basingstoke`, even when the artist's own
+        //     "based in" field is empty or different. This keeps the
+        //     grid's location filter in agreement with the map's
+        //     pins and the CityPivotStrip (both are sourced from
+        //     artist_locations).
         let pat_idx = next.bind(args, loc.pattern.clone())?;
+        let iso_idx = if loc.iso_codes.is_empty() {
+            None
+        } else {
+            Some(next.bind(args, loc.iso_codes.clone())?)
+        };
         let mut sub = format!(
             "AND ((coalesce(ar.city, '') || ', ' || coalesce(ar.country, '')) ILIKE ${pat_idx} OR lower(coalesce(ar.location, '')) LIKE ${pat_idx}"
         );
-        if !loc.iso_codes.is_empty() {
-            let iso_idx = next.bind(args, loc.iso_codes.clone())?;
+        if let Some(idx) = iso_idx {
             sub.push_str(&format!(
-                " OR upper(coalesce(ar.country, '')) = ANY(${iso_idx})"
+                " OR upper(coalesce(ar.country, '')) = ANY(${idx})"
             ));
         }
+        // Venue match. Mirrors the artist-side OR-chain so the same
+        // terms work against both sources.
+        sub.push_str(&format!(
+            " OR EXISTS (SELECT 1 FROM artist_locations al WHERE al.artist_id = ar.id AND ((coalesce(al.city, '') || ', ' || coalesce(al.country, '')) ILIKE ${pat_idx}"
+        ));
+        if let Some(idx) = iso_idx {
+            sub.push_str(&format!(
+                " OR upper(coalesce(al.country, '')) = ANY(${idx})"
+            ));
+        }
+        sub.push_str("))");
         sub.push(')');
         clauses.push(sub);
     }

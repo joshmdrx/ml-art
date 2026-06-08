@@ -3,6 +3,94 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-08 — T-045 L2 + L3: split-view interactivity, city-pivot-as-filter, location-filter parity
+
+Builds on the L1 layout shell shipped 2026-06-07. The Works tab and the
+Where-to-see-them tab are now one surface where the side-panel cards
+and the map pins respond to each other. Also fixes a long-standing
+papercut: clicking a city chip used to just move the camera; now it's
+a real `location` filter that narrows the grid + map together.
+
+- **L2 — hover sync.** Hovering a sidebar card lifts the artist's
+  pin(s) to a highlighted `feature-state` (scaled + thicker stroke).
+  New `useHighlightedArtist(map, pins, slug)` hook tracks the
+  previously-highlighted set so it can be cleared on the next round.
+  Critical fix: added `promoteId: "location_id"` to the clustered
+  GeoJSON source — without it Mapbox reassigns feature ids and
+  `setFeatureState` silently no-ops on leaves.
+
+- **L3 — click sync.** Card click flies the map to the artist's
+  first pin and opens a React-DOM popup. New `useFocusArtist(map,
+  pins, signal)` hook with a `{ artistSlug, tick }` signal; `tick`
+  increments per click so re-clicking the same card re-fires.
+  Popup is opened immediately (before `flyTo`) and anchored via
+  `setLngLat`, so it tracks the pin as the camera moves — robust
+  against the pin being off-screen at click time. `essential: true`
+  on the fly overrides `prefers-reduced-motion`.
+
+- **City pivot is a real filter, not a viewport hop.** Clicking
+  "London" now sets `?location=London&bbox=<london>` (was: bbox
+  only). Grid + map narrow together; "Showing in London ✕" FilterBar
+  facet pill is the clear affordance. CityPivotStrip auto-hides
+  while a location filter is selected.
+
+- **Grid's `location` filter now also matches `artist_locations`.**
+  `/v1/search` previously matched only `artists.city / .country / .location`
+  (the artist's free-text "based in"). Now it ORs in an `EXISTS
+  (SELECT 1 FROM artist_locations …)` clause so an artist with a
+  Basingstoke studio venue appears under `?location=Basingstoke`
+  even when their "based in" is blank or different. Grid + map +
+  CityPivotStrip now agree on what "in X" means (all three sourced
+  from `artist_locations`).
+
+- **Camera-refit-on-clear.** New `useFitToInitialPins(map, initial,
+  urlBbox)` hook plugs the "filter changed but URL didn't trigger a
+  fit" gap that used to leave users zoomed to the previous city
+  after a clear. Listens on `initial` *identity* (the server-pushed
+  pin set), so client-side pan refetches don't yank the camera.
+  Defers to `useUrlBboxFitBounds` when bbox *just* transitioned to
+  a new non-empty value (chip-click case).
+
+- **FilterBar's location clear now also drops `bbox`.** Location and
+  bbox are conceptually linked (filter + its viewport hint).
+  Clearing one without the other left the server-side map fetch
+  spatially clipping to the old city, so `initial` came back local
+  even though the grid was global. Fixed once at the source —
+  `LocationPill` submit and the "Clear filters" button — which
+  covers facet ×, "Clear filters", and typing a new location.
+
+- **Component decomposition.** SearchMap.tsx is now a 100-line
+  composition root pulling 8 hooks (instance, source, click handlers,
+  bbox sync, url-bbox fitBounds, refetch, highlight, focus,
+  fit-to-initial). Pure helpers (`bbox`, `cluster`, `geojson`,
+  `url`, `constants`) live under `lib/searchMap/`. React-DOM popups
+  via `Popup.setDOMContent` + `createRoot` replace the old escaped-
+  HTML strings. New `<SearchSplitView>` (cross-pane state),
+  `<SearchSidePanel>` + `<SidePanelCard>` (inlined click-target,
+  no nested links), `<SearchMapBlock>` (chrome around the map),
+  `<FilterPill>` (artist scoping pill — location is owned by
+  FilterBar to avoid duplicate clears).
+
+- **`lib/format.ts` extracted from `lib/api.ts`.** `formatPrice`
+  and `formatDimensions` are pure formatters; they don't need the
+  Clerk-server module that `lib/api.ts` imports. Splitting them
+  out fixes the "'server-only' cannot be imported from a Client
+  Component" error that turned up when `<SidePanelCard>` (client)
+  needed `formatPrice`. `lib/api.ts` re-exports for backward compat.
+
+- **Pan-loop fix.** Next 15 made `useSearchParams` reactive to
+  `history.replaceState`, which caused the bbox-write handler to
+  feed itself (pan → URL write → reactive bbox → fitBounds →
+  moveend → URL write …). `useUrlBboxFitBounds` now guards via
+  `bboxesApproxEqual` (0.01° tolerance) so our own writes resolve
+  as no-ops; only true external bbox changes trigger an animation.
+
+- **No refetch on pan when filtered.** When any text/medium/location/
+  artist filter is active the server has already returned every
+  matching pin (cap 500); Mapbox owns "what's visible" natively
+  as the camera moves. Gated via `refetchOnPan` in
+  `useMapBboxSync`. URL bbox still writes for shareability.
+
 ## 2026-06-01 — T-008b: uploads-bucket moderation
 
 Parallels T-008 for the visual-search `uploads` bucket. Closes the

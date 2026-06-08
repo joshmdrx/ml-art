@@ -54,21 +54,29 @@ if the item was dropped, with a one-line reason.
 ## Soon (this milestone)
 
 ### `T-045` Integrated map + grid layout (Airbnb-style "Where to see them")
-**Where:** `web/src/app/search/page.tsx` + new `web/src/components/SearchSplitView/` + small updates to `SearchMap` + (eventually) `<ArtworkGrid>`.
+**Where:** `web/src/app/search/page.tsx` + `web/src/components/Search{SplitView,SidePanel,MapBlock}.tsx` + `web/src/components/SearchMap/*` hook split.
 
 **Why:** the Works tab and the Where-to-see-them tab show different views of the same query — forcing the user to choose between "what does it look like" and "where can I see it." Merging them into a single split view (grid as side panel + map as main) makes the relationship between an artwork and its venue navigable in one glance.
 
-**State:** plan + decision logged 2026-06-07. Slice-by-slice plan below; each slice independently shippable.
+**State:** L1 shipped 2026-06-07; L2 + L3 (plus city-pivot-as-filter + location-filter parity) shipped 2026-06-08. L4 still open.
 
-- **L1 — Layout shell.** Two-column grid when `?map=1`; grid moves to a scrollable side panel (~40% width on desktop), map fills the rest. Mobile stacks (grid above, map below). No interactivity changes yet. ~half-day.
-- **L2 — Hover sync.** Card hover → emphasize artist's pin(s) via Mapbox `feature-state`. Pin hover → scroll panel to first matching card + border highlight. Source-of-truth pattern (lifted `highlightedArtistId`) to prevent ping-pong loops. ~half-day.
-- **L3 — Click sync.** Click card → map `flyTo` artist's first location + open popup. Click pin → panel filters to "Showing {Artist}" via the existing scoping-pill machinery. ~half-day.
-- **L4 — Polish.** Pan-aware sort (when no filter), mobile bottom-sheet for the panel, "7 of 24 works have a public location" caption (retiring the disconnect explainer). ~half-day.
+- ✅ **L1 — Layout shell.** Two-column on desktop (`lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]`), stacked on mobile. Inset shadow used for card highlight so the scrollable panel can clip flush at the edges.
+- ✅ **L2 — Hover sync.** `useHighlightedArtist` + `promoteId: "location_id"` on the clustered source. Inset shadow on the card; `feature-state.highlighted` scales the pin + thickens the stroke.
+- ✅ **L3 — Click sync.** `useFocusArtist(map, pins, { artistSlug, tick })`. Popup opens immediately and is anchored via `setLngLat`; `flyTo({ essential: true })` for users with reduced-motion preferences.
+- ✅ **City pivot is a filter.** Chip click sets `location` + `bbox`; clear via the FilterBar facet (single source of truth). `useFitToInitialPins` handles camera refit on clear regardless of who dropped the param.
+- ✅ **`/v1/search` location filter parity** with `/v1/search/map` + `/v1/search/map/cities`: now ORs in an `EXISTS (SELECT 1 FROM artist_locations …)` clause, so grid + map + strip agree on what "in X" means.
+- **L4 — Polish.** Pan-aware sort (when no filter), mobile bottom-sheet for the panel, "7 of 24 works have a public location" caption (retiring the disconnect explainer). ~half-day. **Open.**
 
 **Risks captured up-front:**
-- Bidirectional sync loops — mitigate via a single `highlightedArtistId` state in SearchPage, both panels read it, only originating-event hovers write it.
-- GeoJSON pin styling by id needs Mapbox `feature-state` setup in the existing layers.
-- Grid layout at ~520px panel width needs to adapt from 4 columns to 2.
+- ~~Bidirectional sync loops~~ — handled via the single `highlightedArtistSlug` state in `SearchSplitView`; panel hovers are the only originators today.
+- ~~GeoJSON pin styling by id~~ — `promoteId` keeps Mapbox-assigned cluster ids from clobbering ours.
+- ~~Grid at ~520px panel width~~ — `grid-cols-1 sm:grid-cols-2` inside the panel.
+
+**Hidden gotchas surfaced and fixed:**
+- Next 15 `useSearchParams` is reactive to `history.replaceState`, which made our pan-handler self-feed. `bboxesApproxEqual` guard in `useUrlBboxFitBounds`.
+- Refetch-on-pan-when-filtered was wasteful (server already returned every match). Gated via `refetchOnPan` in `useMapBboxSync`.
+- FilterBar's location clear used to leave `bbox` in the URL, so the server-side map fetch kept spatially clipping. Now `bbox: null` rides with every location mutation.
+- `'server-only'` cannot be imported from client components, so `formatPrice` / `formatDimensions` moved out of `lib/api.ts` into `lib/format.ts`.
 
 ### `T-022` Pricing/dimensions polish (partial — formatters in place, seed data null)
 **Where:** seed script (optional) + `lib/api.ts` (done) + ArtworkDetail panel (done)

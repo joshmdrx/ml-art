@@ -3,8 +3,7 @@ import { TopNav } from "@/components/TopNav";
 import { ArtworkGrid } from "@/components/ArtworkGrid";
 import { FilterBar } from "@/components/FilterBar";
 import { ModifierBar } from "@/components/ModifierBar";
-import { CityPivotStrip } from "@/components/CityPivotStrip";
-import { SearchMap } from "@/components/SearchMap";
+import { SearchSplitView } from "@/components/SearchSplitView";
 import {
   listMapCities,
   listSearchModifiers,
@@ -243,66 +242,43 @@ export default async function SearchPage({
         )}
 
         {mapMode ? (
-          /* L1 split view (T-045): grid moves to a side panel, map
-             takes the rest. Stacked on mobile (map first, then
-             cards), two-column on lg+ (cards left, map right).
-             Hover/click sync between the two panes comes in L2/L3 —
-             this slice is layout-only.
-
-             Order: map first in source order, but visually flipped
-             to "cards left, map right" on lg+ via `lg:order-*`. This
-             keeps mobile users scrolling map → cards (the map is
-             the cue for why they tapped "Where to see them"). */
-          <div className="flex flex-col gap-6 lg:grid lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] lg:gap-6 lg:items-start">
-            <aside
-              aria-label="Search results"
-              className="order-2 lg:order-1 lg:sticky lg:top-4 lg:max-h-[640px] lg:overflow-y-auto lg:pr-2"
-            >
-              {resp.items.length > 0 ? (
-                <>
-                  <p className="mb-3 text-xs uppercase tracking-wider text-muted">
-                    {resp.items.length}
-                    {resp.items.length >= GRID_PAGE_LIMIT ? "+" : ""} work
-                    {resp.items.length === 1 ? "" : "s"}
-                  </p>
-                  <ArtworkGrid items={resp.items} density="compact" />
-                </>
-              ) : !error ? (
+          <SearchSplitView
+            items={resp.items}
+            pageLimit={GRID_PAGE_LIMIT}
+            emptyState={
+              !error ? (
                 <EmptyState
                   hasTextQuery={hasTextQuery}
                   query={params.q}
                   embedderEnabled={embedderEnabled}
                 />
-              ) : null}
-            </aside>
-            <div className="order-1 lg:order-2">
-              <SearchMapBlock
-                pins={mapPins}
-                filters={{
-                  // Same logic as the server-side fetch above: when
-                  // artist_ids drives the result set, q/medium/location
-                  // are upstream-applied and would only confuse the
-                  // refetch on pan/zoom.
-                  artist_ids: artistIdsParam,
-                  q: artistIdsParam ? undefined : params.q,
-                  medium: artistIdsParam ? undefined : params.medium,
-                  location: artistIdsParam ? undefined : params.location,
-                  artist: sp.artist?.trim() || undefined,
-                }}
-                artistSlug={sp.artist?.trim() || undefined}
-                cities={mapCities}
-                searchParams={sp}
-                error={mapError}
-                gridResultCount={resp.items.length}
-                gridHitLimit={resp.items.length >= GRID_PAGE_LIMIT}
-                hasActiveFilter={
-                  Boolean(params.q) ||
-                  Boolean(params.medium) ||
-                  Boolean(params.location)
-                }
-              />
-            </div>
-          </div>
+              ) : null
+            }
+            mapBlockProps={{
+              pins: mapPins,
+              filters: {
+                // Same logic as the server-side fetch above: when
+                // artist_ids drives the result set, q/medium/location
+                // are upstream-applied and would only confuse the
+                // refetch on pan/zoom.
+                artist_ids: artistIdsParam,
+                q: artistIdsParam ? undefined : params.q,
+                medium: artistIdsParam ? undefined : params.medium,
+                location: artistIdsParam ? undefined : params.location,
+                artist: sp.artist?.trim() || undefined,
+              },
+              artistSlug: sp.artist?.trim() || undefined,
+              cities: mapCities,
+              searchParams: sp,
+              error: mapError,
+              gridResultCount: resp.items.length,
+              gridHitLimit: resp.items.length >= GRID_PAGE_LIMIT,
+              hasActiveFilter:
+                Boolean(params.q) ||
+                Boolean(params.medium) ||
+                Boolean(params.location),
+            }}
+          />
         ) : resp.items.length === 0 && !error ? (
           <EmptyState
             hasTextQuery={hasTextQuery}
@@ -378,153 +354,6 @@ function ViewToggle({
           and matches the Google-Maps / Mapbox convention. */}
     </div>
   );
-}
-
-function SearchMapBlock({
-  pins,
-  filters,
-  artistSlug,
-  cities,
-  searchParams,
-  error,
-  gridResultCount,
-  gridHitLimit,
-  hasActiveFilter,
-}: {
-  pins: MapPin[];
-  filters: {
-    q?: string;
-    medium?: string;
-    location?: string;
-    artist?: string;
-    /** Comma-joined artist UUIDs — "map = view of grid result". */
-    artist_ids?: string;
-  };
-  /** Same as `filters.artist` but lifted out so the scoping pill can
-   * derive the "Clear filter" link without duplicating the prop. */
-  artistSlug?: string;
-  /** Top-cities pivot (T-042). Empty array when nothing's geocoded
-   * yet (cold-start). */
-  cities: CityPivot[];
-  /** Full URL search params so the "Clear filter" link can preserve
-   * every other filter the artist had set. */
-  searchParams: Search;
-  error: string | null;
-  /** How many works the parallel grid query returned. Used for the
-   * disconnect explainer: if the grid has results but the map is
-   * empty, we tell the user why instead of leaving them staring at
-   * a silent blank globe. */
-  gridResultCount: number;
-  /** True when the grid response was capped at `GRID_PAGE_LIMIT`,
-   * meaning the real number of matching works is unknown. Lets the
-   * disconnect explainer render "N+ works" instead of lying with a
-   * precise number. */
-  gridHitLimit: boolean;
-  /** Whether any text/medium/location filter was applied. The
-   * disconnect explainer only fires when the user actually
-   * searched — otherwise we'd show it on cold-start with no pins,
-   * which is misleading (the right copy is "no venues yet"). */
-  hasActiveFilter: boolean;
-}) {
-  if (error) {
-    return (
-      <div className="mb-6 p-4 border border-border bg-surface text-sm">
-        <p className="font-medium mb-1">Couldn’t load map results.</p>
-        <p className="text-muted">
-          <code className="font-mono">{error}</code>
-        </p>
-      </div>
-    );
-  }
-
-  // Build a "clear artist filter" href that keeps every other param.
-  function clearArtistHref(): string {
-    const usp = new URLSearchParams();
-    for (const [k, v] of Object.entries(searchParams)) {
-      if (k === "artist") continue;
-      if (typeof v === "string" && v.length > 0) usp.set(k, v);
-    }
-    return `/search?${usp.toString()}`;
-  }
-
-  // Pick a display name for the pill. We don't have the artist's
-  // display name on this surface — only the slug — so we de-kebab
-  // ("josh-matthews" → "Josh Matthews"). Close-enough for a chip;
-  // when the user clicks any pin they see the real display name.
-  function prettifySlug(slug: string): string {
-    return slug
-      .split("-")
-      .map((p) => (p ? p[0].toUpperCase() + p.slice(1) : p))
-      .join(" ");
-  }
-
-  return (
-    <>
-      {artistSlug && (
-        <div
-          className="mb-4 inline-flex items-center gap-3 text-sm bg-surface border border-border px-3 py-1.5"
-          role="status"
-        >
-          <span>
-            Showing where to see <strong>{prettifySlug(artistSlug)}</strong>
-          </span>
-          <Link
-            href={clearArtistHref()}
-            className="text-muted underline hover:text-foreground"
-          >
-            Clear filter
-          </Link>
-        </div>
-      )}
-      {/* Disconnect explainer: grid has matches but the map doesn't.
-          Two distinct queries (Works = RRF over artworks; Where to
-          see them = artist_locations of matching artists), so a
-          search that lands in the grid can still leave the map empty.
-          Without this, users see "Map" silently render zero pins and
-          assume it's broken. */}
-      {pins.length === 0 &&
-        gridResultCount > 0 &&
-        hasActiveFilter &&
-        !artistSlug && (
-          <div
-            role="status"
-            className="mb-4 border border-border bg-surface px-4 py-3 text-sm"
-          >
-            <p className="font-medium">No public venues for these results.</p>
-            <p className="mt-1 text-muted">
-              {/* Single-string template — splitting across JSX text
-                  nodes was eating the space between "match" and
-                  "this" because of how React collapses whitespace
-                  around `{...}` expressions on broken lines. */}
-              {`${gridResultCount}${gridHitLimit ? "+" : ""} ${
-                gridResultCount === 1 ? "work matches" : "works match"
-              } this search, but the artists haven’t shared a public studio or gallery location yet.`}{" "}
-              <Link
-                href={clearMapHref(searchParams)}
-                className="underline underline-offset-2 hover:text-foreground"
-              >
-                Back to Works →
-              </Link>
-            </p>
-          </div>
-        )}
-      <CityPivotStrip cities={cities} />
-      <SearchMap initial={pins} filters={filters} />
-    </>
-  );
-}
-
-/** Build the "go back to the works grid" href, preserving every URL
- * param except `map` + `bbox` (those are map-mode only). Defined at
- * module scope so the SearchMapBlock JSX stays focused. */
-function clearMapHref(searchParams: Search): string {
-  const usp = new URLSearchParams();
-  for (const [k, v] of Object.entries(searchParams)) {
-    if (k === "map" || k === "bbox") continue;
-    if (typeof v === "string" && v.length > 0) usp.set(k, v);
-  }
-  const qs = usp.toString();
-  return `/search${qs ? `?${qs}` : ""}`;
 }
 
 function EmptyState({

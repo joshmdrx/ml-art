@@ -34,6 +34,11 @@ export function toFeatureCollection(
     type: "FeatureCollection",
     features: pins.map((p) => ({
       type: "Feature",
+      // Top-level `id` so Mapbox's `setFeatureState` can address the
+      // feature directly (used by the card-hover → pin-highlight
+      // sync, T-045 L2). Without an id, feature-state can only key
+      // off `properties.cluster_id` for cluster features.
+      id: p.location_id,
       geometry: {
         type: "Point",
         coordinates: [p.lng, p.lat],

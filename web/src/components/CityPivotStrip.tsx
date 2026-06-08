@@ -4,10 +4,21 @@
  * T-042 — city-pivot pills on `/search?map=1`.
  *
  * Horizontal strip of "London (12) · Berlin (8) · …" pills above the
- * map. Click → navigate to `/search?map=1&bbox=<city-bbox>` which
- * causes `SearchMap` to refetch and fitBounds to that city. Doubles
- * as the cold-start "where do I start?" affordance — without it the
- * map opens at a blank world view.
+ * map. Click → navigate to `/search?map=1&location=<city>&bbox=<city-bbox>`.
+ * The `location` applies the same filter the FilterBar's location
+ * facet writes (so grid + map narrow in sync, and the user gets a
+ * clearable "Showing in London ✕" pill via `<FilterPill>`). The
+ * `bbox` is set in the same hop so the camera actually flies to the
+ * picked city — otherwise the filter would narrow the pins but
+ * leave the viewport where it was.
+ *
+ * Doubles as the cold-start "where do I start?" affordance — without
+ * it the map opens at a blank world view.
+ *
+ * When a location filter is already active we hide the strip: the
+ * pill above is the affordance for changing or clearing it, and
+ * leaving the strip up would invite ambiguous "London + Berlin"
+ * mental models we don't actually support.
  *
  * Scale: the strip only shows the top {@link VISIBLE_LIMIT} cities
  * inline (ordered by count desc). The overflow lands in a popover
@@ -16,30 +27,46 @@
  * proper geographic geocoder (typeahead + region grouping); this
  * keeps the v1 surface tidy without that machinery.
  *
- * Implementation note: we use `<Link>` rather than client-side bounds
+ * Implementation note: we use `<Link>` rather than client-side state
  * mutation so the URL is the single source of truth — bookmark a
- * city, share the URL, hit back to undo. The `SearchMap` component
- * already reads `bbox` from the URL on every render.
+ * city, share the URL, hit back to undo. The server renders the new
+ * grid + map together.
  */
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { CityPivot } from "@/lib/api";
+import { searchHref } from "@/lib/searchMap/url";
 
 interface Props {
   cities: CityPivot[];
 }
 
-/** Pad a single-point bbox so fitBounds doesn't zoom to street level.
- * 0.05° ≈ 5km at temperate latitudes; gives a city-wide viewport
- * even when there's one pin. */
-const MIN_BBOX_HALF_DEG = 0.05;
-
 /** How many city pills to show inline. The rest land in a popover.
  * 6 is enough for the visual rhythm of the toolbar at common screen
  * widths without crowding the filters above it. */
 const VISIBLE_LIMIT = 6;
+
+/** Pad a single-point bbox so fitBounds doesn't slam us to street
+ * level for a one-pin city. 0.05° ≈ 5km at temperate latitudes —
+ * a city-wide viewport even when the city has just one venue. */
+const MIN_BBOX_HALF_DEG = 0.05;
+
+function bboxFor(c: CityPivot): string {
+  let { west, south, east, north } = c;
+  if (east - west < MIN_BBOX_HALF_DEG * 2) {
+    const cx = (west + east) / 2;
+    west = cx - MIN_BBOX_HALF_DEG;
+    east = cx + MIN_BBOX_HALF_DEG;
+  }
+  if (north - south < MIN_BBOX_HALF_DEG * 2) {
+    const cy = (south + north) / 2;
+    south = cy - MIN_BBOX_HALF_DEG;
+    north = cy + MIN_BBOX_HALF_DEG;
+  }
+  return `${west.toFixed(4)},${south.toFixed(4)},${east.toFixed(4)},${north.toFixed(4)}`;
+}
 
 export function CityPivotStrip({ cities }: Props) {
   const searchParams = useSearchParams();
@@ -71,28 +98,21 @@ export function CityPivotStrip({ cities }: Props) {
   }, [overflowOpen]);
 
   if (cities.length === 0) return null;
-
-  function bboxFor(c: CityPivot): string {
-    let { west, south, east, north } = c;
-    // Pad a degenerate bbox (single pin) so we don't end up at zoom 22.
-    if (east - west < MIN_BBOX_HALF_DEG * 2) {
-      const cx = (west + east) / 2;
-      west = cx - MIN_BBOX_HALF_DEG;
-      east = cx + MIN_BBOX_HALF_DEG;
-    }
-    if (north - south < MIN_BBOX_HALF_DEG * 2) {
-      const cy = (south + north) / 2;
-      south = cy - MIN_BBOX_HALF_DEG;
-      north = cy + MIN_BBOX_HALF_DEG;
-    }
-    return `${west.toFixed(4)},${south.toFixed(4)},${east.toFixed(4)},${north.toFixed(4)}`;
-  }
+  // The filter pill above is now the affordance for the active
+  // location — don't double up the surface area.
+  if ((searchParams.get("location") ?? "").trim().length > 0) return null;
 
   function hrefFor(c: CityPivot): string {
-    const usp = new URLSearchParams(searchParams.toString());
-    usp.set("map", "1");
-    usp.set("bbox", bboxFor(c));
-    return `/search?${usp.toString()}`;
+    // Pivoting is a filter action: set `location` (narrows grid +
+    // map) AND set `bbox` to the city's own viewport (so the map
+    // actually flies to the city — without this the filter would
+    // narrow the pins but leave the camera wherever it was, e.g.
+    // panned out over Melbourne when the user picked New York).
+    // bbox and location are now consistent — no stale-viewport risk.
+    const base = Object.fromEntries(searchParams.entries());
+    return searchHref(base, {
+      set: { map: "1", location: c.city, bbox: bboxFor(c) },
+    });
   }
 
   const visible = cities.slice(0, VISIBLE_LIMIT);

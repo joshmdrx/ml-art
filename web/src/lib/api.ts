@@ -784,32 +784,11 @@ export async function removeArtworkFromCollection(
   }
 }
 
-export function formatDimensions(d: Dimensions | null): string | null {
-  if (!d || (d.height == null && d.width == null)) return null;
-  const unit = d.unit ?? "cm";
-  const parts = [d.height, d.width, d.depth]
-    .filter((n): n is number => typeof n === "number")
-    .map((n) => `${n}`);
-  if (parts.length === 0) return null;
-  return `${parts.join(" × ")} ${unit}`;
-}
-
-export function formatPrice(
-  cents: number | null,
-  currency: string
-): string | null {
-  if (cents === null) return null;
-  const major = cents / 100;
-  try {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency,
-      maximumFractionDigits: 0,
-    }).format(major);
-  } catch {
-    return `${major.toFixed(0)} ${currency}`;
-  }
-}
+// Formatters moved to `@/lib/format` so client components can call
+// them without dragging `apiFetch`'s server-only Clerk import into
+// the client bundle. Re-exported here for backward compatibility
+// with existing callers (artworks/[id]/page.tsx, format.test.ts).
+export { formatDimensions, formatPrice } from "@/lib/format";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Studio (authed; artist-only)

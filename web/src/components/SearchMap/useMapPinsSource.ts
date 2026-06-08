@@ -36,6 +36,11 @@ export function useMapPinsSource(
       cluster: true,
       clusterRadius: CLUSTER_RADIUS_PX,
       clusterMaxZoom: CLUSTER_MAX_ZOOM,
+      // Tell supercluster to keep `properties.location_id` as the
+      // feature id when it rebuilds the source. Without this, leaves
+      // get reassigned synthetic ids and `setFeatureState` (used by
+      // the card-hover → pin-highlight sync) can't address them.
+      promoteId: "location_id",
     });
 
     map.addLayer({
@@ -63,11 +68,25 @@ export function useMapPinsSource(
       type: "circle",
       source: "pins",
       filter: ["!", ["has", "point_count"]],
+      // Highlighted state (T-045 L2): when feature-state.highlighted
+      // is true (set from the side panel on card hover), the pin
+      // scales up slightly so the user can visually correlate the
+      // card they're hovering with its venue on the map.
       paint: {
         "circle-color": "#222",
-        "circle-radius": 7,
+        "circle-radius": [
+          "case",
+          ["boolean", ["feature-state", "highlighted"], false],
+          11,
+          7,
+        ],
         "circle-stroke-color": "#fff",
-        "circle-stroke-width": 2,
+        "circle-stroke-width": [
+          "case",
+          ["boolean", ["feature-state", "highlighted"], false],
+          3,
+          2,
+        ],
       },
     });
 
