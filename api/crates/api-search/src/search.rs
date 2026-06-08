@@ -23,6 +23,7 @@ use axum::{
 };
 use ml_art_core::{
     auth::OptionalAnonId,
+    cursor::{CursorError, PageCursor},
     error::ApiError,
     location_search::LocationTerms,
     models::{ArtworkSummary, Paginated, SortOrder},
@@ -80,6 +81,12 @@ pub struct SearchParams {
     pub sort: Option<SortOrder>,
     #[serde(default = "default_limit")]
     pub limit: i64,
+    /// Opaque cursor from a previous response's `next_cursor`. Treat
+    /// as opaque on the client: today it decodes to an offset, but
+    /// the server may swap for keyset later without changing the API
+    /// shape. T-037.
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 fn default_limit() -> i64 {
@@ -93,6 +100,22 @@ pub async fn handle(
 ) -> Result<Json<Paginated<ArtworkSummary>>, ApiError> {
     let limit = params.limit.clamp(1, 48);
     let sort = params.sort.unwrap_or_default();
+
+    // Decode the opaque cursor → offset. Malformed / out-of-range
+    // are 400 so a malicious client can't tarpit us with deep
+    // pages. None means "first page" (offset 0).
+    let offset: i64 = match params.cursor.as_deref() {
+        None => 0,
+        Some(c) => match PageCursor::decode(c) {
+            Ok(p) => p.offset,
+            Err(CursorError::Malformed) => {
+                return Err(ApiError::BadRequest("cursor: malformed".into()))
+            }
+            Err(CursorError::OutOfRange) => {
+                return Err(ApiError::BadRequest("cursor: out of range".into()))
+            }
+        },
+    };
     // Trace the anon_id for rate-limiting + behavior tracking observability.
     // No behavior change yet — that lands when we wire rate limiting (T-007).
     if let Some(id) = anon_id {
@@ -189,16 +212,24 @@ pub async fn handle(
     let has_text = params.q.as_deref().is_some_and(|q| !q.trim().is_empty());
     let has_visual_anchor = params.image_upload_id.is_some();
 
-    let items = if has_text || has_visual_anchor {
-        run_hybrid(&state, &params, semantic_anchor.as_ref(), sort, limit).await?
+    // Fetch limit+1 so we can detect whether a next page exists
+    // without a separate COUNT query. If we got back limit+1 rows,
+    // drop the sentinel and issue a cursor pointing to the next
+    // page's start. T-037.
+    let mut items = if has_text || has_visual_anchor {
+        run_hybrid(&state, &params, semantic_anchor.as_ref(), sort, limit, offset).await?
     } else {
-        run_no_query(&state, &params, sort, limit).await?
+        run_no_query(&state, &params, sort, limit, offset).await?
     };
 
-    Ok(Json(Paginated {
-        items,
-        next_cursor: None, // TODO(T-037): cursor pagination
-    }))
+    let has_next = items.len() > limit as usize;
+    if has_next {
+        items.truncate(limit as usize);
+    }
+    let next_cursor = has_next
+        .then(|| PageCursor::from_offset(offset + limit).encode());
+
+    Ok(Json(Paginated { items, next_cursor }))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -211,6 +242,7 @@ async fn run_hybrid(
     query_vec: Option<&Vector>,
     sort: SortOrder,
     limit: i64,
+    offset: i64,
 ) -> Result<Vec<ArtworkSummary>, ApiError> {
     let q = params.q.as_deref().unwrap_or("").trim();
     let mut args = PgArguments::default();
@@ -247,7 +279,11 @@ async fn run_hybrid(
 
     let (filters_sql, _) = build_filters(params, &mut next, &mut args)?;
     let order_sql = build_order(sort);
-    let limit_idx = next.bind(&mut args, limit)?;
+    // Fetch `limit + 1` so the caller can detect whether a next
+    // page exists without a separate COUNT query. The extra row is
+    // sentinel-only; we drop it before returning. T-037.
+    let limit_idx = next.bind(&mut args, limit + 1)?;
+    let offset_idx = next.bind(&mut args, offset)?;
 
     let sql = format!(
         r#"
@@ -290,7 +326,7 @@ async fn run_hybrid(
           AND (k.id IS NOT NULL OR s.id IS NOT NULL)
           {filters_sql}
         {order_sql}
-        LIMIT ${limit_idx}
+        LIMIT ${limit_idx} OFFSET ${offset_idx}
         "#,
         rrf_k = RRF_K,
         cp = candidate_pool_idx,
@@ -311,13 +347,16 @@ async fn run_no_query(
     params: &SearchParams,
     sort: SortOrder,
     limit: i64,
+    offset: i64,
 ) -> Result<Vec<ArtworkSummary>, ApiError> {
     let mut args = PgArguments::default();
     let mut next = ArgIndex::new();
 
     let (filters_sql, _) = build_filters(params, &mut next, &mut args)?;
     let order_sql = build_order(sort);
-    let limit_idx = next.bind(&mut args, limit)?;
+    // Fetch limit+1 to detect a next page (see run_hybrid). T-037.
+    let limit_idx = next.bind(&mut args, limit + 1)?;
+    let offset_idx = next.bind(&mut args, offset)?;
 
     let sql = format!(
         r#"
@@ -344,7 +383,7 @@ async fn run_no_query(
           AND ar.status = 'active'
           {filters_sql}
         {order_sql}
-        LIMIT ${limit_idx}
+        LIMIT ${limit_idx} OFFSET ${offset_idx}
         "#
     );
 

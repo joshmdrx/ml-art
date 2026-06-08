@@ -32,12 +32,12 @@ interface Props {
   /** Called on mouseenter (with the artist's slug) and mouseleave
    * (with null). The parent writes the state. */
   onHighlightArtist: (slug: string | null) => void;
-  /** Called on card click. The parent uses this to fly the map to
-   * the artist's first pin and open its popup. */
-  onFocusArtist: (slug: string) => void;
-  /** Page-size cap from the search page. Used to show "M+ works"
-   * when we know the result was truncated. */
-  pageLimit: number;
+  /** Called on card click. The parent uses this to drive the map
+   * popup — to a pin for mapped artists, or a center-anchored
+   * "Not on the map yet" popup for unmapped ones. The artwork
+   * carries enough data to render either case without an extra
+   * lookup. */
+  onFocusArtist: (artwork: ArtworkSummary) => void;
   /** How many of `items` have at least one pin in the map's current
    * visible set. Drives the "N of M mapped" caption (T-045 L4). */
   mappedCount: number;
@@ -45,6 +45,15 @@ interface Props {
    * map view). Renders the inline "Back to Works →" link. Replaces
    * the disconnect-explainer's hostile copy. */
   backToWorksHref?: string;
+  /** True when more pages exist (cursor pagination, T-037). Drives
+   * the caption's "+" suffix and the "Load more" button. */
+  hasMore: boolean;
+  /** True while a load-more request is in flight. */
+  loadingMore: boolean;
+  /** Error string from the most recent failed load-more. */
+  loadMoreError: string | null;
+  /** Click handler for the "Load more" button. */
+  onLoadMore: () => void;
 }
 
 export function SearchSidePanel({
@@ -52,16 +61,19 @@ export function SearchSidePanel({
   highlightedArtistSlug,
   onHighlightArtist,
   onFocusArtist,
-  pageLimit,
   mappedCount,
   backToWorksHref,
+  hasMore,
+  loadingMore,
+  loadMoreError,
+  onLoadMore,
 }: Props) {
   return (
     <>
       <ResultsCaption
         total={items.length}
         mapped={mappedCount}
-        hitLimit={items.length >= pageLimit}
+        hitLimit={hasMore}
         backToWorksHref={backToWorksHref}
       />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -72,11 +84,56 @@ export function SearchSidePanel({
             isHighlighted={highlightedArtistSlug === a.artist_slug}
             onMouseEnter={() => onHighlightArtist(a.artist_slug)}
             onMouseLeave={() => onHighlightArtist(null)}
-            onClick={() => onFocusArtist(a.artist_slug)}
+            onClick={() => onFocusArtist(a)}
           />
         ))}
       </div>
+      {(hasMore || loadMoreError) && (
+        <LoadMoreFooter
+          hasMore={hasMore}
+          loading={loadingMore}
+          error={loadMoreError}
+          onClick={onLoadMore}
+        />
+      )}
     </>
+  );
+}
+
+/**
+ * Bottom-of-panel "Load more" button + error surface. Lives here
+ * (not in SearchSplitView) so the click target sits inside the
+ * scrollable panel — clicking it doesn't make the panel jump.
+ */
+function LoadMoreFooter({
+  hasMore,
+  loading,
+  error,
+  onClick,
+}: {
+  hasMore: boolean;
+  loading: boolean;
+  error: string | null;
+  onClick: () => void;
+}) {
+  return (
+    <div className="mt-6 mb-2 flex flex-col items-center gap-2 text-sm">
+      {hasMore && (
+        <button
+          type="button"
+          onClick={onClick}
+          disabled={loading}
+          className="border border-border bg-surface px-4 py-2 hover:bg-background disabled:opacity-60 disabled:cursor-progress"
+        >
+          {loading ? "Loading…" : "Load more"}
+        </button>
+      )}
+      {error && (
+        <p role="status" className="text-red-600 text-xs">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 

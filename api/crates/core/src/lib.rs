@@ -13,6 +13,7 @@ pub mod artist_ids;
 pub mod artwork_embeddings;
 pub mod auth;
 pub mod config;
+pub mod cursor;
 pub mod db;
 pub mod emails;
 pub mod embedder;

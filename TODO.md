@@ -197,13 +197,18 @@ if the item was dropped, with a one-line reason.
 - Second `Embedder` impl for A/B
 - Trigger: only if there's a compelling reason to compare against Jina
 
-### `T-037` Cursor pagination on `/v1/search` (and friends)
-**Where:** `api-search::search` + the other endpoints that return `Paginated<T>` with `next_cursor: None`.
-**Why:** every paginated endpoint currently caps at the in-handler limit and never returns a cursor. Fine for v0 demo content; not fine when an artist's portfolio has 100 works or a search returns more than 24 hits. Pre-launch nice-to-have, not a release blocker.
-**Acceptance:**
-- Opaque cursor in the response when there's a next page (base64 of `(rank_score, id)`)
-- `?cursor=<opaque>` query param accepted; decoded server-side, used as a WHERE filter against the same SQL
-- Backward compatible: omitting the cursor yields the first page like today
+### ~~`T-037` Cursor pagination on `/v1/search`~~ — shipped 2026-06-08
+
+- ✅ `ml_art_core::cursor::PageCursor` — opaque base64url-encoded JSON, `MAX_CURSOR_OFFSET = 1000`. Forward-compatible to keyset.
+- ✅ `/v1/search` decodes `cursor` → offset, fetches `limit + 1`, returns `next_cursor` when there's more. 6 unit + 4 integration tests.
+- ✅ `lib/searchClient.ts` browser-only fetch + `<SearchSplitView>` paginated state + "Load more" footer in `<SearchSidePanel>`.
+- ✅ Map sync on Load More — refetches pins via `searchMapClient` when a new page introduces an artist not yet in the pin set. Single `pins` state of truth in `<SearchSplitView>`.
+
+**v1 trade-off:** offset-based, not keyset. Hybrid search's RRF score is computed in SELECT, so true keyset would need an outer-SELECT subquery wrap. Offset is fine for a ~2000-row corpus (candidate pool capped at 200). The cursor shape is opaque to clients so a future keyset swap doesn't change the API.
+
+**Open follow-ups:**
+- Grid-mode pagination (non-map `/search` page). Today only `/search?map=1` paginates; the static grid view stops at the first 24. Needs converting `<ArtworkGrid>` to a client component or adding a server-action-driven Load More.
+- Other paginated endpoints (`/v1/artists/:slug.artworks`, `/v1/collections/:id.artworks`, `/v1/studio/me`, `/v1/studio/inquiries`) still return `next_cursor: None`. The `PageCursor` helper is in place — each endpoint just needs the same plumbing.
 
 ---
 

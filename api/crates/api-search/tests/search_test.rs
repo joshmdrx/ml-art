@@ -216,3 +216,89 @@ async fn search_preserves_currency(pool: PgPool) {
         assert_eq!(item.currency, "EUR");
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cursor pagination (T-037). Seed has 5 published artworks; paging
+// limit=2 walks them as 2 → 2 → 1 across three pages.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_paginates_via_opaque_cursor(pool: PgPool) {
+    let app = app_keyword_only(pool);
+
+    // Page 1 — no cursor yet.
+    let (status, p1): (_, Page) = get_json(app.clone(), "/v1/search?limit=2").await;
+    assert_eq!(status, 200);
+    assert_eq!(p1.items.len(), 2);
+    let c1 = p1
+        .next_cursor
+        .expect("expected a next_cursor on a non-final page");
+
+    // Page 2 — feed cursor back in.
+    let (status, p2): (_, Page) =
+        get_json(app.clone(), &format!("/v1/search?limit=2&cursor={c1}")).await;
+    assert_eq!(status, 200);
+    assert_eq!(p2.items.len(), 2);
+    let c2 = p2
+        .next_cursor
+        .expect("expected a next_cursor on page 2");
+
+    // No duplicates across page boundaries. Dedup by *title* not
+    // artist_slug — the seed has multiple artworks per artist
+    // (Bruno's two Stone Forms straddle the page boundary), which
+    // is legitimate and shouldn't fail the dedup check.
+    let p1_titles: Vec<_> = p1.items.iter().filter_map(|i| i.title.clone()).collect();
+    let p2_titles: Vec<_> = p2.items.iter().filter_map(|i| i.title.clone()).collect();
+    for t in &p2_titles {
+        assert!(!p1_titles.contains(t), "page 2 leaked a page-1 item: {t}");
+    }
+
+    // Page 3 — last page, single remaining item, no further cursor.
+    let (status, p3): (_, Page) =
+        get_json(app, &format!("/v1/search?limit=2&cursor={c2}")).await;
+    assert_eq!(status, 200);
+    assert_eq!(p3.items.len(), 1);
+    assert!(p3.next_cursor.is_none());
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_first_page_has_no_cursor_when_all_fit(pool: PgPool) {
+    let app = app_keyword_only(pool);
+    let (_, page): (_, Page) = get_json(app, "/v1/search?limit=10").await;
+    // 5 items fit under limit=10, so the server shouldn't fabricate a cursor.
+    assert_eq!(page.items.len(), 5);
+    assert!(page.next_cursor.is_none());
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_rejects_malformed_cursor(pool: PgPool) {
+    let app = app_keyword_only(pool);
+    let (status, _) = get_status(app, "/v1/search?cursor=not-a-real-cursor").await;
+    assert_eq!(status, 400);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_cursor_threads_through_filters(pool: PgPool) {
+    // A cursor obtained while a filter was active must still apply
+    // the filter on the follow-up request (the client passes the
+    // same params alongside the cursor). Seed has two Paintings;
+    // page through them at limit=1 and assert we got both distinct
+    // titles + no third page.
+    let app = app_keyword_only(pool);
+    let (_, p1): (_, Page) =
+        get_json(app.clone(), "/v1/search?medium=Painting&limit=1").await;
+    assert_eq!(p1.items.len(), 1);
+    let c1 = p1.next_cursor.expect("Painting filter has > 1 match");
+
+    let (_, p2): (_, Page) = get_json(
+        app,
+        &format!("/v1/search?medium=Painting&limit=1&cursor={c1}"),
+    )
+    .await;
+    assert_eq!(p2.items.len(), 1);
+    // Different titles → cursor advanced past the first match.
+    assert_ne!(p1.items[0].title, p2.items[0].title);
+    // No third page — confirms the filter is still applied on page 2
+    // (without it, the cursor offset would land in non-Painting rows).
+    assert!(p2.next_cursor.is_none());
+}

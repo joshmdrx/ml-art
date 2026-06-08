@@ -55,6 +55,53 @@ export function PinPopup({ props }: { props: PinProperties }) {
   );
 }
 
+/**
+ * Popup shown when the user clicks a sidebar card and we can't
+ * locate the artist's pin in the current pin set. Two cases land
+ * here today:
+ *
+ *   1. The artist genuinely hasn't shared an `artist_locations` row
+ *      — there's nothing for us to fly to, ever.
+ *   2. The artist *has* a location but their pin wasn't loaded
+ *      because they only appeared after a Load-more page — the map
+ *      endpoint was called with the first page's artist_ids before
+ *      the user paginated. (Tracking that as a follow-up under T-037
+ *      / T-045 — refetch pins when grid pages grow.)
+ *
+ * The client can't tell these two apart from where it sits, so the
+ * copy stays neutral: no assertion that the artist is unmapped.
+ * The user gets the artwork's image (familiar context, since they
+ * just clicked it) + a clear portfolio link.
+ *
+ * Same visual skin as `<PinPopup>` so the click contract feels
+ * consistent — every card click surfaces info about its artist.
+ */
+export function UnmappedArtistPopup({
+  artistSlug,
+  artistName,
+  imageUrl,
+}: {
+  artistSlug: string;
+  artistName: string;
+  imageUrl: string | null;
+}) {
+  return (
+    <div className="font-sans min-w-[200px] max-w-[240px]">
+      {imageUrl && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={imageUrl} alt="" className="w-full h-24 object-cover mb-2" />
+      )}
+      <p className="font-semibold mt-1 mb-0">{artistName}</p>
+      <Link
+        href={`/artists/${encodeURIComponent(artistSlug)}`}
+        className="inline-block mt-1.5 text-sm underline"
+      >
+        View portfolio →
+      </Link>
+    </div>
+  );
+}
+
 /** Cluster-of-coincident-pins popup body — one row per venue. */
 export function ClusterListPopup({
   leaves,

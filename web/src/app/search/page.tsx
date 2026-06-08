@@ -151,13 +151,23 @@ export default async function SearchPage({
         // When artist_ids is set, the API ignores q/medium/location
         // for filtering (the upstream grid has already applied them
         // to derive the id set). We still forward `artist` (single
-        // slug) + `bbox` because those compose orthogonally.
+        // slug) because that composes orthogonally.
+        //
+        // `bbox` is *dropped* in filtered mode: when artist_ids is
+        // set, bbox would clip the pin list to the current viewport,
+        // hiding pins for artists whose venue is offscreen — which
+        // breaks the card-to-pin click flow (clicking a card flies
+        // to nowhere because `pins.find(slug)` returns nothing). The
+        // invariant we want is "map has every pin for every artist
+        // in the grid result; Mapbox decides what's visible." This
+        // mirrors the client-side `refetchOnPan: !hasActiveFilter`
+        // logic in `useMapBboxSync`.
         artist_ids: artistIdsParam,
         q: artistIdsParam ? undefined : params.q,
         medium: artistIdsParam ? undefined : params.medium,
         location: artistIdsParam ? undefined : params.location,
         artist: sp.artist?.trim() || undefined,
-        bbox: sp.bbox?.trim() || undefined,
+        bbox: artistIdsParam ? undefined : sp.bbox?.trim() || undefined,
       }),
       listMapCities({
         // Mirror the same filter selection as the pins query so the
@@ -244,7 +254,11 @@ export default async function SearchPage({
         {mapMode ? (
           <SearchSplitView
             items={resp.items}
-            pageLimit={GRID_PAGE_LIMIT}
+            initialNextCursor={resp.next_cursor ?? null}
+            // The client's "Load more" hits /v1/search directly with
+            // these params + the cursor — must match the server's
+            // first-page query exactly. T-037.
+            gridSearchParams={params}
             emptyState={
               !error ? (
                 <EmptyState

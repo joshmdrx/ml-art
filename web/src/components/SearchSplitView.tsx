@@ -24,9 +24,12 @@
  * it originated, so no ping-pong loops.
  */
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
-import type { ArtworkSummary, MapPin } from "@/lib/api";
+import type { ArtworkSummary, MapPin, SearchParams } from "@/lib/api";
+import { searchClient } from "@/lib/searchClient";
+import { searchMapClient } from "@/lib/searchMapClient";
+import { reportError } from "@/lib/reportError";
 import { searchHref } from "@/lib/searchMap/url";
 
 import {
@@ -38,12 +41,17 @@ import { SearchSidePanel, mappedCountLabel } from "./SearchSidePanel";
 
 interface Props {
   items: ArtworkSummary[];
+  /** Cursor for the next page (from the server's `next_cursor`).
+   * `null` means we've reached the end. T-037. */
+  initialNextCursor: string | null;
+  /** Exact params the server used for the first-page grid query.
+   * The client's "Load more" hits `/v1/search` with these + the
+   * current cursor so subsequent pages stay consistent. T-037. */
+  gridSearchParams: SearchParams;
   /** Rendered into the side panel when `items.length === 0` (and
    * there's no error). Passed in by the page so the EmptyState
    * stays a single source of copy across grid + split views. */
   emptyState: React.ReactNode;
-  /** Page size used to render the "M+ works" caption when truncated. */
-  pageLimit: number;
   mapBlockProps: Omit<
     SearchMapBlockProps,
     "highlightedArtistSlug" | "focusSignal" | "onPinsChanged"
@@ -51,11 +59,31 @@ interface Props {
 }
 
 export function SearchSplitView({
-  items,
+  items: serverItems,
+  initialNextCursor,
+  gridSearchParams,
   emptyState,
-  pageLimit,
   mapBlockProps,
 }: Props) {
+  // Pagination state (T-037). Held client-side so "Load more" can
+  // append without a server roundtrip. Resyncs from the server prop
+  // via the prev-prop derived-state pattern whenever the page
+  // re-renders with a new filter set (chip click, FilterBar change,
+  // browser back/forward).
+  const [prevServerItems, setPrevServerItems] = useState(serverItems);
+  const [items, setItems] = useState<ArtworkSummary[]>(serverItems);
+  const [nextCursor, setNextCursor] = useState<string | null>(
+    initialNextCursor,
+  );
+  if (prevServerItems !== serverItems) {
+    setPrevServerItems(serverItems);
+    setItems(serverItems);
+    setNextCursor(initialNextCursor);
+  }
+
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
+
   const [highlightedArtistSlug, setHighlightedArtistSlug] = useState<
     string | null
   >(null);
@@ -66,33 +94,90 @@ export function SearchSplitView({
   const [sheetExpanded, setSheetExpanded] = useState(false);
 
   const [focusSignal, setFocusSignal] = useState<FocusSignal | null>(null);
-  const onFocusArtist = (slug: string) => {
+  const onFocusArtist = (artwork: ArtworkSummary) => {
     setFocusSignal((prev) => ({
-      artistSlug: slug,
+      artistSlug: artwork.artist_slug,
+      artistName: artwork.artist_name,
+      imageUrl: artwork.primary_image_url,
       tick: (prev?.tick ?? 0) + 1,
     }));
   };
 
-  // Live pin set, mirrored from SearchMap. Initialize from the
-  // server's payload + sync via the derived-state pattern so a
-  // navigation that pushes new initial pins lands immediately
-  // (the effect-driven callback fires one render later, which
-  // would flash a stale mapped-count).
+  // Single source of truth for the map's pin set, lifted up from
+  // `<SearchMap>` so we can:
+  //   - compute "N of M mapped" + use it on Load More to decide
+  //     whether to refresh pins for newly-introduced artists, and
+  //   - inject an expanded pin set after Load More (flowing back
+  //     down to SearchMap as `initial`, where useRefetchPins's
+  //     prev-initial sync resets the internal pins state).
+  //
+  // Three update paths converge here:
+  //   1. Filter change → server re-renders, mapBlockProps.pins
+  //      changes → synced via the prev-prop pattern below.
+  //   2. Pan refetch inside SearchMap (no-filter mode) → fires
+  //      onPinsChanged → setPins.
+  //   3. Load-more refetch in this component when a new page
+  //      introduces an artist whose pin isn't yet loaded.
   const [prevServerPins, setPrevServerPins] = useState(mapBlockProps.pins);
-  const [visiblePins, setVisiblePins] = useState<MapPin[]>(
-    mapBlockProps.pins,
-  );
+  const [pins, setPins] = useState<MapPin[]>(mapBlockProps.pins);
   if (prevServerPins !== mapBlockProps.pins) {
     setPrevServerPins(mapBlockProps.pins);
-    setVisiblePins(mapBlockProps.pins);
+    setPins(mapBlockProps.pins);
   }
 
-  // Set of artist slugs currently visible on the map. Used by
-  // `mappedCount` and by the pan-aware sort below.
+  // Set of artist slugs covered by the current pin set. Used by
+  // `mappedCount` and by `loadMore` (to decide if it needs to ask
+  // the server for more pins).
   const visibleSlugs = useMemo(
-    () => new Set(visiblePins.map((p) => p.artist.slug)),
-    [visiblePins],
+    () => new Set(pins.map((p) => p.artist.slug)),
+    [pins],
   );
+
+  const loadMore = useCallback(async () => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    setLoadMoreError(null);
+    try {
+      const page = await searchClient({
+        ...gridSearchParams,
+        cursor: nextCursor,
+      });
+      setItems((prev) => [...prev, ...page.items]);
+      setNextCursor(page.next_cursor ?? null);
+
+      // Keep the map's pin set in sync with the grid pages. Without
+      // this, a card whose artist first appears on a Load-more page
+      // wouldn't have a pin loaded — clicking it would fall into
+      // the "unmapped" branch even when the artist has a location.
+      // We refetch only when the new page brings in an artist we
+      // don't already have pins for, so back-to-back pages of the
+      // same artists don't trigger a roundtrip.
+      const introducesNewArtist = page.items.some(
+        (a) => !visibleSlugs.has(a.artist_slug),
+      );
+      if (introducesNewArtist) {
+        const allArtistIds = Array.from(
+          new Set([...items, ...page.items].map((a) => a.artist_id)),
+        );
+        const expanded = await searchMapClient({
+          artist_ids: allArtistIds.join(","),
+        });
+        setPins(expanded);
+      }
+    } catch (e) {
+      reportError(e, { surface: "search-load-more" });
+      setLoadMoreError(
+        e instanceof Error ? e.message : "Couldn’t load more results.",
+      );
+    } finally {
+      setLoadingMore(false);
+    }
+    // `items` and `visibleSlugs` are intentionally omitted from
+    // deps — the button is disabled while loading, so there's no
+    // realistic stale-closure risk, and listing them would create
+    // a fresh callback on every render which churns child memos.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nextCursor, loadingMore, gridSearchParams]);
 
   // "N of M mapped" — counts items whose artist has at least one
   // pin in the current visible set. Two reasonable interpretations:
@@ -129,9 +214,14 @@ export function SearchSplitView({
       <div className="lg:order-2 mb-12 lg:mb-0">
         <SearchMapBlock
           {...mapBlockProps}
+          // Override mapBlockProps.pins with our lifted state so
+          // Load-more refetches reach the map (SearchMap uses this
+          // as its `initial` prop, which useRefetchPins resyncs to
+          // via the prev-initial derived-state pattern).
+          pins={pins}
           highlightedArtistSlug={highlightedArtistSlug}
           focusSignal={focusSignal}
-          onPinsChanged={setVisiblePins}
+          onPinsChanged={setPins}
         />
       </div>
 
@@ -179,7 +269,7 @@ export function SearchSplitView({
               : mappedCountLabel(
                   mappedCount,
                   items.length,
-                  items.length >= pageLimit,
+                  nextCursor !== null,
                 )}
           </span>
           <span aria-hidden="true">{sheetExpanded ? "▼" : "▲"}</span>
@@ -198,9 +288,12 @@ export function SearchSplitView({
               highlightedArtistSlug={highlightedArtistSlug}
               onHighlightArtist={setHighlightedArtistSlug}
               onFocusArtist={onFocusArtist}
-              pageLimit={pageLimit}
               mappedCount={mappedCount}
               backToWorksHref={backToWorksHref}
+              hasMore={nextCursor !== null}
+              loadingMore={loadingMore}
+              loadMoreError={loadMoreError}
+              onLoadMore={loadMore}
             />
           ) : (
             emptyState

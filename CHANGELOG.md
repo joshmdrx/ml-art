@@ -3,6 +3,77 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-08 — T-037: cursor pagination + unmapped-artist popup + bbox/pagination fixes
+
+Closes T-037 (cursor pagination on `/v1/search`). Bundled with the
+unmapped-artist click affordance, the bbox-clipping bug for filtered
+map mode, and the pagination/map-sync fix that fell out of testing.
+
+- **T-037 cursor pagination.** New `ml_art_core::cursor::PageCursor`:
+  opaque base64url-encoded JSON (`{"o": <offset>}`). Forward-
+  compatible — the shape can swap for keyset (`{"k": [score, id]}`)
+  later without changing the API surface, since the cursor is
+  opaque to clients. `SearchParams.cursor` decoded server-side;
+  malformed / out-of-range → 400. `MAX_CURSOR_OFFSET = 1000` caps
+  deep-pagination attempts. `/v1/search` fetches `limit + 1` to
+  detect a next page without a COUNT, drops the sentinel, encodes
+  `next_cursor` from `offset + limit`. 6 unit tests on the cursor
+  helper + 4 integration tests on `/v1/search` (roundtrip,
+  no-cursor-when-all-fit, malformed-rejected, filter-threading).
+  v1 trade-off: offset, not keyset. Hybrid search's RRF score is
+  computed in SELECT, so true keyset would need an outer-SELECT
+  subquery wrap; offset works fine for a ~2000-row corpus and the
+  candidate-pool ceiling (200) keeps it bounded.
+
+- **Web client + UI.** New `lib/searchClient.ts` browser-only fetch
+  wrapper (mirrors `searchMapClient.ts` — public read, no Bearer
+  needed, avoids dragging the server-only Clerk module into the
+  client bundle). `<SearchSplitView>` holds the paginated items +
+  cursor state. `<SearchSidePanel>` renders a "Load more" footer
+  when `next_cursor !== null`; errors surface inline. The
+  caption's "+" suffix now keys off `nextCursor !== null` ("more
+  pages exist") instead of the stale `items.length >= pageLimit`
+  ("first page hit the cap"). Note: grid-mode pagination (non-map)
+  is out of scope for this commit; tagged as follow-up.
+
+- **Unmapped-artist popup.** New `<UnmappedArtistPopup>` rendered
+  via `useFocusArtist` when the clicked card's artist has no pin
+  in the current set. Same Mapbox popup machinery as `<PinPopup>`,
+  anchored at `map.getCenter()`. Carries the artwork's image +
+  artist name + "View portfolio →" link. Neutral copy — no claim
+  that the artist hasn't shared a location, because the absence
+  of a pin can mean either "genuinely unmapped" OR "loaded on a
+  later page" (see next bullet) and the client can't tell from
+  where it sits. `FocusSignal` extended with `artistName` +
+  `imageUrl` so the popup has what it needs without a lookup.
+
+- **Bbox-clipping bug for filtered mode.** `page.tsx`'s server-
+  side map fetch was passing `bbox` alongside `artist_ids`,
+  clipping the pin list to the current viewport — so an artist
+  whose venue was off-screen (e.g. Tokyo while the user panned
+  to London) wasn't in the returned pins, even though they were
+  in the grid result. Clicking that card fell into the unmapped
+  branch incorrectly. Fix: drop `bbox` when `artist_ids` is set.
+  Mirrors the existing `refetchOnPan: !hasActiveFilter` invariant
+  in `useMapBboxSync` — "filter active means server returns all
+  relevant pins; Mapbox decides what's visible."
+
+- **Map sync on Load More.** When `searchClient` returns a page
+  whose artists weren't in the first-page's `artist_ids` set,
+  the client refetches `/v1/search/map` with the expanded set
+  and replaces the map's pin state. Without this, page-2+ cards
+  whose artists *do* have a location would still trigger the
+  unmapped popup. Coverage check avoids the roundtrip when a
+  page brings only already-covered artists. `pins` state lifted
+  to `<SearchSplitView>` as a single source of truth — three
+  update paths now converge there: server-prop change (filter),
+  pan-refetch callback from `<SearchMap>`, and Load-more refetch.
+
+- **Refactor.** Removed `visiblePins` mirror state in favour of
+  the unified `pins`. `SearchSidePanel`'s `pageLimit` prop and
+  the matching plumbing in `<SearchSplitView>` / `page.tsx` are
+  gone — `hasMore` (from cursor presence) is the truthful signal.
+
 ## 2026-06-08 — T-045 L4: split-view polish (caption, mobile bottom-sheet)
 
 Closes T-045. Two of the three planned sub-items shipped; the third

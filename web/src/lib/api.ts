@@ -374,6 +374,8 @@ export interface SearchParams {
    * shifts the anchor along its δ-vector at α=0.8 server-side. Requires
    * `image_upload_id`. T-010 Phase C. */
   modifiers?: string;
+  /** Opaque cursor from a prior response's `next_cursor`. T-037. */
+  cursor?: string;
 }
 
 /** Returned by `GET /v1/modifiers` for the search-page button row. */
