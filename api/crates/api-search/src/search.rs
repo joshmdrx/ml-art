@@ -49,6 +49,16 @@ pub struct SearchParams {
     /// AND about painting." Phase B of T-010.
     #[serde(default)]
     pub image_upload_id: Option<Uuid>,
+    /// Visual-search anchor sourced from an *existing platform artwork*
+    /// rather than an uploaded image. Reads the artwork's vector out
+    /// of `artwork_embeddings` directly — no upload roundtrip. Lets a
+    /// "Find visually similar →" action on the artwork detail page
+    /// reuse the full search surface (filters + modifiers + map).
+    /// Precedence: `image_upload_id` > `seed_artwork_id` > `q` text
+    /// embedding. The seed artwork itself is excluded from results
+    /// (it'd otherwise self-match at position 1, which isn't useful).
+    #[serde(default)]
+    pub seed_artwork_id: Option<Uuid>,
     /// Comma-separated modifier names — e.g. `?modifiers=moodier,warmer`.
     /// Each known modifier contributes its δ-vector (computed via
     /// `core::modifiers::compute_delta`); the anchor is shifted at
@@ -165,11 +175,43 @@ pub async fn handle(
     } else {
         None
     };
+    // Seed-from-artwork anchor: look up the existing embedding rather
+    // than re-running an embed pass. Embedding-row missing for this
+    // model_name/model_version is treated as 404 (rare: only if the
+    // artwork hasn't been indexed under the current embedder).
+    let seed_vec: Option<Vector> = if let Some(id) = params.seed_artwork_id {
+        let row: Option<(Vector,)> = sqlx::query_as(
+            r#"
+            SELECT ae.embedding
+            FROM artwork_embeddings ae
+            JOIN artworks a ON a.id = ae.artwork_id
+            WHERE ae.artwork_id = $1
+              AND ae.model_name = $2
+              AND ae.model_version = $3
+              AND a.deleted_at IS NULL
+              AND a.status = 'published'
+            "#,
+        )
+        .bind(id)
+        .bind(state.cfg.embedding_model_name.clone())
+        .bind(state.cfg.embedding_model_version.clone())
+        .fetch_optional(&state.pool)
+        .await?;
+        match row {
+            Some((v,)) => Some(v),
+            None => return Err(ApiError::NotFound),
+        }
+    } else {
+        None
+    };
     let text_vec: Option<Vector> = match &params.q {
         Some(q) if !q.trim().is_empty() => state.embedder.embed_text(q).await?,
         _ => None,
     };
-    let mut semantic_anchor = upload_vec.or(text_vec);
+    // Precedence: explicit image upload > seed artwork > text embed.
+    // First two are explicit user intents; text falls in last as a
+    // soft default.
+    let mut semantic_anchor = upload_vec.or(seed_vec).or(text_vec);
 
     // Modifiers: validate + apply δ-vectors at α=0.8. Spec ties this to
     // image_upload_id (the spike only validated visual anchors), so we
@@ -177,9 +219,13 @@ pub async fn handle(
     // vector in untested territory.
     let modifier_names = parse_modifiers(params.modifiers.as_deref())?;
     if !modifier_names.is_empty() {
-        if params.image_upload_id.is_none() {
+        // Modifiers were validated in the spike against visual anchors
+        // only (text-anchor + modifier behaviour wasn't tested). Both
+        // `image_upload_id` and `seed_artwork_id` resolve to image
+        // embeddings, so either satisfies the precondition.
+        if params.image_upload_id.is_none() && params.seed_artwork_id.is_none() {
             return Err(ApiError::BadRequest(
-                "modifiers require image_upload_id".into(),
+                "modifiers require image_upload_id or seed_artwork_id".into(),
             ));
         }
         // semantic_anchor must be Some here (image_upload_id resolved
@@ -210,7 +256,8 @@ pub async fn handle(
     }
 
     let has_text = params.q.as_deref().is_some_and(|q| !q.trim().is_empty());
-    let has_visual_anchor = params.image_upload_id.is_some();
+    let has_visual_anchor =
+        params.image_upload_id.is_some() || params.seed_artwork_id.is_some();
 
     // Fetch limit+1 so we can detect whether a next page exists
     // without a separate COUNT query. If we got back limit+1 rows,
@@ -403,6 +450,17 @@ fn build_filters(
     args: &mut PgArguments,
 ) -> Result<(String, ()), ApiError> {
     let mut clauses: Vec<String> = Vec::new();
+
+    // Seed-from-artwork: exclude the seeded artwork from results.
+    // Without this, the artwork's own vector self-matches at the
+    // top of the ranking and the user sees "find me things similar
+    // to X → X at position 1" — useless. The artist's *other*
+    // works are still in play (they often look similar; that's
+    // signal, not noise).
+    if let Some(seed) = p.seed_artwork_id {
+        let idx = next.bind(args, seed)?;
+        clauses.push(format!("AND a.id <> ${idx}"));
+    }
 
     if let Some(m) = p.medium.as_deref().filter(|s| !s.is_empty()) {
         let idx = next.bind(args, m.to_string())?;

@@ -5,11 +5,13 @@ import { FilterBar } from "@/components/FilterBar";
 import { ModifierBar } from "@/components/ModifierBar";
 import { SearchSplitView } from "@/components/SearchSplitView";
 import {
+  getArtwork,
   listMapCities,
   listSearchModifiers,
   searchArtworks,
   searchMap,
   type Availability,
+  type ArtworkFull,
   type CityPivot,
   type MapPin,
   type SearchParams,
@@ -47,6 +49,11 @@ type Search = {
   availability?: string;
   /** Visual-search anchor — set after a successful upload. T-010 Phase D. */
   image_upload_id?: string;
+  /** Visual-search anchor sourced from an existing platform artwork
+   * (no upload roundtrip). Set by the "Find visually similar →" CTA
+   * on /artworks/[id]. Server reads the artwork's vector out of
+   * `artwork_embeddings` directly. Modifiers compose normally. */
+  seed_artwork_id?: string;
   /** Comma-separated modifier names. Server rejects unknown values. */
   modifiers?: string;
   /** Surfaced by `actions/visualSearch::uploadAndStartVisualSearch`
@@ -61,7 +68,23 @@ type Search = {
   /** Pin the map down to a single artist's locations (T-041). Set by
    * the "See on map" CTA on `/artists/[slug]`. */
   artist?: string;
+  /** Cumulative page count (1..MAX_PAGES). Each Load More click bumps
+   * this by 1 via router.push; the server fetches `pages` cursor-chained
+   * pages and returns them concatenated. URL-driven so back-nav,
+   * refresh, and shared links all reproduce the same view. */
+  pages?: string;
+  /** Currently-focused artwork (set by sidebar card click via
+   * replaceState). On mount, restores the popup + scrolls the card
+   * into view — "back-nav from /artists/[slug] lands me back on the
+   * same selected work." */
+  focus?: string;
 };
+
+/** Hard cap on `?pages` to bound server fan-out per render. Each page
+ * is a sequential roundtrip to `/v1/search`; 10 pages * 24 items =
+ * 240 results, which is the practical horizon for an exploration
+ * session before the user should refine filters. */
+const MAX_PAGES = 10;
 
 export default async function SearchPage({
   searchParams,
@@ -92,15 +115,37 @@ export default async function SearchPage({
       | Availability
       | undefined,
     image_upload_id: sp.image_upload_id?.trim() || undefined,
+    seed_artwork_id: sp.seed_artwork_id?.trim() || undefined,
     modifiers: sp.modifiers?.trim() || undefined,
     limit: GRID_PAGE_LIMIT,
   };
 
-  let resp;
+  // Cumulative pages (URL-driven Load More). Sequentially chase the
+  // cursor up to `pages` times — sequential not parallel because the
+  // cursor is opaque (callers shouldn't peek inside; today it's an
+  // offset, tomorrow keyset, so we follow the chain). For v1 scale
+  // (<= 10 pages * ~150ms per call) the latency is acceptable.
+  const pagesRequested = Math.max(
+    1,
+    Math.min(MAX_PAGES, parseInt(sp.pages ?? "1", 10) || 1),
+  );
+  let resp: { items: import("@/lib/api").ArtworkSummary[]; next_cursor: string | null } = {
+    items: [],
+    next_cursor: null,
+  };
   let error: string | null = null;
   let embedderEnabled = false;
   try {
-    resp = await searchArtworks(params);
+    let cursor: string | undefined;
+    for (let p = 0; p < pagesRequested; p++) {
+      const page = await searchArtworks({ ...params, cursor });
+      resp = {
+        items: [...resp.items, ...page.items],
+        next_cursor: page.next_cursor ?? null,
+      };
+      if (!page.next_cursor) break; // ran out of pages before pages cap
+      cursor = page.next_cursor;
+    }
     // Best-effort: ask the health endpoint whether vector search is on.
     // If the call fails we just don't surface the hint.
     try {
@@ -195,14 +240,30 @@ export default async function SearchPage({
   }
 
   // Fetch the modifier registry only when we'll render the bar — i.e.
-  // there's an image anchor. Saves a call in the common no-image case.
-  const visualMode = Boolean(params.image_upload_id);
+  // there's any visual anchor (uploaded OR seeded from a platform
+  // artwork). Saves a call in the common no-image case.
+  const visualMode =
+    Boolean(params.image_upload_id) || Boolean(params.seed_artwork_id);
   const modifiers = visualMode
     ? await listSearchModifiers().catch((e) => {
         reportError(e, { surface: "search-modifiers" });
         return [];
       })
     : [];
+
+  // When seeding from a platform artwork, fetch its summary for the
+  // anchor strip — gives the user a real thumbnail + title to confirm
+  // they're searching from the right work. Failure is non-fatal; the
+  // anchor strip falls back to a minimal display.
+  const seedArtwork = params.seed_artwork_id
+    ? await getArtwork(params.seed_artwork_id).catch((e) => {
+        reportError(e, {
+          surface: "search-seed-artwork",
+          id: params.seed_artwork_id,
+        });
+        return null;
+      })
+    : null;
 
   const summary = describeQuery(params);
   const hasTextQuery = Boolean(params.q);
@@ -225,6 +286,13 @@ export default async function SearchPage({
 
         {visualMode && params.image_upload_id && (
           <VisualAnchor uploadId={params.image_upload_id} />
+        )}
+
+        {visualMode && params.seed_artwork_id && (
+          <SeedAnchor
+            artworkId={params.seed_artwork_id}
+            artwork={seedArtwork}
+          />
         )}
 
         {visualMode && modifiers.length > 0 && (
@@ -255,10 +323,6 @@ export default async function SearchPage({
           <SearchSplitView
             items={resp.items}
             initialNextCursor={resp.next_cursor ?? null}
-            // The client's "Load more" hits /v1/search directly with
-            // these params + the cursor — must match the server's
-            // first-page query exactly. T-037.
-            gridSearchParams={params}
             emptyState={
               !error ? (
                 <EmptyState
@@ -437,6 +501,7 @@ function EmptyState({
 function describeQuery(p: SearchParams): string {
   const parts: string[] = [];
   if (p.image_upload_id) parts.push("your uploaded image");
+  if (p.seed_artwork_id) parts.push("a platform artwork");
   if (p.q) parts.push(`“${p.q}”`);
   if (p.modifiers) parts.push(`modified by ${p.modifiers.replace(/_/g, " ")}`);
   if (p.location) parts.push(`in ${p.location}`);
@@ -466,6 +531,59 @@ function VisualAnchor({ uploadId }: { uploadId: string }) {
         className="ml-auto text-xs underline underline-offset-2 hover:text-foreground"
       >
         Clear image
+      </Link>
+    </div>
+  );
+}
+
+/**
+ * Anchor strip for the seed-from-platform-artwork visual search
+ * (T-046 ish — added 2026-06-09). Unlike `VisualAnchor`, we have
+ * the artwork details server-side so we render a real thumbnail +
+ * title + link back to the source artwork. Falls back to a minimal
+ * "seeded by X" line when the artwork fetch failed (the search
+ * itself still works because the embedding lookup is independent).
+ */
+function SeedAnchor({
+  artworkId,
+  artwork,
+}: {
+  artworkId: string;
+  artwork: ArtworkFull | null;
+}) {
+  const primary =
+    artwork?.images?.find((i) => i.is_primary) ?? artwork?.images?.[0];
+  return (
+    <div className="mb-4 p-3 flex items-center gap-3 border border-border bg-surface text-sm">
+      {primary ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={primary.url}
+          alt=""
+          className="w-12 h-12 object-cover bg-background flex-shrink-0"
+        />
+      ) : null}
+      <span className="text-muted">Visually similar to</span>
+      {artwork ? (
+        <Link
+          href={`/artworks/${artworkId}`}
+          className="font-serif hover:underline"
+        >
+          {artwork.title ?? "this work"}
+          <span className="text-muted font-sans text-xs ml-1">
+            by {artwork.artist.display_name}
+          </span>
+        </Link>
+      ) : (
+        <code className="font-mono text-xs text-muted">
+          {artworkId.slice(0, 8)}…
+        </code>
+      )}
+      <Link
+        href="/search"
+        className="ml-auto text-xs underline underline-offset-2 hover:text-foreground"
+      >
+        Clear
       </Link>
     </div>
   );

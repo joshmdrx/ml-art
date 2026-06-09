@@ -383,9 +383,15 @@ export interface SearchParams {
   /** Visual-search anchor — overrides `q`'s text vector for the
    * semantic side. T-010 Phase B. */
   image_upload_id?: string;
+  /** Visual-search anchor sourced from an *existing platform artwork*
+   * (vs an uploaded image). Server resolves the artwork's embedding
+   * directly from `artwork_embeddings` — no upload roundtrip.
+   * Precedence: `image_upload_id` > `seed_artwork_id` > `q` text
+   * embed. The seed artwork itself is excluded from results. */
+  seed_artwork_id?: string;
   /** Comma-separated modifier names (`moodier,warmer,…`). Each
-   * shifts the anchor along its δ-vector at α=0.8 server-side. Requires
-   * `image_upload_id`. T-010 Phase C. */
+   * shifts the anchor along its δ-vector at α=0.8 server-side.
+   * Requires `image_upload_id` *or* `seed_artwork_id`. T-010 Phase C. */
   modifiers?: string;
   /** Opaque cursor from a prior response's `next_cursor`. T-037. */
   cursor?: string;

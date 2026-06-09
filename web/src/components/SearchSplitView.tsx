@@ -3,31 +3,39 @@
 /**
  * Two-column shell for `/search?map=1` (T-045 L1–L4).
  *
- * Owns three pieces of cross-pane state:
+ * Hosts three pieces of cross-pane state:
  *
  *   - `highlightedArtistSlug` (L2) — side-panel card hover lifts the
  *     artist's pin(s) into `feature-state.highlighted = true`.
  *
- *   - `focusSignal` (L3) — `{ artistSlug, tick }`. Card click drives
- *     the map to flyTo + open the pin's popup. The `tick` increment
- *     re-fires the effect on repeat clicks of the same card.
+ *   - `focusSignal` (L3) — `{ artistSlug, artistName, imageUrl, tick }`.
+ *     Card click drives the map to flyTo + open the pin's popup. The
+ *     `tick` increment re-fires the effect on repeat clicks. Also
+ *     mirrored into the URL as `?focus=<artwork_id>` so back-nav
+ *     from /artists/[slug] restores the same selection.
  *
- *   - `visiblePins` (L4) — live pin set surfaced up from `<SearchMap>`
- *     via the `onPinsChanged` callback. Lets the SidePanel render the
- *     "N of M mapped" caption (and, later, sort cards pan-aware).
- *     Synced via React's "shadow prop with prev-prop slot" derived-
- *     state pattern so a server-side push (filter change) lands in
- *     the same render rather than the one after.
+ *   - `pins` (L4) — server-pushed initial set, refetched on Load More
+ *     (when new pages introduce artists not yet in the pin set) +
+ *     synced from SearchMap's onPinsChanged callback.
  *
- * Source-of-truth pattern: both panes derive their visual state from
- * the same lifted values. Neither pane mutates state from an event
- * it originated, so no ping-pong loops.
+ * State-restore architecture (URL-first, no sessionStorage):
+ *
+ *   - Pagination → `?pages=N` (server loops cursor-chained fetches).
+ *     Load More pushes `?pages=N+1` via router; new render arrives.
+ *   - Selected artwork → `?focus=<artwork_id>`. Set on card click
+ *     via replaceState; on mount, re-fires `focusSignal` so the map
+ *     + popup restore. Scrolling the matching card into view is
+ *     handled below.
+ *   - Filters / bbox / map mode — already in URL via existing params.
+ *
+ * Everything that matters for "resume my search" lives in the URL.
+ * Bookmark a URL and you get exactly the view you saw.
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
-import type { ArtworkSummary, MapPin, SearchParams } from "@/lib/api";
-import { searchClient } from "@/lib/searchClient";
+import type { ArtworkSummary, MapPin } from "@/lib/api";
 import { searchMapClient } from "@/lib/searchMapClient";
 import { reportError } from "@/lib/reportError";
 import { searchHref } from "@/lib/searchMap/url";
@@ -44,10 +52,6 @@ interface Props {
   /** Cursor for the next page (from the server's `next_cursor`).
    * `null` means we've reached the end. T-037. */
   initialNextCursor: string | null;
-  /** Exact params the server used for the first-page grid query.
-   * The client's "Load more" hits `/v1/search` with these + the
-   * current cursor so subsequent pages stay consistent. T-037. */
-  gridSearchParams: SearchParams;
   /** Rendered into the side panel when `items.length === 0` (and
    * there's no error). Passed in by the page so the EmptyState
    * stays a single source of copy across grid + split views. */
@@ -58,32 +62,46 @@ interface Props {
   >;
 }
 
+/** Mirror of `MAX_PAGES` in page.tsx — surfacing here would mean an
+ * extra prop just to disable a button; the cap is small enough that
+ * a server-side enforcement + a client-side soft guard cover it. */
+const MAX_PAGES = 10;
+
 export function SearchSplitView({
-  items: serverItems,
+  items,
   initialNextCursor,
-  gridSearchParams,
   emptyState,
   mapBlockProps,
 }: Props) {
-  // Pagination state (T-037). Held client-side so "Load more" can
-  // append without a server roundtrip. Resyncs from the server prop
-  // via the prev-prop derived-state pattern whenever the page
-  // re-renders with a new filter set (chip click, FilterBar change,
-  // browser back/forward).
-  const [prevServerItems, setPrevServerItems] = useState(serverItems);
-  const [items, setItems] = useState<ArtworkSummary[]>(serverItems);
-  const [nextCursor, setNextCursor] = useState<string | null>(
-    initialNextCursor,
+  const router = useRouter();
+  const pathname = usePathname();
+  const urlSearchParams = useSearchParams();
+
+  // Pagination is URL-driven. The server already concatenated pages
+  // 1..N from `?pages=N` into the `items` prop. Load More just bumps
+  // the URL; the resulting server render arrives with N+1 pages.
+  const currentPages = Math.max(
+    1,
+    Math.min(MAX_PAGES, parseInt(urlSearchParams.get("pages") ?? "1", 10) || 1),
   );
-  if (prevServerItems !== serverItems) {
-    setPrevServerItems(serverItems);
-    setItems(serverItems);
-    setNextCursor(initialNextCursor);
-  }
+  const hasMore =
+    initialNextCursor !== null && currentPages < MAX_PAGES;
 
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
 
+  const loadMore = useCallback(() => {
+    if (!hasMore || isPending) return;
+    const usp = new URLSearchParams(urlSearchParams.toString());
+    usp.set("pages", String(currentPages + 1));
+    startTransition(() => {
+      // `scroll: false` so the new page renders below the current
+      // scroll position without yanking the user back to the top —
+      // that's the whole point of Load More vs page-N navigation.
+      router.push(`${pathname}?${usp.toString()}`, { scroll: false });
+    });
+  }, [hasMore, isPending, urlSearchParams, currentPages, router, pathname]);
+
+  // Highlighted artist (hover on a card → scale matching pins).
   const [highlightedArtistSlug, setHighlightedArtistSlug] = useState<
     string | null
   >(null);
@@ -93,15 +111,66 @@ export function SearchSplitView({
   // mode on mobile is *the map*. Desktop ignores this state.
   const [sheetExpanded, setSheetExpanded] = useState(false);
 
+  // Focus signal drives the map's popup + flyTo. Updated by card
+  // click; also mirrored into URL via `?focus=<artwork_id>` so a
+  // round-trip to /artists/[slug] and back restores the selection.
   const [focusSignal, setFocusSignal] = useState<FocusSignal | null>(null);
-  const onFocusArtist = (artwork: ArtworkSummary) => {
-    setFocusSignal((prev) => ({
+  const onFocusArtist = useCallback(
+    (artwork: ArtworkSummary) => {
+      setFocusSignal((prev) => ({
+        artistSlug: artwork.artist_slug,
+        artistName: artwork.artist_name,
+        imageUrl: artwork.primary_image_url,
+        tick: (prev?.tick ?? 0) + 1,
+      }));
+      // Mirror into URL via replaceState — no re-render, no scroll
+      // jump, just makes the URL reflect "this is the selected one"
+      // so back-nav can restore. The `focus` param is consumed only
+      // by the mount-time restore effect below; we don't watch it
+      // during the session.
+      if (typeof window === "undefined") return;
+      const url = new URL(window.location.href);
+      url.searchParams.set("focus", artwork.id);
+      window.history.replaceState(window.history.state, "", url.toString());
+    },
+    [],
+  );
+
+  // Mount-time focus restore. Reads `?focus=<artwork_id>` once per
+  // route key — if the artwork is in the loaded `items`, fire the
+  // focus signal (so the map flies + popup opens) and scroll the
+  // matching card into view in the sidebar.
+  const routeKey = `${pathname}?${urlSearchParams.toString()}`;
+  const restoredFocusRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (restoredFocusRef.current === routeKey) return;
+    restoredFocusRef.current = routeKey;
+    const focusId = urlSearchParams.get("focus");
+    if (!focusId) return;
+    const artwork = items.find((a) => a.id === focusId);
+    if (!artwork) return;
+    // Same shape as onFocusArtist's payload, but we don't go
+    // through it because we don't want to re-write the URL we just
+    // read from.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setFocusSignal({
       artistSlug: artwork.artist_slug,
       artistName: artwork.artist_name,
       imageUrl: artwork.primary_image_url,
-      tick: (prev?.tick ?? 0) + 1,
-    }));
-  };
+      tick: 1,
+    });
+    // Scroll the matching card into view. Defer to next frame so
+    // the card is in the DOM and the panel's overflow-y-auto knows
+    // its scrollHeight.
+    requestAnimationFrame(() => {
+      const card = document.querySelector(
+        `[data-artwork-id="${focusId}"]`,
+      );
+      if (card) {
+        card.scrollIntoView({ block: "nearest", behavior: "instant" });
+      }
+    });
+  }, [routeKey, items, urlSearchParams]);
 
   // Single source of truth for the map's pin set, lifted up from
   // `<SearchMap>` so we can:
@@ -112,12 +181,12 @@ export function SearchSplitView({
   //     prev-initial sync resets the internal pins state).
   //
   // Three update paths converge here:
-  //   1. Filter change → server re-renders, mapBlockProps.pins
+  //   1. Filter / pages change → server re-renders, mapBlockProps.pins
   //      changes → synced via the prev-prop pattern below.
   //   2. Pan refetch inside SearchMap (no-filter mode) → fires
   //      onPinsChanged → setPins.
-  //   3. Load-more refetch in this component when a new page
-  //      introduces an artist whose pin isn't yet loaded.
+  //   3. Load-more pin refetch when a new page introduces an artist
+  //      we don't already have a pin for (effect below).
   const [prevServerPins, setPrevServerPins] = useState(mapBlockProps.pins);
   const [pins, setPins] = useState<MapPin[]>(mapBlockProps.pins);
   if (prevServerPins !== mapBlockProps.pins) {
@@ -126,79 +195,54 @@ export function SearchSplitView({
   }
 
   // Set of artist slugs covered by the current pin set. Used by
-  // `mappedCount` and by `loadMore` (to decide if it needs to ask
-  // the server for more pins).
+  // `mappedCount` and by the pin-refetch effect below.
   const visibleSlugs = useMemo(
     () => new Set(pins.map((p) => p.artist.slug)),
     [pins],
   );
 
-  const loadMore = useCallback(async () => {
-    if (!nextCursor || loadingMore) return;
-    setLoadingMore(true);
-    setLoadMoreError(null);
-    try {
-      const page = await searchClient({
-        ...gridSearchParams,
-        cursor: nextCursor,
-      });
-      setItems((prev) => [...prev, ...page.items]);
-      setNextCursor(page.next_cursor ?? null);
-
-      // Keep the map's pin set in sync with the grid pages. Without
-      // this, a card whose artist first appears on a Load-more page
-      // wouldn't have a pin loaded — clicking it would fall into
-      // the "unmapped" branch even when the artist has a location.
-      // We refetch only when the new page brings in an artist we
-      // don't already have pins for, so back-to-back pages of the
-      // same artists don't trigger a roundtrip.
-      const introducesNewArtist = page.items.some(
-        (a) => !visibleSlugs.has(a.artist_slug),
-      );
-      if (introducesNewArtist) {
-        const allArtistIds = Array.from(
-          new Set([...items, ...page.items].map((a) => a.artist_id)),
-        );
+  // When the server-pushed `items` grow (Load More returned a new
+  // page with previously-unseen artists), refresh the map's pin set
+  // so card-clicks on the new artists actually fly to their pins
+  // rather than falling into the unmapped branch.
+  useEffect(() => {
+    const uncovered = items.filter((a) => !visibleSlugs.has(a.artist_slug));
+    if (uncovered.length === 0) return;
+    const allArtistIds = Array.from(new Set(items.map((a) => a.artist_id)));
+    let cancelled = false;
+    (async () => {
+      try {
         const expanded = await searchMapClient({
           artist_ids: allArtistIds.join(","),
         });
+        if (cancelled) return;
         setPins(expanded);
+      } catch (e) {
+        reportError(e, { surface: "search-loadmore-pins" });
       }
-    } catch (e) {
-      reportError(e, { surface: "search-load-more" });
-      setLoadMoreError(
-        e instanceof Error ? e.message : "Couldn’t load more results.",
-      );
-    } finally {
-      setLoadingMore(false);
-    }
-    // `items` and `visibleSlugs` are intentionally omitted from
-    // deps — the button is disabled while loading, so there's no
-    // realistic stale-closure risk, and listing them would create
-    // a fresh callback on every render which churns child memos.
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Intentionally depend only on `items` length — we want to fire
+    // when pages grow, not on every render that happens to recompute
+    // visibleSlugs (which would loop).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nextCursor, loadingMore, gridSearchParams]);
+  }, [items.length]);
 
   // "N of M mapped" — counts items whose artist has at least one
-  // pin in the current visible set. Two reasonable interpretations:
-  // (a) any pin globally, (b) any pin in the visible bbox. We pick
-  // (b) implicitly because `visiblePins` is whatever the map last
-  // fetched, which after a pan reflects the current viewport.
-  //
-  // The card *order* deliberately stays put across pans — pan only
-  // shifts what's visible on the map and recomputes this count,
-  // never the sidebar. An earlier L4 draft tried "pan-aware sort"
-  // (visible artists float to top) but the cards jumping mid-scroll
-  // was disorienting; stable order wins.
+  // pin in the current visible set. Card order deliberately stays
+  // put across pans — pan only shifts what's visible on the map
+  // and recomputes this count.
   const mappedCount = useMemo(
     () => items.filter((a) => visibleSlugs.has(a.artist_slug)).length,
     [items, visibleSlugs],
   );
 
   // "Back to Works →" affordance — only meaningful when there are
-  // items but none of them are mapped (the user is stranded on a
-  // useless map view). Lives inside the caption so we don't bring
-  // the disconnect-explainer's hostile copy back.
+  // items but none of them are mapped (useless map view). Lives
+  // inside the caption so we don't bring the disconnect-explainer's
+  // hostile copy back.
   const backToWorksHref = useMemo(() => {
     if (items.length === 0 || mappedCount > 0) return undefined;
     return searchHref(mapBlockProps.searchParams, {
@@ -214,10 +258,6 @@ export function SearchSplitView({
       <div className="lg:order-2 mb-12 lg:mb-0">
         <SearchMapBlock
           {...mapBlockProps}
-          // Override mapBlockProps.pins with our lifted state so
-          // Load-more refetches reach the map (SearchMap uses this
-          // as its `initial` prop, which useRefetchPins resyncs to
-          // via the prev-initial derived-state pattern).
           pins={pins}
           highlightedArtistSlug={highlightedArtistSlug}
           focusSignal={focusSignal}
@@ -225,37 +265,18 @@ export function SearchSplitView({
         />
       </div>
 
-      {/* Results panel:
-          - Mobile (<lg): fixed-bottom sheet over the map, tap the
-            handle to expand/collapse. Map-first mental model — the
-            user sees the geography by default and pulls up the
-            cards on demand.
-          - Desktop (lg+): sticky left column inside the grid, the
-            classic Airbnb split. */}
       <aside
         aria-label="Search results"
         className={[
-          // Mobile bottom-sheet base. `dvh` so it doesn't fight the
-          // mobile chrome viewport. `max-h` transition gives us the
-          // peek↔expanded animation without measuring children.
           "fixed inset-x-0 bottom-0 z-30 bg-background border-t border-border shadow-2xl",
           "transition-[max-height] duration-300 ease-out",
-          // `overflow-hidden` clips the inner scroll area to the
-          // outer max-height — without it, peek-state shows the
-          // 3rem handle but the (much taller) inner body bleeds
-          // down past the viewport.
           "overflow-hidden",
           sheetExpanded ? "max-h-[70dvh]" : "max-h-12",
-          // Desktop: undo all the fixed-positioning + chrome.
           "lg:static lg:order-1 lg:z-auto lg:bg-transparent lg:border-0 lg:shadow-none",
           "lg:sticky lg:top-4 lg:max-h-[640px] lg:overflow-y-auto",
-          // px-1 gives the inset-shadow card highlight room to render
-          // without being clipped by overflow-y-auto.
           "lg:px-1 lg:py-1",
         ].join(" ")}
       >
-        {/* Mobile-only sheet handle. Mirrors the in-panel caption
-            wording so the count stays visible while collapsed. */}
         <button
           type="button"
           onClick={() => setSheetExpanded((v) => !v)}
@@ -266,18 +287,11 @@ export function SearchSplitView({
           <span>
             {items.length === 0
               ? "No results"
-              : mappedCountLabel(
-                  mappedCount,
-                  items.length,
-                  nextCursor !== null,
-                )}
+              : mappedCountLabel(mappedCount, items.length, hasMore)}
           </span>
           <span aria-hidden="true">{sheetExpanded ? "▼" : "▲"}</span>
         </button>
 
-        {/* Panel body. On mobile, scrolls inside the fixed sheet
-            (max-height accounts for the 3rem handle above). On
-            desktop, the aside itself owns the scroll. */}
         <div
           id="search-side-panel-body"
           className="overflow-y-auto max-h-[calc(70dvh-3rem)] px-4 py-3 lg:max-h-none lg:overflow-visible lg:px-0 lg:py-0"
@@ -290,9 +304,9 @@ export function SearchSplitView({
               onFocusArtist={onFocusArtist}
               mappedCount={mappedCount}
               backToWorksHref={backToWorksHref}
-              hasMore={nextCursor !== null}
-              loadingMore={loadingMore}
-              loadMoreError={loadMoreError}
+              hasMore={hasMore}
+              loadingMore={isPending}
+              loadMoreError={null}
               onLoadMore={loadMore}
             />
           ) : (

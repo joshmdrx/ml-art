@@ -99,8 +99,15 @@ export function useMapInstance({
               { padding: FIT_BOUNDS_URL_PADDING, duration: 0 }
             );
           } else if (initial.length >= 1) {
+            // Fit to the top-5 most-relevant pins, not all of them.
+            // With ~500 global pins the "fit-all" rectangle is the
+            // world view — accurate but unfriendly when the user
+            // wants to see where the best results actually live.
+            // Mirrors `useFitToInitialPins`'s refit behaviour for
+            // consistency between mount + post-mount fits.
+            const top = initial.slice(0, 5);
             const bounds = new mapboxgl.LngLatBounds();
-            for (const p of initial) bounds.extend([p.lng, p.lat]);
+            for (const p of top) bounds.extend([p.lng, p.lat]);
             instance.fitBounds(bounds, {
               padding: FIT_BOUNDS_PINS_PADDING,
               maxZoom: 12,

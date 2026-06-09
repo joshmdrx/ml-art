@@ -42,6 +42,19 @@ import {
   WORLD_VIEW_ZOOM,
 } from "@/lib/searchMap/constants";
 
+/**
+ * Number of top-ranked pins we frame on a refit. The server returns
+ * pins in display_order / relevance order, so the first few are the
+ * "best" results. Using all 500 global pins zoomed the camera to
+ * "world view" on a clear-filter — accurate but unfriendly.
+ *
+ * 5 felt right in testing: gives a tight regional view around the
+ * top hit without being so narrow you can only see one pin. Tune
+ * via dev-experience, not user feedback (most users never see the
+ * cold-start view anyway — they arrive from a filter chain).
+ */
+const TOP_PINS_FOR_FIT = 5;
+
 export function useFitToInitialPins(
   map: import("mapbox-gl").Map | null,
   initial: MapPin[],
@@ -84,12 +97,32 @@ export function useFitToInitialPins(
       return;
     }
 
+    // Viewport-preserve: if the camera is already framed on at least
+    // one of the new pins, leave it alone. Avoids the "I was looking
+    // at London, I cleared the filter, the camera yanked to a world
+    // view" papercut. Only refit when the user's current view shows
+    // nothing useful from the new pin set.
+    const currentBounds = map.getBounds();
+    if (currentBounds) {
+      const someInView = initial.some((p) =>
+        currentBounds.contains([p.lng, p.lat]),
+      );
+      if (someInView) return;
+    }
+
     let cancelled = false;
     (async () => {
       const mapboxgl = (await import("mapbox-gl")).default;
       if (cancelled) return;
+      // Fit to the top-K most-relevant pins instead of all of them.
+      // With ~500 global pins spread across continents, "fit to all"
+      // is effectively "world view" — accurate but unfriendly when
+      // the user wants a sense of "where do my top hits actually
+      // live?". The trailing 495 pins are still rendered; they just
+      // may sit off-screen until the user pans.
+      const top = initial.slice(0, TOP_PINS_FOR_FIT);
       const bounds = new mapboxgl.LngLatBounds();
-      for (const p of initial) bounds.extend([p.lng, p.lat]);
+      for (const p of top) bounds.extend([p.lng, p.lat]);
       map.fitBounds(bounds, {
         padding: FIT_BOUNDS_PINS_PADDING,
         maxZoom: 12,

@@ -114,11 +114,21 @@ export function useFocusArtist(
         // user from being zoomed *out* if they were already close,
         // while still pulling them in to street level when they
         // were panned far away.
+        //
+        // Speed + duration cap: Mapbox's default flyTo is a
+        // "scenic" zoom-out-then-in arc that can run 4–6 seconds
+        // from a global view → a single city — slow enough that
+        // the bbox URL write (which fires on `moveend`) feels
+        // sluggish too. Cap at 1.2s and lower `curve` so the arc
+        // is closer to a straight line. Still uses a fly rather
+        // than an instant `jumpTo` because the path-of-the-camera
+        // is the "I'm taking you to this pin" cue.
         map.flyTo({
           center: coords,
           zoom: Math.max(map.getZoom(), 11),
-          speed: 1.2,
-          curve: 1.4,
+          speed: 2.0,
+          curve: 1.1,
+          maxDuration: 1200,
           essential: true,
         });
       } else {

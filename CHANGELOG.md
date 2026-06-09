@@ -3,6 +3,85 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-09 — Search-resume UX: URL state restore + visual-search-from-artwork + map default
+
+Three pieces that turn the search surface from "you can navigate, but
+you lose your place" into "you can leave and come back exactly where
+you were." Built deliberately URL-first — sessionStorage was tried,
+removed in favour of the URL because the user-visible benefit is the
+same and the URL gives us bookmarkability + shareability for free.
+
+### State restore (URL-driven, no sessionStorage)
+
+The /search page now encodes everything the user needs to "resume"
+in the URL. Refresh, back-nav, paste-in-a-new-tab — all reproduce
+the exact same view.
+
+- **`?pages=N`** (default 1, cap 10). `page.tsx` loops cursor-chained
+  fetches up to N, concatenates the results. Each Load More is
+  `router.push('?pages=N+1', { scroll: false })` wrapped in
+  `useTransition` (so the button's loading state is "free"). Server
+  cost: N sequential `/v1/search` roundtrips per render — acceptable
+  for v1 scale (≤ 240 items / ~1.5s p95).
+- **`?focus=<artwork_id>`** — set on sidebar card click via
+  `replaceState` (no re-render, no scroll jump). On mount, the
+  matching artwork is found in `items`, `focusSignal` fires (map
+  flies + popup opens) and the matching card `scrollIntoView`s.
+  Cards carry a `data-artwork-id` attribute as the scroll anchor.
+- **`<BackToSearchLink>`** — replaces the hard-coded
+  `<Link href="/search">` on `/artists/[slug]` and `/artworks/[id]`.
+  On click: `router.back()` when `document.referrer` is our own
+  `/search` (full state restore via browser history), else `/search`
+  push. Plain `<a href>` underneath so middle/cmd-click and
+  no-JS / crawler traffic still works.
+- **Removed** `lib/searchSnapshot.ts` + `lib/searchClient.ts`
+  (sessionStorage approach + browser-side cursor client). Both
+  dead code now that the URL is the source of truth.
+
+The architectural call (URL vs sessionStorage) is captured in
+`decisions.md` — search state belongs in the URL so every nav,
+share, and refresh resolves to the same view. SessionStorage was
+the wrong layer: it hid state in the browser, was un-shareable,
+race-prone on hydration, and silently cleared on hot-reload.
+
+### Visual search from a platform artwork
+
+New `seed_artwork_id` param on `/v1/search`. Resolves the artwork's
+existing CLIP embedding from `artwork_embeddings` — no upload
+roundtrip. Precedence: `image_upload_id > seed_artwork_id > q`'s
+text embed. The seed artwork itself is excluded from results (an
+`AND a.id <> $seed` clause in `build_filters`) so the user doesn't
+self-match at position 1. Modifiers now compose with either visual
+anchor (loosened guard: was `image_upload_id`-only).
+
+- **Web**: `getArtwork` server-side fetch on `/search` populates a
+  new `<SeedAnchor>` strip with the seeded artwork's thumbnail +
+  title + link back. `<ArtworkFull>`'s `images` walked for the
+  `is_primary` thumbnail.
+- **CTA**: "Find visually similar →" button on `/artworks/[id]`
+  next to Inquire / Save. Routes to `/search?seed_artwork_id=<id>`
+  so the user can layer modifiers + filters on top.
+- **`describeQuery`** updated so the page heading reflects the
+  seed source ("Results for a platform artwork").
+
+### Map default — never the world view
+
+`useFitToInitialPins` now (a) preserves the current viewport when
+it already shows ≥ 1 pin from the new set (so "clear filter while
+looking at London" stays in London), and (b) when it does refit,
+uses the top-5 pins by relevance, not all of them. Same top-5 fit
+applied to `useMapInstance`'s mount-time fit. The trailing pins
+still render; they sit off-screen until the user pans.
+
+### Performance: faster `flyTo`
+
+`useFocusArtist` was using Mapbox's default scenic arc
+(`speed: 1.2, curve: 1.4`) which takes 4–6 seconds from a global
+view to a city pin — long enough that the bbox URL write (debounced
+behind `moveend`) felt sluggish too. Bumped `speed → 2.0`, lowered
+`curve → 1.1` (straighter line, less zoom-out), and capped with
+`maxDuration: 1200`. Trip-then-write is now ~1.5s end-to-end.
+
 ## 2026-06-09 — T-011 Phase 4b: reply-from-inbox + auto-mark-as-read
 
 Closes the biggest UX hole in the studio surface before onboarding a

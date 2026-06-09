@@ -198,18 +198,26 @@ if the item was dropped, with a one-line reason.
 - Second `Embedder` impl for A/B
 - Trigger: only if there's a compelling reason to compare against Jina
 
-### ~~`T-037` Cursor pagination on `/v1/search`~~ — shipped 2026-06-08
+### ~~`T-037` Cursor pagination on `/v1/search`~~ — shipped 2026-06-08; 2026-06-09 lifted to URL-driven
 
 - ✅ `ml_art_core::cursor::PageCursor` — opaque base64url-encoded JSON, `MAX_CURSOR_OFFSET = 1000`. Forward-compatible to keyset.
 - ✅ `/v1/search` decodes `cursor` → offset, fetches `limit + 1`, returns `next_cursor` when there's more. 6 unit + 4 integration tests.
-- ✅ `lib/searchClient.ts` browser-only fetch + `<SearchSplitView>` paginated state + "Load more" footer in `<SearchSidePanel>`.
-- ✅ Map sync on Load More — refetches pins via `searchMapClient` when a new page introduces an artist not yet in the pin set. Single `pins` state of truth in `<SearchSplitView>`.
+- ✅ **2026-06-09:** swapped client-side cursor state for URL-driven `?pages=N` (server loops cursor-chained fetches, cap 10). `<SearchSplitView>` is now driven entirely from props — no client `items` state, no sessionStorage. Load More is `router.push('?pages=N+1', { scroll: false })` + `useTransition`. See decisions.md 2026-06-09.
+- ✅ Map sync on Load More — refetches pins via `searchMapClient` when a new page introduces an artist not yet in the pin set.
 
 **v1 trade-off:** offset-based, not keyset. Hybrid search's RRF score is computed in SELECT, so true keyset would need an outer-SELECT subquery wrap. Offset is fine for a ~2000-row corpus (candidate pool capped at 200). The cursor shape is opaque to clients so a future keyset swap doesn't change the API.
 
 **Open follow-ups:**
 - Grid-mode pagination (non-map `/search` page). Today only `/search?map=1` paginates; the static grid view stops at the first 24. Needs converting `<ArtworkGrid>` to a client component or adding a server-action-driven Load More.
 - Other paginated endpoints (`/v1/artists/:slug.artworks`, `/v1/collections/:id.artworks`, `/v1/studio/me`, `/v1/studio/inquiries`) still return `next_cursor: None`. The `PageCursor` helper is in place — each endpoint just needs the same plumbing.
+
+### ~~`T-046` Visual search from a platform artwork + state-resume UX~~ — shipped 2026-06-09
+
+- ✅ `seed_artwork_id` param on `/v1/search` — resolves to the artwork's existing CLIP embedding. Modifiers compose. Seed artwork excluded from results.
+- ✅ "Find visually similar →" CTA on `/artworks/[id]` + `<SeedAnchor>` strip on `/search`.
+- ✅ URL state-resume: `?pages=N`, `?focus=<artwork_id>`, plus `<BackToSearchLink>` that uses `router.back()` for full state restore when referrer is `/search`.
+- ✅ Map default tightened to top-5-pins fit + viewport-preserve on clear-filter.
+- ✅ `useFocusArtist` `flyTo` perf: `speed 2.0`, `curve 1.1`, `maxDuration 1200` — was 4–6s scenic-arc, now ~1.5s end-to-end including bbox URL write.
 
 ---
 

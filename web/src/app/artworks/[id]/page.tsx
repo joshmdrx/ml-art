@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { TopNav } from "@/components/TopNav";
 import { ArtworkGrid } from "@/components/ArtworkGrid";
+import { BackToSearchLink } from "@/components/BackToSearchLink";
 import { InquireButton } from "@/components/InquireButton";
 import { SaveButton } from "@/components/SaveButton";
 import {
@@ -145,6 +146,18 @@ export default async function ArtworkPage({ params }: { params: Params }) {
                 artistName={artwork.artist.display_name}
               />
               <SaveButton artworkId={artwork.id} />
+              {/* Routes the user through the full search surface
+                  (filters + modifiers + map) using this artwork's
+                  embedding as the visual anchor. The dedicated
+                  "More like this" section below already shows a
+                  top-N — this CTA is for "I want to *explore* from
+                  this image". */}
+              <Link
+                href={`/search?seed_artwork_id=${encodeURIComponent(artwork.id)}`}
+                className="text-sm text-center border border-border bg-surface hover:bg-background px-4 py-2 transition-colors"
+              >
+                Find visually similar →
+              </Link>
             </div>
           </aside>
         </article>
@@ -158,9 +171,7 @@ export default async function ArtworkPage({ params }: { params: Params }) {
         )}
 
         <p className="mt-16 text-xs text-muted">
-          <Link href="/search" className="hover:text-foreground">
-            ← Back to search
-          </Link>
+          <BackToSearchLink className="hover:text-foreground" />
         </p>
       </main>
     </>

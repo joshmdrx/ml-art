@@ -328,6 +328,29 @@ Cost impact: Mapbox geocoding is free up to 100k requests/month, well above any 
 
 **Implementation:** four slices (L1–L4) in `TODO.md` `T-045`. L1 (layout shell, no sync) is the smallest releasable unit and the right thing to ship first.
 
+---
+
+## 2026-06-09 — Search resume state belongs in the URL, not sessionStorage
+
+**Context:** Users wanted "leave the search page → come back to the same view" — same page of results loaded, same artwork selected, same map viewport, same scroll. First pass used `sessionStorage` keyed by URL with snapshot/restore on mount. It worked, but the failure modes piled up: silent hydration races, dev hot-reload wiping state, the most common case (no Load More yet) wasn't even covered, and the state was invisible to anyone who didn't write the code.
+
+**Decided:** the URL is the single source of truth for search resume state.
+- `?pages=N` (cumulative cursor pagination on the server)
+- `?focus=<artwork_id>` (selected artwork; set via replaceState on click, restored on mount)
+- `?bbox=…` (already lived in URL)
+- Filters already in URL
+
+The `<BackToSearchLink>` component uses `router.back()` when the referrer is our `/search` so the full browser-history entry is reused (including scroll), and falls back to `router.push('/search')` otherwise.
+
+**Alternatives:**
+1. **`sessionStorage` snapshot + restore on mount.** What we tried. Brittle: hydration race, dev-mode loss, lost-on-first-page-of-session, un-shareable.
+2. **In-memory route cache (Linear pattern).** Better than sessionStorage but still hides state in JS land — bookmark, refresh, share-link all break.
+3. **bfcache reliance.** Browser's back/forward cache is great when it works; doesn't apply for refresh + share-link + bookmark, and is fragile (caching is disabled by many third-party scripts).
+
+**Why:** the URL is the only address that lives outside the user's tab — making it the source of truth means refresh, share-link, bookmark, and back-nav all produce the same view by construction, not by careful state plumbing. The cost is N sequential `/v1/search` roundtrips per render for `pages=N`, which is acceptable at v1 scale (capped at 10 pages = ~1.5s p95). Future optimisation: parallelise the chase (cursor is internally an offset; we could compute offsets ourselves) — but the API contract stays opaque, so the option is available without an API change.
+
+**Reversibility:** High. The URL-driven approach is additive — if we ever want to re-layer in-memory caching for snappier load-more, the URL stays as the canonical truth and the cache is just a paint optimisation. Reverting would mean nothing more than ignoring the URL params.
+
 ## 2026-05-25 — Postgres-backed text query embedding cache
 
 **Context:** Search endpoints need to embed the user's text query at request time. Jina API takes 100–300ms per call. This dominates search latency.

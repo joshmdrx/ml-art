@@ -1,9 +1,9 @@
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
-import Link from "next/link";
 import { TopNav } from "@/components/TopNav";
 import { ArtworkGrid } from "@/components/ArtworkGrid";
 import { ArtistLocationsMap } from "@/components/ArtistLocationsMap";
+import { BackToSearchLink } from "@/components/BackToSearchLink";
 import { getArtist } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
@@ -142,9 +142,7 @@ export default async function ArtistPage({ params }: { params: Params }) {
         </section>
 
         <p className="mt-16 text-xs text-muted">
-          <Link href="/search" className="hover:text-foreground">
-            ← Back to search
-          </Link>
+          <BackToSearchLink className="hover:text-foreground" />
         </p>
       </main>
     </>

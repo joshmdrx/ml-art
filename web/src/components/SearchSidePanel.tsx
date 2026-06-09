@@ -225,6 +225,7 @@ function SidePanelCard({
   return (
     <button
       type="button"
+      data-artwork-id={artwork.id}
       data-highlighted={isHighlighted}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
