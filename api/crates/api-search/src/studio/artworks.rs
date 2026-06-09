@@ -87,6 +87,10 @@ pub struct StudioImage {
     pub is_primary: bool,
     pub display_order: i32,
     pub moderation_status: String,
+    /// Comma-joined Rekognition labels written by the moderation
+    /// handler when the row is rejected. `None` for pending /
+    /// approved rows. T-008c.
+    pub moderation_reason: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -479,7 +483,7 @@ pub async fn add_image(
             (artwork_id, s3_key, width, height, is_primary, display_order)
         VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING
-            id, s3_key, width, height, is_primary, display_order, moderation_status
+            id, s3_key, width, height, is_primary, display_order, moderation_status, moderation_reason
         "#,
     )
     .bind(id)
@@ -618,7 +622,7 @@ pub async fn remove_image(
 async fn fetch_images(pool: &sqlx::PgPool, artwork_id: Uuid) -> Result<Vec<StudioImage>, ApiError> {
     let rows: Vec<ImageRow> = sqlx::query_as(
         r#"
-        SELECT id, s3_key, width, height, is_primary, display_order, moderation_status
+        SELECT id, s3_key, width, height, is_primary, display_order, moderation_status, moderation_reason
         FROM artwork_images
         WHERE artwork_id = $1
         ORDER BY is_primary DESC, display_order ASC
@@ -718,6 +722,7 @@ struct ImageRow {
     is_primary: bool,
     display_order: i32,
     moderation_status: String,
+    moderation_reason: Option<String>,
 }
 
 impl ImageRow {
@@ -731,6 +736,7 @@ impl ImageRow {
             is_primary: self.is_primary,
             display_order: self.display_order,
             moderation_status: self.moderation_status,
+            moderation_reason: self.moderation_reason,
         }
     }
 }

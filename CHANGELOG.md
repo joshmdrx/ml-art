@@ -3,6 +3,48 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-09 — Quick wins: T-008c (moderation reason in studio) + T-022 (demo prices/dimensions)
+
+Two small UX gaps closed in one pass.
+
+### T-008c — moderation rejection reason in studio
+
+Until now the moderation handler computed rejection labels
+("Explicit Nudity", "Violence", …) but only logged them; the
+studio surface showed `rejected` images as plain "Remove" tiles
+with no context, leaving the artist guessing.
+
+- New `artwork_images.moderation_reason text` column (migration
+  `0014_artwork_image_moderation_reason.sql`). Nullable: only set
+  on rejection. Cleared if a re-run flips the row back to approved.
+- `moderate_artwork_image` handler persists the comma-joined
+  labels alongside the status flip.
+- `StudioImage.moderation_reason` surfaced in the API response.
+- `<ModerationBadge>` in `ArtworkEditModal`: amber "Checking…"
+  while pending, red "Hidden · <labels>" when rejected (with
+  full text in a tooltip for screen readers / hover). Rejected
+  images dim + grayscale so it's visually obvious they're
+  suppressed from public surfaces. Approved images get no badge.
+- 1 new integration test asserting the reason is persisted;
+  1 asserting it clears on re-approve. 8 total in the moderation
+  suite (310 total Rust).
+
+### T-022 — backfill demo prices + dimensions
+
+The 2000 WikiArt demo artworks all had `NULL` `price_cents` and
+`dimensions`, so the studio surface hid the price line entirely
+and `<ArtworkCard>` never showed a price chip. Demo felt
+unfinished.
+
+- `seed.py` now sets both on INSERT via deterministic per-sha256
+  helpers (`_demo_price_cents`, `_demo_dimensions`). Re-runs
+  produce the same values. Currency stays at the schema default
+  (`USD`). Prices quantised to nearest £10 (50–2500) so the UI
+  shows tidy listings rather than uniform-random noise.
+- One-off SQL backfill at `db/seeds/0001_demo_prices_dimensions.sql`
+  for the already-inserted 2000 rows. Idempotent (only fills
+  NULL cells, safe to re-run).
+
 ## 2026-06-09 — Search-resume UX: URL state restore + visual-search-from-artwork + map default
 
 Three pieces that turn the search surface from "you can navigate, but

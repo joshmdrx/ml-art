@@ -267,6 +267,11 @@ export interface StudioImage {
   is_primary: boolean;
   display_order: number;
   moderation_status: "pending" | "approved" | "rejected";
+  /** Comma-joined labels persisted on rejection (e.g.
+   * "Explicit Nudity, Suggestive"). `null` for pending +
+   * approved rows. Surfaced in studio so the artist can see why
+   * an image is hidden from public surfaces. T-008c. */
+  moderation_reason: string | null;
 }
 
 /** Body for `POST /v1/studio/artworks`. All optional — the only thing

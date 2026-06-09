@@ -191,13 +191,24 @@ pub async fn moderate_artwork_image(
         tracing::debug!(%artwork_image_id, "artwork_image approved");
     }
 
+    // Persist labels on rejection so the studio can show "why was
+    // this image hidden" instead of leaving the artist guessing.
+    // Approved rows clear the column (covers the rare case where a
+    // re-run of a previously-rejected row flips the verdict).
+    let reason = match result.status {
+        ModerationStatus::Rejected => Some(result.labels.join(", ")),
+        _ => None,
+    };
+
     sqlx::query(
         r#"UPDATE artwork_images
-           SET moderation_status = $2
+           SET moderation_status = $2,
+               moderation_reason = $3
            WHERE id = $1"#,
     )
     .bind(artwork_image_id)
     .bind(result.status.as_str())
+    .bind(reason)
     .execute(pool)
     .await?;
     Ok(())

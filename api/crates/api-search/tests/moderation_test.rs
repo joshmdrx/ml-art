@@ -177,17 +177,53 @@ async fn moderation_handler_rejects_via_canned_client(pool: PgPool) {
     let id = insert_pending_image(&pool, "test/alice/bad.jpg").await;
     let client = ModerationClient::for_tests(vec![(
         "test/alice/bad.jpg".to_string(),
-        ModerationResult::rejected(vec!["Explicit Nudity".to_string()]),
+        ModerationResult::rejected(vec![
+            "Explicit Nudity".to_string(),
+            "Suggestive".to_string(),
+        ]),
     )]);
     moderate_artwork_image(&client, &pool, id).await.unwrap();
 
-    let (status,): (String,) =
-        sqlx::query_as("SELECT moderation_status FROM artwork_images WHERE id = $1")
-            .bind(id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let (status, reason): (String, Option<String>) = sqlx::query_as(
+        "SELECT moderation_status, moderation_reason FROM artwork_images WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(status, "rejected");
+    // Labels are persisted comma-joined so the studio can render the
+    // "why was this rejected" line without an extra join. T-008c.
+    assert_eq!(reason.as_deref(), Some("Explicit Nudity, Suggestive"));
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn moderation_handler_clears_reason_on_re_approve(pool: PgPool) {
+    // Belt-and-braces: a row previously stamped as rejected getting
+    // re-run through Disabled (or a more-permissive Real client)
+    // should clear the reason so the studio doesn't keep showing a
+    // stale "why" against an approved image.
+    let id = insert_pending_image(&pool, "test/alice/maybe.jpg").await;
+    sqlx::query(
+        "UPDATE artwork_images SET moderation_status='rejected', moderation_reason='Old Label' WHERE id = $1",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let client = ModerationClient::disabled();
+    moderate_artwork_image(&client, &pool, id).await.unwrap();
+
+    let (status, reason): (String, Option<String>) = sqlx::query_as(
+        "SELECT moderation_status, moderation_reason FROM artwork_images WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(status, "approved");
+    assert!(reason.is_none());
 }
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]

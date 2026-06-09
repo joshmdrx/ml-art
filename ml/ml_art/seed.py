@@ -33,6 +33,7 @@ import argparse
 import hashlib
 import io
 import os
+import random
 import re
 import sys
 from collections import defaultdict
@@ -368,6 +369,29 @@ def _ensure_artists(
     return out
 
 
+def _demo_price_cents(sha: str) -> int:
+    """Plausible demo price, deterministic per artwork (so seed
+    re-runs produce stable values). Range: £50.00 – £2500.00 cents.
+    Quantised to nearest £10 so values look like real listings ("$320")
+    rather than the noise of a uniform random ($317.42). T-022."""
+    rng = random.Random(sha + ":price")
+    bucketed = rng.randrange(50, 251) * 10  # 50..2500 in steps of 10
+    return bucketed * 100  # to cents
+
+
+def _demo_dimensions(sha: str) -> dict[str, int | str]:
+    """Plausible cm dimensions for a 2D work, deterministic per
+    artwork. Most galleries quote works in cm so the unit choice
+    matches the formatter's display. Skipping depth — the demo
+    corpus is paintings/prints/photos, all effectively flat. T-022."""
+    rng = random.Random(sha + ":dims")
+    return {
+        "width": rng.randrange(20, 101),   # 20–100cm
+        "height": rng.randrange(25, 111),  # 25–110cm
+        "unit": "cm",
+    }
+
+
 def _ensure_artworks(
     conn: psycopg.Connection,
     s3,
@@ -400,14 +424,20 @@ def _ensure_artworks(
                         CacheControl="public, max-age=31536000, immutable",
                     )
 
-                # Insert artwork
+                # Insert artwork. Price + physical dimensions are
+                # populated from deterministic per-sha helpers so the
+                # demo studios feel like real listings rather than a
+                # field of NULLs — without this the studio UI hides
+                # the price line and ArtworkCard never shows a price
+                # chip. Currency stays at the schema default ('USD').
                 cur.execute(
                     """
                     INSERT INTO artworks (
-                        artist_id, title, description, medium, status,
+                        artist_id, title, description, medium,
+                        price_cents, dimensions, status,
                         is_demo, published_at
                     )
-                    VALUES (%s, %s, %s, %s, 'published', true, now())
+                    VALUES (%s, %s, %s, %s, %s, %s, 'published', true, now())
                     RETURNING id;
                     """,
                     (
@@ -415,6 +445,8 @@ def _ensure_artworks(
                         f"Untitled ({pretty})",
                         f"Demo work in the {pretty} style, sourced from the public WikiArt dataset.",
                         pretty,
+                        _demo_price_cents(item.sha256),
+                        Jsonb(_demo_dimensions(item.sha256)),
                     ),
                 )
                 row = cur.fetchone()

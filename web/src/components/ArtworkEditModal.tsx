@@ -614,13 +614,22 @@ function ImageManager({
               <img
                 src={img.url}
                 alt=""
-                className="absolute inset-0 w-full h-full object-cover"
+                className={
+                  // Rejected images stay in the studio (the artist
+                  // needs to be able to inspect + delete them) but
+                  // dim + grey so it's visually obvious they're not
+                  // appearing publicly.
+                  img.moderation_status === "rejected"
+                    ? "absolute inset-0 w-full h-full object-cover opacity-40 grayscale"
+                    : "absolute inset-0 w-full h-full object-cover"
+                }
               />
               {img.is_primary && (
                 <span className="absolute top-1 left-1 bg-foreground text-background text-[10px] px-1.5 py-0.5">
                   Primary
                 </span>
               )}
+              <ModerationBadge img={img} />
               <button
                 type="button"
                 onClick={() => onRemove(img.id)}
@@ -678,5 +687,47 @@ function Field({
       {hint && <span className="block text-xs text-muted mb-2">{hint}</span>}
       {children}
     </label>
+  );
+}
+
+/**
+ * Visual + textual hint of an image's moderation state on the studio
+ * thumbnail tile (T-008c).
+ *
+ * - **pending**: amber "Checking…" — the worker hasn't graded the
+ *   image yet. Common right after upload; usually flips within a
+ *   few seconds.
+ * - **rejected**: red "Hidden · <labels>" — image is suppressed
+ *   from public surfaces. We show the comma-joined Rekognition
+ *   labels (`moderation_reason`) so the artist knows what triggered
+ *   it and whether to delete/replace. Note: this is the artist's
+ *   diagnostic surface; we do NOT show these labels to the public.
+ * - **approved**: no badge (cleaner thumbnail; the absence of a
+ *   warning *is* the signal).
+ */
+function ModerationBadge({ img }: { img: StudioImage }) {
+  if (img.moderation_status === "approved") return null;
+  if (img.moderation_status === "pending") {
+    return (
+      <span
+        className="absolute bottom-1 left-1 right-1 bg-amber-100 text-amber-900 text-[10px] px-1.5 py-0.5 truncate"
+        title="The moderation worker hasn't graded this image yet."
+      >
+        Checking…
+      </span>
+    );
+  }
+  const labels = img.moderation_reason?.trim();
+  return (
+    <span
+      className="absolute bottom-1 left-1 right-1 bg-red-100 text-red-900 text-[10px] px-1.5 py-0.5 truncate"
+      title={
+        labels
+          ? `Hidden from public surfaces. Labels: ${labels}.`
+          : "Hidden from public surfaces."
+      }
+    >
+      {labels ? `Hidden · ${labels}` : "Hidden"}
+    </span>
   );
 }

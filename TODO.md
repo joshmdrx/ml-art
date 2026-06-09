@@ -81,9 +81,11 @@ if the item was dropped, with a one-line reason.
 - FilterBar's location clear used to leave `bbox` in the URL, so the server-side map fetch kept spatially clipping. Now `bbox: null` rides with every location mutation.
 - `'server-only'` cannot be imported from client components, so `formatPrice` / `formatDimensions` moved out of `lib/api.ts` into `lib/format.ts`.
 
-### `T-022` Pricing/dimensions polish (partial — formatters in place, seed data null)
-**Where:** seed script (optional) + `lib/api.ts` (done) + ArtworkDetail panel (done)
-**State:** `formatDimensions` and `formatPrice` work; the seeded demo artworks have null dimensions/price. Either backfill in `seed.py` with plausible random values, or leave demo content as-is (price/dim only matter for real artists). Decide before launch.
+### ~~`T-022` Pricing/dimensions polish~~ — shipped 2026-06-09
+
+- ✅ `formatDimensions` + `formatPrice` (`lib/format.ts`).
+- ✅ `seed.py` writes deterministic per-sha price + dimensions on INSERT. `_demo_price_cents` quantises to nearest $10 in $50–$2500 range; `_demo_dimensions` produces cm widths/heights.
+- ✅ One-off backfill SQL at `db/seeds/0001_demo_prices_dimensions.sql` for the already-inserted 2000 rows. Idempotent.
 
 ### ~~`T-039` Artist-facing price input UX~~ — shipped 2026-05-29
 
@@ -113,7 +115,7 @@ if the item was dropped, with a one-line reason.
 **Deferred (open follow-ups):**
 - `T-008a` Real Rekognition wire-up — pull `aws-sdk-rekognition`, build `Real` variant, gate on `REKOGNITION_ENABLED`. Lands alongside the AWS deploy.
 - ~~`T-008b` Moderation on the `uploads` bucket~~ — shipped 2026-06-01. `JobEvent::UploadModerate` + `moderate_upload` handler + enqueue from `uploads::create` + visual-search anchor refuses rejected rows. 8 integration tests.
-- `T-008c` Surface rejection reason in studio — `ModerationResult.labels` is logged today; persist + show on the studio image row.
+- ~~`T-008c` Surface rejection reason in studio~~ — shipped 2026-06-09. New `artwork_images.moderation_reason` column persists comma-joined Rekognition labels on rejection (cleared on re-approve). `<ModerationBadge>` in `ArtworkEditModal` shows "Hidden · <labels>" on rejected tiles + dims/grayscales the image. 2 new integration tests (310 total Rust).
 
 ### ~~`T-010` Visual search upload + modifier UI~~ — all four phases shipped
 - ✅ **Phase A:** `POST /v1/uploads/image` — multipart in, S3/MinIO PUT, inline T-036-style embedding into `uploads.embedding`
