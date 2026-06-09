@@ -538,36 +538,96 @@ function ImageManager({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  /** Progress for the in-flight batch: `{done, total}` while uploads
+   * are running, `null` when idle. Drives the "Uploading N of M…"
+   * caption. T-011 Phase 5. */
+  const [batchStatus, setBatchStatus] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
 
-  /** File-picker handler. Pre-checks size + MIME before the server
-   * round-trip — same client-side gate `VisualSearchUpload` uses, so
-   * the artist sees an instant error instead of waiting on a 400. */
-  function onFileSelected(file: File) {
+  /**
+   * Bulk-friendly file-picker handler (T-011 Phase 5).
+   *
+   * Pre-checks size + MIME per file before the round-trip; bad files
+   * are dropped with a per-file note rather than failing the whole
+   * batch. Uploads sequentially (one at a time) — embedding work
+   * server-side is non-trivial and we don't want to thunder the API
+   * with parallel requests. For 1–10 images the user-perceived latency
+   * is dominated by the network anyway, so the simpler model wins.
+   *
+   * Cap at MAX_BATCH_SIZE so a misclicked "select all" on a 500-photo
+   * folder doesn't try to upload everything; excess is dropped with
+   * a warning the user can act on.
+   *
+   * Each successful upload is appended to `images` immediately —
+   * visible incremental progress, and the rejection-by-server case
+   * (e.g. the 11th file is corrupt) doesn't lose the prior 10.
+   */
+  function onFilesSelected(files: FileList | null) {
+    if (!files || files.length === 0) return;
     setError(null);
-    if (!file.type.startsWith("image/")) {
-      setError("Please choose an image file.");
-      return;
+
+    const MAX_BATCH_SIZE = 20;
+    const all = Array.from(files);
+    const dropped: string[] = [];
+    if (all.length > MAX_BATCH_SIZE) {
+      dropped.push(
+        `Skipped ${all.length - MAX_BATCH_SIZE} files — please upload at most ${MAX_BATCH_SIZE} at a time.`,
+      );
     }
-    if (file.size > 10 * 1024 * 1024) {
-      setError("Image must be 10MB or smaller.");
-      return;
-    }
-    startTransition(async () => {
-      try {
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        const img = await uploadArtworkImage(artworkId, {
-          name: file.name || "upload.bin",
-          type: file.type || "application/octet-stream",
-          bytes,
-        });
-        onChanged([...images, img]);
-        // Reset the input so picking the same file twice in a row
-        // still fires `change`.
-        if (fileInputRef.current) fileInputRef.current.value = "";
-      } catch (e) {
-        reportError(e, { surface: "studio-artwork-image-upload" });
-        setError(e instanceof Error ? e.message : String(e));
+    const batch = all.slice(0, MAX_BATCH_SIZE);
+    const valid: File[] = [];
+    for (const f of batch) {
+      if (!f.type.startsWith("image/")) {
+        dropped.push(`${f.name}: not an image`);
+        continue;
       }
+      if (f.size > 10 * 1024 * 1024) {
+        dropped.push(`${f.name}: larger than 10MB`);
+        continue;
+      }
+      valid.push(f);
+    }
+
+    if (valid.length === 0) {
+      setError(dropped.join("\n"));
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    setBatchStatus({ done: 0, total: valid.length });
+
+    startTransition(async () => {
+      const errors: string[] = [...dropped];
+      let running = images;
+      for (let i = 0; i < valid.length; i++) {
+        const file = valid[i];
+        try {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const img = await uploadArtworkImage(artworkId, {
+            name: file.name || "upload.bin",
+            type: file.type || "application/octet-stream",
+            bytes,
+          });
+          running = [...running, img];
+          onChanged(running);
+        } catch (e) {
+          reportError(e, {
+            surface: "studio-artwork-image-upload",
+            file: file.name,
+          });
+          errors.push(
+            `${file.name}: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+        setBatchStatus({ done: i + 1, total: valid.length });
+      }
+      // Reset the input so picking the same files twice in a row
+      // still fires `change`.
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      setBatchStatus(null);
+      if (errors.length > 0) setError(errors.join("\n"));
     });
   }
 
@@ -594,7 +654,10 @@ function ImageManager({
       </h3>
 
       {error && (
-        <p role="alert" className="p-3 mb-3 border border-border bg-background text-sm">
+        <p
+          role="alert"
+          className="p-3 mb-3 border border-border bg-background text-sm whitespace-pre-line"
+        >
           {error}
         </p>
       )}
@@ -647,22 +710,22 @@ function ImageManager({
           ref={fileInputRef}
           type="file"
           accept="image/*"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) onFileSelected(f);
-          }}
+          multiple
+          onChange={(e) => onFilesSelected(e.target.files)}
           disabled={isPending}
           className="block text-sm file:mr-3 file:px-4 file:py-2 file:border file:border-border file:bg-background file:text-sm file:cursor-pointer hover:file:bg-surface disabled:opacity-40"
         />
-        {isPending && (
-          <p className="mt-2 text-xs text-muted">
-            Uploading and embedding…
+        {isPending && batchStatus && (
+          <p className="mt-2 text-xs text-muted" role="status">
+            Uploading {batchStatus.done} of {batchStatus.total}
+            {batchStatus.done < batchStatus.total ? "…" : " — finishing up"}
           </p>
         )}
       </div>
       <p className="text-[11px] text-muted mt-2">
-        JPEG, PNG, or WebP up to 10MB. The first image you add becomes the
-        primary and is what shows up in search results.
+        JPEG, PNG, or WebP — up to 10MB each, up to 20 at a time. The
+        first image you add becomes the primary and is what shows up
+        in search results.
       </p>
     </section>
   );

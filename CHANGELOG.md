@@ -3,6 +3,26 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-09 — T-011 Phase 5: bulk image upload in studio
+
+Closes the last open piece of the artist studio. The image manager
+inside `<ArtworkEditModal>` accepted one file at a time — an artist
+with a portfolio of 30 pieces was stuck doing 30 individual picks.
+
+- File `<input>` now has `multiple` and accepts a batch.
+- `onFilesSelected` per-file-validates (image MIME, ≤10MB), drops
+  bad files with a per-file note rather than failing the whole
+  batch. Cap of 20 files per batch — protects against an accidental
+  "select all" on a 500-photo folder.
+- Sequential uploads through the existing `uploadArtworkImage`
+  endpoint (no API changes). Each success appends to the image
+  grid immediately so the user sees incremental progress; an
+  early failure doesn't lose the prior successes.
+- New "Uploading N of M" caption. Multi-line errors render with
+  `whitespace-pre-line` so the per-file failures stack readably.
+- No server changes — the bulk path reuses the per-image embed +
+  moderation pipeline already in place from T-011 Phase 3.
+
 ## 2026-06-09 — Quick wins: T-008c (moderation reason in studio) + T-022 (demo prices/dimensions)
 
 Two small UX gaps closed in one pass.
