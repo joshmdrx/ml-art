@@ -145,7 +145,8 @@ if the item was dropped, with a one-line reason.
 - ✅ **Phase 2 (landed):** `/v1/studio/settings` + `/studio/settings` page + public-surface `ar.status='active'` filter
 - ✅ **Phase 3 (landed):** `/studio` portfolio page — grid with status filter pills (All / Drafts / Published), create+edit modal w/ image management, delete with confirmation. LLM-assisted intake is `T-012`
 - ✅ **Phase 4a (landed 2026-06-01):** `GET /v1/studio/inquiries` + `/studio/inquiries` inbox page with status filter (All / Pending / Delivered). 9 Rust integration tests.
-- Phase 4b: reply-from-inbox UX, mark-as-read, `/studio/analytics` stub (full analytics blocked on events-table writes — separate gap)
+- ✅ **Phase 4b (landed 2026-06-09):** reply-from-inbox + auto-mark-as-read. Migration `0013_inquiry_replies.sql` (new table + `inquiries.read_at`). Three endpoints: `GET` extended with replies + read_at; `POST .../reply`; `POST .../read`. New `JobEvent::InquirySendReply` + handler + `templates::artist_reply` (Resend). Web: client-side `<InquiryInbox>` with per-card reply form, optimistic append, auto-fire mark-as-read on view. 7 new integration tests (16 inbox total).
+  - **Deferred:** `/studio/analytics` stub (full analytics blocked on events-table writes — separate gap). Inbound replies from the inquirer back to the artist (needs an inbound-email webhook).
 - Phase 5: Bulk image upload (depends on `T-010` `POST /v1/uploads/image`)
 
 ### `T-012` Onboarding flow `/onboarding`

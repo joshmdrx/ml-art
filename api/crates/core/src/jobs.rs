@@ -55,6 +55,11 @@ pub enum JobEvent {
     /// `delivered_at` flips — on signed-in inquiry create AND on
     /// the verify endpoint for anonymous inquiries. T-032.
     InquiryDeliverToArtist { inquiry_id: Uuid },
+    /// Email the inquirer the artist's reply. Fired from
+    /// `POST /v1/studio/inquiries/:id/reply` after the row is
+    /// persisted. Idempotent on `reply_id` so duplicates don't
+    /// double-send. T-011 Phase 4b.
+    InquirySendReply { reply_id: Uuid },
     /// Run the moderation client against a freshly-added artwork
     /// image. Writes back `artwork_images.moderation_status`. T-008.
     ArtworkImageModerate { artwork_image_id: Uuid },
@@ -73,6 +78,7 @@ impl JobEvent {
             JobEvent::ArtistLocationGeocode { .. } => "artist_location_geocode",
             JobEvent::InquirySendVerification { .. } => "inquiry_send_verification",
             JobEvent::InquiryDeliverToArtist { .. } => "inquiry_deliver_to_artist",
+            JobEvent::InquirySendReply { .. } => "inquiry_send_reply",
             JobEvent::ArtworkImageModerate { .. } => "artwork_image_moderate",
             JobEvent::UploadModerate { .. } => "upload_moderate",
         }
@@ -378,6 +384,11 @@ pub async fn handle(event: JobEvent, deps: &JobsDeps) -> Result<(), HandlerError
                 .await
                 .map_err(|e| HandlerError::Domain(e.to_string()))?;
         }
+        JobEvent::InquirySendReply { reply_id } => {
+            inquiry_handlers::send_reply(deps, reply_id)
+                .await
+                .map_err(|e| HandlerError::Domain(e.to_string()))?;
+        }
         JobEvent::ArtworkImageModerate { artwork_image_id } => {
             crate::moderation::moderate_artwork_image(
                 &deps.moderation,
@@ -486,6 +497,93 @@ mod inquiry_handlers {
             .send(&row.from_email, &subject, &body, None)
             .await?;
         tracing::info!(%inquiry_id, to = %row.from_email, "verification email sent");
+        Ok(())
+    }
+
+    /// Send the artist's reply email to the original inquirer.
+    /// Idempotent on `inquiry_replies.sent_at` — a second call sees
+    /// a non-NULL `sent_at` and returns Ok without re-sending. This
+    /// matches `inquiries.delivered_at`'s pattern. T-011 Phase 4b.
+    pub async fn send_reply(deps: &JobsDeps, reply_id: Uuid) -> anyhow::Result<()> {
+        #[derive(Debug, FromRow)]
+        struct ReplyRow {
+            message: String,
+            sent_at: Option<chrono::DateTime<chrono::Utc>>,
+            inquiry_id: Uuid,
+            from_name: String,
+            from_email: String,
+            artwork_id: Uuid,
+            artwork_title: Option<String>,
+            artist_display_name: String,
+        }
+        let row: ReplyRow = sqlx::query_as(
+            r#"
+            SELECT
+                r.message,
+                r.sent_at,
+                i.id            AS inquiry_id,
+                i.from_name,
+                i.from_email,
+                a.id            AS artwork_id,
+                a.title         AS artwork_title,
+                ar.display_name AS artist_display_name
+            FROM inquiry_replies r
+            JOIN inquiries i  ON i.id = r.inquiry_id
+            JOIN artworks  a  ON a.id = i.artwork_id
+            JOIN artists   ar ON ar.id = r.artist_id
+            WHERE r.id = $1
+            "#,
+        )
+        .bind(reply_id)
+        .fetch_one(&deps.pool)
+        .await?;
+        if row.sent_at.is_some() {
+            tracing::info!(%reply_id, "skip send_reply — already sent");
+            return Ok(());
+        }
+        // Resolve the artist's email for the reply-to header so any
+        // bounce-back from the inquirer lands in the artist's inbox.
+        // Without it the inquirer's reply would go to the platform's
+        // from-address, where it dead-ends. We don't gate the send
+        // on the artist having an email (the inquirer is the
+        // *recipient*); we just leave reply_to as None in that case.
+        let artist_email: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT u.email
+            FROM inquiry_replies r
+            JOIN artists ar ON ar.id = r.artist_id
+            LEFT JOIN users u ON u.id = ar.user_id
+            WHERE r.id = $1
+            "#,
+        )
+        .bind(reply_id)
+        .fetch_one(&deps.pool)
+        .await?;
+        let artwork_url = format!(
+            "{base}/artworks/{id}",
+            base = deps.web_base_url.trim_end_matches('/'),
+            id = row.artwork_id,
+        );
+        let (subject, body) = templates::artist_reply(
+            &artwork_url,
+            row.artwork_title.as_deref(),
+            &row.artist_display_name,
+            &row.from_name,
+            &row.message,
+        );
+        deps.emails
+            .send(&row.from_email, &subject, &body, artist_email.as_deref())
+            .await?;
+        sqlx::query("UPDATE inquiry_replies SET sent_at = now() WHERE id = $1")
+            .bind(reply_id)
+            .execute(&deps.pool)
+            .await?;
+        tracing::info!(
+            %reply_id,
+            inquiry_id = %row.inquiry_id,
+            to = %row.from_email,
+            "artist reply delivered"
+        );
         Ok(())
     }
 

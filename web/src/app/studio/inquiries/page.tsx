@@ -4,7 +4,8 @@ import { redirect } from "next/navigation";
 import clsx from "clsx";
 import { auth } from "@clerk/nextjs/server";
 import { TopNav } from "@/components/TopNav";
-import { getStudioMe, listStudioInquiries, type StudioInquiry } from "@/lib/api";
+import { InquiryInbox } from "@/components/studio/InquiryInbox";
+import { getStudioMe, listStudioInquiries } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
 export const metadata: Metadata = {
@@ -21,13 +22,17 @@ const FILTERS: { token: StatusFilter; label: string }[] = [
 ];
 
 /**
- * `/studio/inquiries` — T-011 Phase 4.
+ * `/studio/inquiries` — T-011 Phase 4 + 4b.
  *
- * Read-only list of inquiries addressed to the calling artist. The
- * artist already gets the notification email (T-032); this page is the
- * in-app companion so they can re-read past messages, see pending
- * anonymous inquiries (waiting on the verification-link click), and
- * filter by status.
+ * Server-renders the filter chrome + initial list; the actual
+ * inquiry rows + reply forms live in `<InquiryInbox>` (client).
+ * That split lets us:
+ *   - keep `auth()` + the API fetch on the server (no token
+ *     plumbing on the client),
+ *   - manage per-card reply form state without a re-render
+ *     storm on every keystroke,
+ *   - auto-fire mark-as-read on view without a server roundtrip
+ *     re-rendering the page.
  */
 export default async function StudioInquiriesPage({
   searchParams,
@@ -115,82 +120,10 @@ export default async function StudioInquiriesPage({
         {items.length === 0 ? (
           <EmptyState status={status} />
         ) : (
-          <ul className="flex flex-col gap-3">
-            {items.map((inq) => (
-              <li key={inq.id}>
-                <InquiryCard inquiry={inq} />
-              </li>
-            ))}
-          </ul>
+          <InquiryInbox initialItems={items} />
         )}
       </main>
     </>
-  );
-}
-
-function InquiryCard({ inquiry }: { inquiry: StudioInquiry }) {
-  const created = new Date(inquiry.created_at);
-  return (
-    <article className="border border-border bg-surface p-4 flex gap-4">
-      {inquiry.artwork_primary_image_url ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={inquiry.artwork_primary_image_url}
-          alt=""
-          className="w-20 h-20 object-cover bg-background flex-shrink-0"
-        />
-      ) : (
-        <div className="w-20 h-20 bg-background flex-shrink-0" aria-hidden />
-      )}
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-sm">
-              <span className="font-medium">{inquiry.from_name}</span>{" "}
-              <a
-                href={`mailto:${inquiry.from_email}`}
-                className="text-muted hover:underline"
-              >
-                &lt;{inquiry.from_email}&gt;
-              </a>
-            </p>
-            <p className="text-xs text-muted mt-0.5">
-              About{" "}
-              <Link
-                href={`/artworks/${inquiry.artwork_id}`}
-                className="underline underline-offset-2 hover:text-foreground"
-              >
-                {inquiry.artwork_title ?? "an artwork"}
-              </Link>{" "}
-              · {formatRelative(created)}
-              {inquiry.budget_range ? (
-                <>
-                  {" · "}
-                  Budget: <span className="text-foreground">{inquiry.budget_range}</span>
-                </>
-              ) : null}
-            </p>
-          </div>
-          <StatusBadge status={inquiry.status} />
-        </div>
-        <p className="mt-3 text-sm whitespace-pre-line">{inquiry.message}</p>
-      </div>
-    </article>
-  );
-}
-
-function StatusBadge({ status }: { status: StudioInquiry["status"] }) {
-  if (status === "delivered") {
-    return (
-      <span className="text-xs px-2 py-0.5 border border-border text-muted">
-        Delivered
-      </span>
-    );
-  }
-  return (
-    <span className="text-xs px-2 py-0.5 border border-border bg-background">
-      Awaiting verification
-    </span>
   );
 }
 
@@ -215,22 +148,4 @@ function EmptyState({ status }: { status: StatusFilter }) {
       it&apos;ll show up here.
     </div>
   );
-}
-
-/**
- * Tiny "5m ago / 2h ago / 3d ago / Jan 4" formatter. Anything older
- * than a week falls back to a short date. Kept inline because no other
- * page uses it yet; promote to `lib/` when the second caller lands.
- */
-function formatRelative(d: Date): string {
-  const now = Date.now();
-  const diff = Math.max(0, now - d.getTime());
-  const minutes = Math.floor(diff / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }

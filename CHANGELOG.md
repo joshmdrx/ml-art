@@ -3,6 +3,75 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-09 — T-011 Phase 4b: reply-from-inbox + auto-mark-as-read
+
+Closes the biggest UX hole in the studio surface before onboarding a
+real artist. The inbox shipped in Phase 4 was read-only — artists who
+wanted to respond had to bounce out to their email client. They can
+now reply directly from `/studio/inquiries` and the in-app history
+captures the conversation thread.
+
+- **New migration `0013_inquiry_replies.sql`** — adds an
+  `inquiry_replies` table (one row per artist reply, ordered by
+  `created_at`) and an `inquiries.read_at` column with a partial
+  index over the unread set for the (eventual) unread-count badge.
+  Modelled as a table rather than an `inquiries.reply_text` column
+  so future threading lands without another migration.
+
+- **API surface, three endpoints**:
+  - `GET /v1/studio/inquiries` — extended to include `read_at` and
+    a per-row `replies: [{id, message, created_at, sent_at}]`. The
+    reply list is pulled in one follow-up query keyed on the page
+    of inquiry ids (no N+1) and filtered by the same `artist_id`
+    as the inquiries (ownership-safe even if ids were forged).
+  - `POST /v1/studio/inquiries/:id/reply` — body `{ message }`.
+    Validates ownership inline via a `WHERE artist_id = $caller`
+    on the INSERT (avoids a TOCTOU SELECT-then-INSERT). Enqueues
+    `JobEvent::InquirySendReply` with idempotency key
+    `inquiry_reply:{id}:send`. 400 on empty / oversized message
+    (`REPLY_MESSAGE_MAX_LEN = 4000` — matches the inquire side).
+  - `POST /v1/studio/inquiries/read` — body `{ ids: [uuid] }`.
+    Bulk mark-as-read with two safety nets: the SQL
+    `read_at IS NULL` predicate makes re-marks no-op (idempotent),
+    and the `WHERE artist_id = $caller` predicate silently drops
+    cross-artist ids rather than 403'ing. Hard cap of 100 ids per
+    request — protects against a malicious or buggy client.
+
+- **`JobEvent::InquirySendReply { reply_id }`** + dispatch +
+  `inquiry_handlers::send_reply` handler. Loads the reply +
+  surrounding context, sends via Resend with `reply_to = artist's email`
+  so the inquirer's reply bounces back to the artist's inbox.
+  Idempotent on `inquiry_replies.sent_at`: a second invocation
+  sees the timestamp and returns Ok without re-sending. New
+  `templates::artist_reply` mirrors the existing email shape.
+
+- **Web UI** — `/studio/inquiries` page stays a server component
+  for the auth + initial fetch; the actual rows + reply forms move
+  into a new client component `<InquiryInbox>`:
+  - per-card collapsible reply form with textarea + Send button,
+  - optimistic append of the freshly-created reply (no re-fetch),
+  - auto-fired `POST /api/studio/inquiries/read` on mount with
+    whatever was unread (best-effort; silent on failure).
+
+  Two route handlers bridge `apiFetch` → API so the client
+  component can use plain `fetch` without dragging the server-only
+  Clerk module into the browser bundle.
+
+- **7 new integration tests** (16 total on the inbox suite, 299
+  total Rust): reply persist + appears-on-list, reply ownership
+  404, reply empty-message 400, reply unknown-id 404, mark-read
+  flips only owned unread, mark-read empty-ids no-op, list returns
+  empty replies array on a fresh inquiry.
+
+- **Phase 4b scope decisions**:
+  - Replies persist server-side (vs send-only) so the history
+    survives the email being deleted from the inquirer's inbox.
+  - Mark-as-read auto-fires on inbox view (vs explicit button),
+    matching email-app conventions.
+  - Threading: one direction only. Inbound replies from the
+    inquirer would need an inbound-email webhook (Resend Inbound
+    or a SendGrid Parse equivalent) — flagged as a follow-up.
+
 ## 2026-06-08 — T-037: cursor pagination + unmapped-artist popup + bbox/pagination fixes
 
 Closes T-037 (cursor pagination on `/v1/search`). Bundled with the

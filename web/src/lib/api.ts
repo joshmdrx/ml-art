@@ -301,6 +301,19 @@ export interface StudioInquiry {
   status: "delivered" | "pending_verification";
   created_at: string;
   delivered_at: string | null;
+  /** When the artist last opened this row. `null` ≡ unread. T-011 Phase 4b. */
+  read_at: string | null;
+  /** Artist's outgoing replies, oldest first. T-011 Phase 4b. */
+  replies: StudioInquiryReply[];
+}
+
+/** One artist reply on a `StudioInquiry`. `sent_at` is set by the email
+ * handler once Resend confirms the send; null while in-flight. */
+export interface StudioInquiryReply {
+  id: string;
+  message: string;
+  created_at: string;
+  sent_at: string | null;
 }
 
 // Studio locations (T-038 G3) — "Where to see my work" CRUD.
@@ -987,6 +1000,50 @@ export async function listStudioInquiries(opts?: {
     );
   }
   return (await res.json()) as Paginated<StudioInquiry>;
+}
+
+/** Send an artist reply on one inquiry (T-011 Phase 4b). Server
+ * persists the row + enqueues a Resend send job. Returns the
+ * newly-created reply (with `sent_at: null` until the worker runs). */
+export async function postStudioInquiryReply(
+  inquiryId: string,
+  message: string,
+): Promise<StudioInquiryReply> {
+  const res = await apiFetch(
+    `/v1/studio/inquiries/${encodeURIComponent(inquiryId)}/reply`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message }),
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `studio/inquiries/reply ${res.status}: ${text || res.statusText}`,
+    );
+  }
+  return (await res.json()) as StudioInquiryReply;
+}
+
+/** Bulk mark-as-read on inbox view (T-011 Phase 4b). Returns the
+ * count actually flipped — ignored ids (other artists', already
+ * read) silently drop out of the count without erroring. */
+export async function markStudioInquiriesRead(
+  ids: string[],
+): Promise<{ updated: number }> {
+  const res = await apiFetch(`/v1/studio/inquiries/read`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `studio/inquiries/read ${res.status}: ${text || res.statusText}`,
+    );
+  }
+  return (await res.json()) as { updated: number };
 }
 
 export async function deleteStudioArtwork(id: string): Promise<void> {

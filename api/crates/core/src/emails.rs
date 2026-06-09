@@ -304,6 +304,41 @@ pub mod templates {
         );
         (subject, body)
     }
+
+    /// Email sent to the inquirer when an artist replies from the
+    /// studio inbox. Same look as `delivered_to_artist` but with
+    /// the message flowing the other way. `reply_to` should be set
+    /// to the artist's address so a further reply lands in their
+    /// inbox; if a reply ever comes back via a future inbound-email
+    /// webhook we'd thread it onto the same `inquiry_replies` row.
+    /// Returns `(subject, body_html)`. T-011 Phase 4b.
+    pub fn artist_reply(
+        artwork_url: &str,
+        artwork_title: Option<&str>,
+        artist_display_name: &str,
+        inquirer_name: &str,
+        message: &str,
+    ) -> (String, String) {
+        let title = artwork_title.unwrap_or("your inquiry");
+        let subject = format!("Reply from {artist_display_name} about {title}");
+        let body = format!(
+            r#"<div style="font-family: -apple-system, system-ui, sans-serif; max-width: 560px; margin: 0 auto;">
+  <p>Hi {name},</p>
+  <p style="font-size: 14px; color: #444; margin: 0 0 4px;">
+    <strong>{artist}</strong> replied to your inquiry about
+    <a href="{url}" style="color: #111;">{title}</a>:
+  </p>
+  <blockquote style="border-left: 3px solid #ddd; padding-left: 12px; color: #333; margin: 16px 0;">{msg}</blockquote>
+  <p style="font-size: 13px; color: #666;">Hit reply to keep the conversation going — your reply goes straight back to {artist}.</p>
+</div>"#,
+            url = artwork_url,
+            title = escape_html(title),
+            artist = escape_html(artist_display_name),
+            name = escape_html(inquirer_name),
+            msg = escape_html(message).replace('\n', "<br />"),
+        );
+        (subject, body)
+    }
 }
 
 /// HTML-escape user-supplied text. Same five-substitution table the

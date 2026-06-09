@@ -357,3 +357,280 @@ async fn budget_range_string_round_trips(pool: PgPool) {
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].budget_range.as_deref(), Some("£500-1k"));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T-011 Phase 4b — artist reply + bulk mark-as-read
+// ─────────────────────────────────────────────────────────────────────────────
+
+use axum::{body::Body, http::Request};
+use http_body_util::BodyExt;
+use serde_json::json;
+
+#[derive(Deserialize, Debug)]
+struct InquiryWithExtras {
+    id: String,
+    read_at: Option<String>,
+    replies: Vec<ReplyOnRead>,
+}
+
+#[derive(Deserialize, Debug)]
+struct ReplyOnRead {
+    id: String,
+    message: String,
+    sent_at: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct ReplyResp {
+    id: String,
+    message: String,
+    sent_at: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct MarkReadResp {
+    updated: u64,
+}
+
+async fn post_json_authed(
+    app: axum::Router,
+    uri: &str,
+    bearer: &str,
+    body: serde_json::Value,
+) -> (axum::http::StatusCode, Vec<u8>) {
+    let req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("Authorization", format!("Bearer {bearer}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    let resp = tower::ServiceExt::oneshot(app, req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, bytes.to_vec())
+}
+
+async fn one_inquiry_id_for_alice(pool: &PgPool) -> String {
+    insert_delivered(
+        pool,
+        ARTWORK_BLUE_MORNING,
+        ARTIST_ALICE,
+        "Jane Buyer",
+        "jane@example.com",
+        "Is this still available?",
+        10,
+    )
+    .await;
+    sqlx::query_scalar::<_, sqlx::types::Uuid>(
+        "SELECT id FROM inquiries WHERE artist_id = $1::uuid LIMIT 1",
+    )
+    .bind(ARTIST_ALICE)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+    .to_string()
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn reply_persists_and_appears_on_list(pool: PgPool) {
+    let inquiry_id = one_inquiry_id_for_alice(&pool).await;
+    let app = app_with_test_auth(pool.clone());
+
+    let (status, bytes) = post_json_authed(
+        app,
+        &format!("/v1/studio/inquiries/{inquiry_id}/reply"),
+        ALICE,
+        json!({ "message": "Yes — still available. Want to set up a viewing?" }),
+    )
+    .await;
+    assert_eq!(status, 200, "body: {}", String::from_utf8_lossy(&bytes));
+    let resp: ReplyResp = serde_json::from_slice(&bytes).unwrap();
+    assert!(resp.message.starts_with("Yes"));
+    // sent_at is null at insert time — the email handler stamps it
+    // when it later runs. Verified by the email-send-side test.
+    assert!(resp.sent_at.is_none());
+
+    // The reply round-trips via GET.
+    let app = app_with_test_auth(pool);
+    let (_, page): (_, Page<InquiryWithExtras>) =
+        get_json_authed(app, "/v1/studio/inquiries", ALICE).await;
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].replies.len(), 1);
+    assert_eq!(page.items[0].replies[0].id, resp.id);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn reply_to_other_artists_inquiry_is_404(pool: PgPool) {
+    // Inquiry on one of Bruno's artworks → Bruno's inbox. Alice
+    // tries to reply.
+    insert_delivered(
+        &pool,
+        ARTWORK_STONE_FORM,
+        ARTIST_BRUNO,
+        "X",
+        "x@example.com",
+        "Hi",
+        1,
+    )
+    .await;
+    let id: String =
+        sqlx::query_scalar::<_, sqlx::types::Uuid>(
+            "SELECT id FROM inquiries WHERE artist_id = $1::uuid LIMIT 1",
+        )
+        .bind(ARTIST_BRUNO)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .to_string();
+    let app = app_with_test_auth(pool);
+    let (status, _) = post_json_authed(
+        app,
+        &format!("/v1/studio/inquiries/{id}/reply"),
+        ALICE,
+        json!({ "message": "trying to reply to someone else's inquiry" }),
+    )
+    .await;
+    assert_eq!(status, 404);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn reply_with_empty_message_is_400(pool: PgPool) {
+    let inquiry_id = one_inquiry_id_for_alice(&pool).await;
+    let app = app_with_test_auth(pool);
+    // Whitespace-only is also rejected — we trim before validating.
+    let (status, _) = post_json_authed(
+        app,
+        &format!("/v1/studio/inquiries/{inquiry_id}/reply"),
+        ALICE,
+        json!({ "message": "   " }),
+    )
+    .await;
+    assert_eq!(status, 400);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn reply_to_unknown_inquiry_is_404(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+    let (status, _) = post_json_authed(
+        app,
+        "/v1/studio/inquiries/00000000-0000-0000-0000-000000000000/reply",
+        ALICE,
+        json!({ "message": "anyone home?" }),
+    )
+    .await;
+    assert_eq!(status, 404);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn mark_read_flips_only_owned_unread(pool: PgPool) {
+    // Two inquiries on Alice + one on Bruno; mark-read with all
+    // three ids should flip Alice's two and silently skip Bruno's.
+    insert_delivered(
+        &pool,
+        ARTWORK_BLUE_MORNING,
+        ARTIST_ALICE,
+        "A",
+        "a@example.com",
+        "Hi",
+        20,
+    )
+    .await;
+    insert_delivered(
+        &pool,
+        ARTWORK_CRIMSON_FIELD,
+        ARTIST_ALICE,
+        "B",
+        "b@example.com",
+        "Hi",
+        10,
+    )
+    .await;
+    insert_delivered(
+        &pool,
+        ARTWORK_STONE_FORM,
+        ARTIST_BRUNO,
+        "C",
+        "c@example.com",
+        "Hi",
+        5,
+    )
+    .await;
+    let ids: Vec<String> =
+        sqlx::query_scalar::<_, sqlx::types::Uuid>("SELECT id FROM inquiries")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|u| u.to_string())
+            .collect();
+    let app = app_with_test_auth(pool.clone());
+
+    let (status, bytes) = post_json_authed(
+        app,
+        "/v1/studio/inquiries/read",
+        ALICE,
+        json!({ "ids": ids }),
+    )
+    .await;
+    assert_eq!(status, 200, "body: {}", String::from_utf8_lossy(&bytes));
+    let resp: MarkReadResp = serde_json::from_slice(&bytes).unwrap();
+    // Only Alice's two — Bruno's row is filtered out by the
+    // `artist_id = $current` predicate, not 403'd.
+    assert_eq!(resp.updated, 2);
+
+    // Second call is idempotent — the `read_at IS NULL` predicate
+    // means the same ids no longer match.
+    let app = app_with_test_auth(pool.clone());
+    let (_, bytes2) = post_json_authed(
+        app,
+        "/v1/studio/inquiries/read",
+        ALICE,
+        json!({ "ids": ids }),
+    )
+    .await;
+    let resp2: MarkReadResp = serde_json::from_slice(&bytes2).unwrap();
+    assert_eq!(resp2.updated, 0);
+
+    // And the list now reflects read_at on Alice's two.
+    let app = app_with_test_auth(pool);
+    let (_, page): (_, Page<InquiryWithExtras>) =
+        get_json_authed(app, "/v1/studio/inquiries", ALICE).await;
+    assert_eq!(page.items.len(), 2);
+    assert!(page.items.iter().all(|i| i.read_at.is_some()));
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn mark_read_empty_ids_is_a_noop_200(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+    let (status, bytes) = post_json_authed(
+        app,
+        "/v1/studio/inquiries/read",
+        ALICE,
+        json!({ "ids": [] }),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let resp: MarkReadResp = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(resp.updated, 0);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn inquiry_with_no_reply_returns_empty_replies_array(pool: PgPool) {
+    insert_delivered(
+        &pool,
+        ARTWORK_BLUE_MORNING,
+        ARTIST_ALICE,
+        "Jane",
+        "jane@example.com",
+        "Hi",
+        1,
+    )
+    .await;
+    let app = app_with_test_auth(pool);
+    let (_, page): (_, Page<InquiryWithExtras>) =
+        get_json_authed(app, "/v1/studio/inquiries", ALICE).await;
+    assert_eq!(page.items.len(), 1);
+    assert!(page.items[0].replies.is_empty());
+    assert!(page.items[0].read_at.is_none());
+}
