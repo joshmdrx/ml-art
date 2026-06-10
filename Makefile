@@ -55,6 +55,12 @@ help:
 	@echo "    make check        fmt-check + lint + typecheck (no tests)"
 	@echo "    make fmt          auto-format everything"
 	@echo ""
+	@echo "  Prod deploy (requires cargo-lambda + AWS SSO login):"
+	@echo "    make deploy-api          build + push api-search to Lambda"
+	@echo "    make deploy-api-check    cargo lambda build only (no upload)"
+	@echo "    make deploy-jobs         build + push jobs-lambda to Lambda"
+	@echo "    make deploy-jobs-check   cargo lambda build only (no upload)"
+	@echo ""
 	@echo "  Util:"
 	@echo "    make psql         open a psql shell in the postgres container"
 	@echo "    make logs         tail logs from all docker services"
@@ -175,6 +181,27 @@ check-ml:
 fmt:
 	@cd api && cargo fmt --all
 	@cd ml && uv run ruff format ml_art tests || true
+
+# ─── prod deploy ────────────────────────────────────────────────────────────
+# Build + ship the Rust lambdas to AWS. Requires cargo-lambda installed
+# locally and an active SSO session (`aws sso login --profile ml-art`).
+# See infra/POST_DEPLOY.md for the one-time setup.
+
+.PHONY: deploy-api
+deploy-api:
+	@scripts/deploy-api.sh
+
+.PHONY: deploy-api-check
+deploy-api-check:
+	@scripts/deploy-api.sh --check
+
+.PHONY: deploy-jobs
+deploy-jobs:
+	@scripts/deploy-jobs.sh
+
+.PHONY: deploy-jobs-check
+deploy-jobs-check:
+	@scripts/deploy-jobs.sh --check
 
 # ─── utilities ──────────────────────────────────────────────────────────────
 .PHONY: psql

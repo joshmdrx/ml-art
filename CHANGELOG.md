@@ -3,6 +3,37 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-10 — Deploy track follow-up: jobs-lambda crate + deploy scripts + POST_DEPLOY runbook
+
+Bridges the gap between "infra is up with placeholders" and "real
+Rust code on Lambda."
+
+- `api/crates/jobs-lambda/` — new crate. Single `bootstrap` binary,
+  Lambda runtime (`provided.al2023`, ARM64), SQS-triggered. Reuses
+  `core::jobs::handle` so domain handlers are identical to what the
+  local `jobs-worker` polling loop runs. Returns
+  `SqsBatchResponse { batch_item_failures }` so a single failing
+  record in a batch of 5 retries only that one record (the other 4
+  successes are deleted by SQS).
+- `aws_lambda_events ~> 0.16` added to workspace deps (only the `sqs`
+  feature — keeps build small).
+- `scripts/deploy-api.sh` + `scripts/deploy-jobs.sh` — runnable
+  build-and-deploy scripts. `cargo lambda build --release --arm64`
+  → zip bootstrap → `aws lambda update-function-code --publish`
+  → wait for active → smoke-test. `--check` flag for build-only
+  (CI verification). Surfaced as `make deploy-api` / `make deploy-jobs`.
+- `infra/POST_DEPLOY.md` — runbook for the steps TF can't automate:
+  cargo-lambda install, Neon project creation, SSM secret population,
+  first deploys, end-to-end smoke test, rotation hygiene, common
+  failure-mode diagnostics. Linked from `infra/README.md`.
+
+What's still TODO before launch:
+- Neon project (out-of-band, per POST_DEPLOY step 1)
+- Populate 9 SSM SecureString values (POST_DEPLOY step 2)
+- Run `make deploy-api && make deploy-jobs` (needs cargo-lambda installed)
+- Install OpenNext + write `scripts/deploy-web.sh`
+- Seed `s3://ml-art-prod-artworks/` with the WikiArt demo corpus
+
 ## 2026-06-10 — Deploy track: infra is live on AWS
 
 End-to-end TF scaffold + first apply against the prod AWS account.

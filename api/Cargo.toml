@@ -4,6 +4,7 @@ members = [
     "crates/core",
     "crates/api-search",
     "crates/jobs-worker",
+    "crates/jobs-lambda",
 ]
 
 [workspace.package]
@@ -19,6 +20,10 @@ tokio = { version = "1.41", features = ["macros", "rt-multi-thread", "signal"] }
 # HTTP + Lambda — `lambda_http` lets the same handler run as Lambda or local Axum.
 lambda_http = "0.13"
 lambda_runtime = "0.13"
+# Strongly-typed event structs for AWS Lambda triggers (SQS, S3, EventBridge…).
+# default-features = false trims out the dozens of event types we don't
+# use; sqs feature pulls in only the SqsEvent / SqsBatchResponse types.
+aws_lambda_events = { version = "0.16", default-features = false, features = ["sqs"] }
 axum = { version = "0.7", default-features = false, features = ["json", "query", "tokio", "http1", "matched-path", "multipart"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
