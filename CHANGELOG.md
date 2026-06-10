@@ -3,6 +3,24 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-10 — Deploy track: web deploy script + artworks-to-S3 sync
+
+- `scripts/deploy-web.sh` + `make deploy-web` — builds via
+  `opennextjs-aws build`, zips `server-function/`, pushes via
+  `update-function-code --publish`, syncs `.open-next/assets/` to
+  S3 with immutable cache headers, invalidates only the dynamic
+  CloudFront paths (`/`, `/index.html`, `/api/*` — content-hashed
+  static doesn't need it). Smoke-tests `https://wander.gallery` at
+  the end.
+- `scripts/sync-artworks-to-s3.sh` — mirrors the local WikiArt
+  corpus into `s3://ml-art-prod-artworks/` so the images CDN starts
+  returning real content. Defaults to dry-run; `--apply` does the
+  copy. Idempotent + non-destructive (never deletes).
+- `infra/POST_DEPLOY.md` — replaced the "TODO OpenNext not yet wired"
+  placeholder with concrete install steps + a documented Next 16
+  compatibility caveat (if OpenNext stable doesn't support 16,
+  fallback is `@opennextjs/aws@beta` or pinning web to 15.x).
+
 ## 2026-06-10 — Deploy track: JobsBackend::Sqs driver + boot-time selector
 
 Closes the last "real prod" gap in the API path. With the api-search

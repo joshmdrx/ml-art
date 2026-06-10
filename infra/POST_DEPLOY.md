@@ -111,25 +111,60 @@ Common first failures:
   after inactivity on the free tier; first cold-start request wakes it)
 - `JWKS fetch failed` → wrong `clerk_jwks_url`; check the Clerk dashboard
 
-## 4. Deploy the Next.js app (TODO — OpenNext not yet wired)
+## 4. Deploy the Next.js app
 
-The web Lambda is currently the Node 20 placeholder. Once we install
-OpenNext in `web/`:
+The web Lambda starts on the Node 20 placeholder. To deploy the real
+Next.js app, install OpenNext as a dev dep in `web/`, then run
+`make deploy-web`.
 
 ```sh
-# Future shape (script TBD):
+# One-time, in web/:
 cd web
-npm install --save-dev open-next
-npx open-next build
-# → produces .open-next/{server-function,assets,...}
+pnpm add -D @opennextjs/aws
 
-# Then a deploy-web.sh script will:
-# 1. zip .open-next/server-function/ → upload to ml-art-prod-web
-# 2. aws s3 sync .open-next/assets/ s3://ml-art-prod-web-assets/ --delete
-# 3. aws cloudfront create-invalidation --distribution-id <web_cloudfront_distribution_id> --paths '/*'
+# Add an open-next.config.ts at the project root (web/), minimal form:
+cat > open-next.config.ts <<'EOF'
+import type { OpenNextConfig } from "@opennextjs/aws/types/open-next";
+
+const config: OpenNextConfig = {
+  // Defaults are fine for v1 — single server lambda, no ISR cache yet.
+  default: {},
+};
+export default config;
+EOF
+
+# Verify the build works locally:
+pnpm exec opennextjs-aws build
+# → produces web/.open-next/{server-function,assets,…}
 ```
 
-The TF outputs already expose the names needed:
+**Next.js 16 caveat:** the web app uses Next 16.2.x; OpenNext's
+official support matrix may not include 16 yet (16 GA'd late in
+the cycle). If `opennextjs-aws build` fails:
+1. Try the latest OpenNext (`@opennextjs/aws@beta` or `@opennextjs/aws@canary`).
+2. If still broken, **pin the web app to Next 15.x** by editing
+   `web/package.json` — Next 15 → 16 has no userland-breaking changes
+   for our app, and OpenNext 3.5+ fully supports 15.
+3. Worst case, file an upstream issue; the placeholder will keep
+   serving until a fix lands.
+
+Once OpenNext builds clean:
+
+```sh
+make deploy-web
+```
+
+Which runs `scripts/deploy-web.sh` — same shape as `deploy-api.sh`
+but with three steps:
+1. `pnpm exec opennextjs-aws build` → `.open-next/`
+2. zip `server-function/` → `aws lambda update-function-code --publish`
+3. `aws s3 sync .open-next/assets/ s3://ml-art-prod-web-assets/ --delete`
+4. `aws cloudfront create-invalidation` on `/`, `/index.html`, `/api/*`
+   (content-hashed `/_next/static/*` never needs invalidation)
+5. Smoke-test `https://wander.gallery`
+
+The TF outputs already expose the names needed; the script reads them
+from env or falls back to the prod literals:
 - `web_server_lambda_name` = `ml-art-prod-web`
 - `web_assets_bucket_name` = `ml-art-prod-web-assets`
 - `web_cloudfront_distribution_id` = `ERMPJ0JZ75NWL`

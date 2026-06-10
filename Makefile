@@ -60,6 +60,8 @@ help:
 	@echo "    make deploy-api-check    cargo lambda build only (no upload)"
 	@echo "    make deploy-jobs         build + push jobs-lambda to Lambda"
 	@echo "    make deploy-jobs-check   cargo lambda build only (no upload)"
+	@echo "    make deploy-web          build (OpenNext) + push web + sync assets + invalidate"
+	@echo "    make deploy-web-check    opennextjs-aws build only (no upload)"
 	@echo ""
 	@echo "  Util:"
 	@echo "    make psql         open a psql shell in the postgres container"
@@ -202,6 +204,14 @@ deploy-jobs:
 .PHONY: deploy-jobs-check
 deploy-jobs-check:
 	@scripts/deploy-jobs.sh --check
+
+.PHONY: deploy-web
+deploy-web:
+	@scripts/deploy-web.sh
+
+.PHONY: deploy-web-check
+deploy-web-check:
+	@scripts/deploy-web.sh --check
 
 # ─── utilities ──────────────────────────────────────────────────────────────
 .PHONY: psql
