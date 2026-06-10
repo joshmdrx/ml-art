@@ -27,6 +27,19 @@ docker-compose.*.local.yml
 *.log
 .tmp/
 
+# Terraform — state, working dirs, and the actual tfvars (we commit
+# only `terraform.tfvars.example`). Plans + lock files stay out too;
+# the lock file is intentionally NOT committed for v1 because the
+# scaffold is single-developer — revisit if/when another contributor
+# needs reproducible provider versions.
+infra/**/.terraform/
+infra/**/.terraform.lock.hcl
+infra/**/terraform.tfstate
+infra/**/terraform.tfstate.*
+infra/**/*.tfplan
+infra/**/terraform.tfvars
+infra/**/*.auto.tfvars
+
 # Belt-and-braces: never commit secrets even if a subdir gitignore missed
 .env
 .env.local

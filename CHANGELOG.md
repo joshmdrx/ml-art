@@ -3,6 +3,68 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-10 — Deploy track: infra is live on AWS
+
+End-to-end TF scaffold + first apply against the prod AWS account.
+After a couple of architectural pivots (see `decisions.md` 2026-06-10
+entries), the stack is up and serving placeholder responses on real
+TLS. Real code lands on top in follow-up commits.
+
+### What's live
+
+| URL | Backed by |
+|---|---|
+| `https://wander.gallery` | Web Lambda (Node 20 placeholder) → APIG → CloudFront, apex via Cloudflare CNAME-flatten |
+| `https://api.wander.gallery` | API Lambda (placeholder) → APIG → CloudFront + WAF (rate-limit + AWS managed common rules) |
+| `https://images.wander.gallery` | S3 (artworks + uploads, OAC-locked) → CloudFront. Buckets are empty, returns 403 until seeded. |
+
+Plus, not user-facing:
+
+- `ml-art-prod-jobs` SQS queue + DLQ → jobs Lambda (placeholder) via event-source-mapping with `max_concurrency = 10`
+- SSM `/ml-art-prod/*` — 9 SecureString parameter containers (placeholders, populate out-of-band)
+- AWS Budgets cap at $20/mo, 80% actual + 100% forecast alerts to `drjjm18@gmail.com`
+- TF state in S3 `ml-art-tfstate` + DynamoDB lock table `ml-art-tfstate-lock`
+- Cloudflare zone `c697407cceb224646ce6b13975956b2f` (`wander.gallery`) — DNS records managed via the `cloudflare/cloudflare` TF provider
+
+### Resource count
+
+72 AWS + Cloudflare resources, all green:
+
+- `dns` — 3 ACM certs (us-east-1) + 4 Cloudflare validation CNAMEs + 3 validation barriers
+- `secrets` — 9 SSM SecureString containers
+- `storage` — 2 S3 buckets + lifecycle/versioning/encryption/policies, CloudFront, OAC, Cloudflare CNAME
+- `jobs` — SQS + DLQ, Lambda, IAM role + policy, log group, event-source-mapping
+- `api` — Lambda + IAM, APIG (api + integration + route + stage + permission), WAF v2, CloudFront, Cloudflare CNAME
+- `web` — Lambda + IAM, APIG (same set), S3 web-assets + policy + OAC, CloudFront, Cloudflare apex CNAME
+- root — `aws_budgets_budget.monthly`
+
+### TF provider footprint
+
+- `hashicorp/aws ~> 5.70` — everything in AWS
+- `hashicorp/cloudflare ~> 4.40` — DNS records on Cloudflare's hosted zone (Registrar forces this; see decisions.md 2026-06-10)
+- `hashicorp/archive ~> 2.4` — zips placeholder Node 20 lambda payloads inline (no committed binaries)
+- `hashicorp/random ~> 3.6` — unused so far; kept for future password-shaped resources
+
+### Operational pieces in place
+
+- One-time backend bootstrap commands in `infra/README.md` (S3 versioned + encrypted + private; DynamoDB pay-per-request lock table)
+- `terraform.tfvars` gitignored; `terraform.tfvars.example` committed
+- All Lambda functions have `lifecycle.ignore_changes` on `filename`, `source_code_hash`, `environment` — CI replaces code via `aws lambda update-function-code` without TF reverting
+- All 9 SSM params have `lifecycle.ignore_changes = [value]` — operator-set secrets persist across applies
+
+### War stories (also in decisions.md)
+
+1. **Cloudflare Registrar mandates Cloudflare nameservers.** Discovered mid-apply when trying to paste Route53 NS records at the registrar. Refactored: dropped `aws_route53_zone`, added the Cloudflare TF provider, kept ACM certs in AWS. Net change ~30 lines.
+
+2. **New AWS accounts (~first few days) silently 403 Lambda Function URLs.** Spent ~30 min trying `auth_type=NONE` → `AWS_IAM` + CloudFront OAC → custom origin-request policy excluding `Authorization`. None worked; direct `aws lambda invoke` always succeeded. Pivoted to API Gateway HTTP API (v2) in front of both api + web Lambdas — the topology originally expected. APIG adds ~$0–1/mo + ~10-30ms latency; the wider compatibility wins.
+
+### What's not done
+
+- **Real Lambda code.** All three Lambdas (api, jobs, web) run a placeholder Node 20 zip. Next: `cargo lambda build` for api-search, write the `jobs-lambda` Rust crate, install OpenNext + build the web bundle. Each is a one-line `aws lambda update-function-code` after.
+- **SSM secret values.** All 9 parameters hold `"placeholder — set out-of-band..."`. Populate before flipping real code on.
+- **Neon DB.** Create the project, copy the connection string into SSM `/ml-art-prod/database_url`.
+- **`www.<apex>` redirect.** ACM cert covers `www.wander.gallery` via SAN (cheap to have at issue-time); the redirect itself is a Phase-2 CloudFront Function.
+
 ## 2026-06-09 — T-011 Phase 5: bulk image upload in studio
 
 Closes the last open piece of the artist studio. The image manager

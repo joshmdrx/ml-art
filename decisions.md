@@ -520,3 +520,50 @@ How it works:
 **Why:** Conflicts are common on developer machines (local Postgres install, AirPlay on 1025). Non-standard ports documented in `docker-compose.dev.yml` and `decisions.md`.
 
 **Reversibility:** High — change the ports back if the user prefers.
+
+---
+
+## 2026-06-10 — Cloudflare for DNS (forced by Cloudflare Registrar)
+
+**Context:** Domain `wander.gallery` registered with Cloudflare Registrar. Initial TF design used Route53 for DNS (one zone + 3 ACM cert validations + 6 alias A/AAAA records to CloudFront). After bootstrap, discovered Cloudflare Registrar *mandates* Cloudflare nameservers — you cannot point NS at Route53. Transfers are locked for 60 days post-registration (ICANN rule), so we can't relocate the registrar tonight.
+
+**Decided:** Move all DNS records into Cloudflare via the `cloudflare/cloudflare` TF provider. ACM certs stay in AWS (us-east-1) — only the DNS records change provider. Use Cloudflare CNAME-flattening at the apex (CloudFront's `domain_name` as a CNAME, even at `wander.gallery`). All records `proxied = false` so traffic goes direct to CloudFront, not through Cloudflare's CDN (no double-cache, no double-bill, no WAF confusion).
+
+**Alternatives:**
+- Transfer to Namecheap / Route53 after the 60-day lock — viable later, not tonight.
+- Buy a new domain at AWS Route53 — wasteful.
+- Use Cloudflare DNS by hand without TF provider — quick but creates drift.
+
+**Why:** Cloudflare DNS is free, fast, and the TF provider is mature. CNAME-flattening at the apex is the one thing Route53 doesn't do natively (it has alias records, which serve the same purpose). For our shape — three subdomains pointing at CloudFront — Cloudflare DNS is a clean fit.
+
+**Reversibility:** Medium — if we transfer the registrar to AWS later, we'd switch to Route53 (or just leave DNS at Cloudflare and only move the registrar).
+
+**Operational note:** The `CLOUDFLARE_API_TOKEN` env var is required for `terraform plan/apply`. Token needs `Zone:Read` + `DNS:Edit` on the single zone only. Out-of-band rotation hygiene applies.
+
+---
+
+## 2026-06-10 — API Gateway HTTP API over Lambda Function URL
+
+**Context:** Initial deploy used Lambda Function URLs as CloudFront origins — the lighter / cheaper alternative to API Gateway, recommended by AWS for our exact shape. After apply, **every request 403'd** with `Forbidden. For troubleshooting Function URL authorization issues...`, regardless of:
+- `auth_type = NONE` + explicit `Principal: *` resource policy ✗
+- `auth_type = AWS_IAM` + CloudFront Origin Access Control (OAC) with SigV4 signing ✗
+- Custom origin-request policy excluding the `Authorization` header (the AWS-documented OAC collision workaround) ✗
+
+CloudWatch logs confirmed the requests were rejected at the Function URL gateway, *before* reaching the Lambda. Direct `aws lambda invoke` worked perfectly — the function itself was healthy. The account joined the org on 2026-06-09 (one day before this debug session); the most plausible explanation is an **undocumented new-account anti-abuse restriction** that blocks public Function URLs in the account's first few days. No visible SCP / RCP / account-level setting documents this.
+
+**Decided:** Pivot to AWS API Gateway HTTP API (v2) in front of each Lambda. CloudFront → APIG → Lambda. WAF stays attached to CloudFront. APIG was the topology originally expected; the Function URL detour was driven by the "smaller infra, no APIG bill" argument that turned out to be moot for a new account.
+
+**Alternatives:**
+- Open AWS support ticket to lift the Function URL block — possible, but days of latency, no guarantee.
+- Wait a few days and retry Function URLs — possible but unverified.
+- Keep debugging — already 30+ min in with no signal, low expected value.
+
+**Why:** APIG HTTP API is well-trodden, observable, and doesn't have the new-account restriction. Cost is negligible at v1 (`$1.00/M requests`, free tier covers idle). Topology is what we'd build anyway if optimizing for "least surprise per dependency."
+
+**Trade-offs accepted:**
+- One extra hop (CloudFront → APIG → Lambda) — adds ~10-30ms p50.
+- ~$0–1/mo at v1 traffic vs Function URL's $0.
+- 30s hard cap on responses (vs Function URL's 15min) — fine for our workload (SSR p99 ~1s; search ~1s).
+
+**Reversibility:** High — if AWS removes the new-account restriction we can swap APIG back out for Function URL + OAC with the same TF shape as before (the OAC iteration is in git history).
+

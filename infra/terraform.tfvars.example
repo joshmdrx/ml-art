@@ -1,0 +1,45 @@
+#
+# Copy to `terraform.tfvars` (gitignored) and edit. Everything you
+# need to set before `terraform apply` is in here.
+#
+
+# ─── domain ───────────────────────────────────────────────────────────────
+# Apex of the deploy. Registered out-of-band at your registrar;
+# Terraform manages the Route53 zone + records + ACM certs.
+domain_name = "wander.gallery"
+
+# Subdomains. Defaults are sensible; change only if you're using
+# unusual hostnames (e.g. `cdn` instead of `images`).
+# api_subdomain    = "api"
+# images_subdomain = "images"
+
+# ─── identity ─────────────────────────────────────────────────────────────
+# Defaults are fine for prod. Set `environment = "staging"` for a
+# second, fully-parallel stack against a different domain.
+# project_name = "ml-art"
+# environment  = "prod"
+# aws_region   = "us-east-1"
+
+# ─── cost guardrail (T-015) ───────────────────────────────────────────────
+# Email that receives AWS Budgets alerts (80% actual, 100% forecast).
+budget_alert_email = "you@example.com"
+# monthly_budget_usd = 20
+
+# ─── web lambda sizing (OpenNext server fn) ───────────────────────────────
+# web_lambda_memory_mb    = 1024
+# web_lambda_timeout_s    = 10
+# web_lambda_architecture = "arm64"
+
+# ─── api lambda sizing ────────────────────────────────────────────────────
+# api_lambda_memory_mb    = 512
+# api_lambda_timeout_s    = 30
+# api_lambda_architecture = "arm64"
+
+# ─── jobs lambda sizing ───────────────────────────────────────────────────
+# jobs_lambda_memory_mb           = 512
+# jobs_lambda_timeout_s           = 60
+# jobs_queue_visibility_timeout_s = 360
+# jobs_max_receive_count          = 5
+
+# ─── waf (T-034) ──────────────────────────────────────────────────────────
+# waf_rate_limit_per_5min = 1000

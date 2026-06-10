@@ -133,6 +133,47 @@ Things that cost money even at zero traffic:
 - Neon non-free plans bill for compute hours even when idle (their free
   tier scales to zero — stay on it as long as possible)
 
+## v1 estimated monthly burn (post-deploy, idle traffic)
+
+Tallied during the `infra/` scaffold (2026-06-10). Numbers are
+list-price; free-tier credits where applicable have been subtracted.
+
+**AWS — what's in `infra/`:**
+
+| Item | $/mo | Notes |
+|---|---|---|
+| WAF (api distribution) | ~6 | $5 ACL + $1 managed rule. Floor cost. |
+| Route53 hosted zone | 0.50 | Flat per zone. Queries free at our scale. |
+| Lambda (web + api + jobs) | 0 | 1M req + 400k GB-s free tier covers idle. |
+| S3 (artworks, uploads, web-assets, tfstate) | <1 | $0.023/GB; ~10 GB. |
+| CloudFront (web + api + images) | 0 → ~5 | 1 TB egress free year 1; then $0.085/GB. |
+| SQS | 0 | 1M req/mo free forever. |
+| SSM Parameter Store | 0 | Standard params are free. |
+| CloudWatch Logs | 0–2 | 5 GB free, then $0.50/GB. Three log groups. |
+| DynamoDB (TF state lock) | 0 | A few ops per `apply`. |
+| AWS Budgets | 0 | First 2 budgets free. |
+| ACM certs | 0 | Free. |
+| **AWS subtotal** | **~$10** | Under the $20 AWS Budgets cap. |
+
+**Off-AWS (paid via separate accounts):**
+
+| Item | $/mo | Notes |
+|---|---|---|
+| Neon Launch | 0 → 19 | Free tier (0.5 GB, autosuspend) fits v1 traffic; $19 buys 10 GB + no suspend. |
+| Jina embeddings | 1–5 | Per-call. Query cache (mig. 0008) keeps this small. |
+| Anthropic / OpenAI | 5–20 | Only during studio onboarding flows. |
+| Mapbox / Resend / Clerk / PostHog | 0 | All within free tiers (see audit above). |
+| Domain (wander.gallery) | ~3 | ~$30–40/yr amortized. |
+| **External subtotal** | **~$10–45** | Range is mostly Neon Launch and LLM use. |
+
+**v1 grand total: ~$20–55/mo** at idle, depending on Neon tier and LLM use.
+
+**Why all-AWS vs Vercel:** Vercel Pro adds a fixed $20/mo floor. The
+all-AWS shape replaces it with ~$5–10 of CloudFront + Lambda + WAF
+deltas for the web tier — meaningfully cheaper at v1, and the cost
+curve is also smoother as traffic grows (Vercel function execution +
+bandwidth pricing has steeper steps). See `decisions.md` 2026-05-24.
+
 ## Re-evaluation triggers
 
 Revisit this doc when any of the following hold:
