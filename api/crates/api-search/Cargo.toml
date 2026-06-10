@@ -52,3 +52,8 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 rand = { workspace = true }
+# Used only by main.rs to construct the SQS client at boot when
+# JOBS_QUEUE_URL is set. `lib.rs` stays decoupled from AWS SDKs so
+# integration tests don't need any AWS env.
+aws-config = { workspace = true }
+aws-sdk-sqs = { workspace = true }

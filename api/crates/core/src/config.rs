@@ -57,6 +57,11 @@ pub struct Config {
     /// canonical hostname. Used by the inquiry-email handlers to
     /// build `…/inquiries/verify/<token>` and artwork-detail links.
     pub web_base_url: String,
+    /// SQS queue URL for the jobs queue. When set, `JobsBackend`
+    /// boots in `Sqs` mode (prod). When absent, `Postgres` (local
+    /// dev — driven by the `jobs-worker` polling binary). The api
+    /// Lambda receives this via env var from `infra/modules/api/`.
+    pub jobs_queue_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +139,7 @@ impl Config {
                 .unwrap_or_else(|_| "http://localhost:9000/uploads".to_string()),
             web_base_url: env::var("WEB_BASE_URL")
                 .unwrap_or_else(|_| "http://localhost:3000".to_string()),
+            jobs_queue_url: env::var("JOBS_QUEUE_URL").ok(),
         };
 
         // Production sanity checks. Prevent footguns from a missing secret in prod.
@@ -176,6 +182,7 @@ impl Config {
             s3_secret_key: None,
             uploads_public_url_prefix: "https://test.example.com/uploads".to_string(),
             web_base_url: "https://test.example.com".to_string(),
+            jobs_queue_url: None,
         }
     }
 }

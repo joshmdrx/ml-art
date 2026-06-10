@@ -33,7 +33,23 @@ async fn main() -> anyhow::Result<()> {
         cfg.s3_secret_key.clone(),
     )
     .await;
-    let jobs = JobsBackend::postgres(pool.clone());
+
+    // JobsBackend driver selection: prod gets SQS (env var set by TF,
+    // see infra/modules/api/), dev gets Postgres (jobs-worker polls).
+    let jobs = match cfg.jobs_queue_url.as_deref() {
+        Some(queue_url) => {
+            tracing::info!(queue_url, "jobs backend: sqs");
+            // BehaviorVersion is pinned by aws-config's
+            // `behavior-version-latest` feature in workspace deps.
+            let aws_cfg = aws_config::load_from_env().await;
+            let sqs_client = aws_sdk_sqs::Client::new(&aws_cfg);
+            JobsBackend::sqs(sqs_client, queue_url.to_string())
+        }
+        None => {
+            tracing::info!("jobs backend: postgres (local jobs-worker should be running)");
+            JobsBackend::postgres(pool.clone())
+        }
+    };
     let state = Arc::new(AppState {
         pool,
         embedder,

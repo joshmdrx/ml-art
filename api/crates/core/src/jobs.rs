@@ -99,8 +99,14 @@ pub struct EnqueueOpts {
     pub max_attempts: Option<i32>,
 }
 
-/// Job-queue driver. Real production path will be `Sqs` once we
-/// deploy; today only `Postgres` exists.
+/// Job-queue driver. Picked at boot based on whether
+/// `JOBS_QUEUE_URL` is set (see `api-search`'s `main.rs`):
+///   - Set    → `Sqs`      (prod — Lambda + SQS + jobs-lambda)
+///   - Unset  → `Postgres` (local dev — jobs table + jobs-worker)
+///
+/// Same `JobEvent` on the wire either way. The only side that varies
+/// is enqueue (DB INSERT vs SQS SendMessage); the handler dispatch
+/// in `handle()` is driver-agnostic.
 #[derive(Clone)]
 pub struct JobsBackend {
     inner: Arc<Inner>,
@@ -109,6 +115,12 @@ pub struct JobsBackend {
 enum Inner {
     Postgres {
         pool: Pool,
+    },
+    /// Production driver — SendMessage to an SQS queue. The receive
+    /// side lives in `api/crates/jobs-lambda` (SQS event-source mapping).
+    Sqs {
+        client: aws_sdk_sqs::Client,
+        queue_url: String,
     },
     /// In-memory backend for tests. Captures enqueued events in an
     /// `Arc<Mutex<Vec>>` so assertions can read what was enqueued
@@ -122,6 +134,17 @@ impl JobsBackend {
     pub fn postgres(pool: Pool) -> Self {
         Self {
             inner: Arc::new(Inner::Postgres { pool }),
+        }
+    }
+
+    /// SQS driver. `queue_url` is the full https URL from
+    /// `terraform output jobs_queue_url` (e.g.
+    /// `https://sqs.us-east-1.amazonaws.com/<account>/ml-art-prod-jobs`).
+    /// The client should be constructed via `aws_config::load_from_env()`
+    /// at boot — credentials come from the Lambda execution role.
+    pub fn sqs(client: aws_sdk_sqs::Client, queue_url: String) -> Self {
+        Self {
+            inner: Arc::new(Inner::Sqs { client, queue_url }),
         }
     }
 
@@ -139,7 +162,7 @@ impl JobsBackend {
     pub fn captured(&self) -> Vec<JobEvent> {
         match &*self.inner {
             Inner::Memory { captured } => captured.lock().unwrap().clone(),
-            Inner::Postgres { .. } => {
+            Inner::Postgres { .. } | Inner::Sqs { .. } => {
                 panic!("captured() is only meaningful on for_tests() backends")
             }
         }
@@ -148,6 +171,13 @@ impl JobsBackend {
     /// Enqueue a job for background processing. Returns `Ok(())` for
     /// success-or-idempotent-skip — the caller doesn't need to
     /// distinguish "new job created" from "duplicate suppressed."
+    ///
+    /// SQS idempotency note: SQS doesn't have a native idempotency
+    /// key — `EnqueueOpts.idempotency_key` is honoured by the Postgres
+    /// driver only. For prod jobs that need it (e.g. inquiry reply
+    /// emails), use a content-addressed key derived from the row id
+    /// and rely on the handler being idempotent. See
+    /// `decisions.md` 2026-05-29.
     pub async fn enqueue(&self, event: JobEvent, opts: EnqueueOpts) -> Result<(), JobsError> {
         match &*self.inner {
             Inner::Memory { captured } => {
@@ -155,6 +185,7 @@ impl JobsBackend {
                 Ok(())
             }
             Inner::Postgres { pool } => postgres::enqueue(pool, event, opts).await,
+            Inner::Sqs { client, queue_url } => sqs::enqueue(client, queue_url, event).await,
         }
     }
 }
@@ -165,6 +196,8 @@ pub enum JobsError {
     Db(#[from] sqlx::Error),
     #[error("payload serialization failed: {0}")]
     Serialize(#[from] serde_json::Error),
+    #[error("sqs send failed: {0}")]
+    Sqs(String),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -342,6 +375,64 @@ pub mod postgres {
         });
         let event: JobEvent = serde_json::from_value(value)?;
         Ok(event)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SQS driver
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub mod sqs {
+    //! SQS-backed jobs driver. Used by the api Lambda in prod;
+    //! mirrors the producer side of `core::jobs::handle`, which the
+    //! `jobs-lambda` binary runs on the SQS receive side.
+    //!
+    //! Message body is the same JSON shape the `JobEvent` enum
+    //! serializes to (`{"kind": "...", "payload": {...}}`). The
+    //! `MessageAttributes.kind` attribute mirrors that for cheap
+    //! filtering at the consumer if we ever shard the queue.
+    //!
+    //! Idempotency: `EnqueueOpts.idempotency_key` is intentionally
+    //! ignored here. SQS Standard queues don't have native idempotency;
+    //! FIFO queues do (via `MessageDeduplicationId`) but FIFO caps at
+    //! 300 msg/s/queue, which is fine for v1 but a needless ceiling.
+    //! The pattern is: handler should be safe to run twice (most are
+    //! already content-addressed on row id), and the
+    //! `aws_sqs_queue.max_receive_count = 5` redrive policy bounds
+    //! retries.
+
+    use super::{JobEvent, JobsError};
+    use aws_sdk_sqs::types::MessageAttributeValue;
+
+    pub async fn enqueue(
+        client: &aws_sdk_sqs::Client,
+        queue_url: &str,
+        event: JobEvent,
+    ) -> Result<(), JobsError> {
+        let kind = event.kind();
+        // Serialize the full tagged shape — same as Postgres but with
+        // tag included (the Postgres driver strips the tag because
+        // the column stores `kind` separately; SQS has no separate
+        // column, so we keep it).
+        let body = serde_json::to_string(&event)?;
+
+        client
+            .send_message()
+            .queue_url(queue_url)
+            .message_body(body)
+            .message_attributes(
+                "kind",
+                MessageAttributeValue::builder()
+                    .data_type("String")
+                    .string_value(kind)
+                    .build()
+                    .map_err(|e| JobsError::Sqs(format!("attribute build: {e}")))?,
+            )
+            .send()
+            .await
+            .map_err(|e| JobsError::Sqs(format!("send_message: {e}")))?;
+
+        Ok(())
     }
 }
 
@@ -737,5 +828,30 @@ mod tests {
         };
         let evt = postgres::decode(&job).unwrap();
         assert_eq!(evt, JobEvent::ArtistLocationGeocode { location_id: id });
+    }
+
+    /// The SQS body shape is the contract between the producer (this
+    /// crate's `JobsBackend::Sqs`) and the consumer (`jobs-lambda`'s
+    /// `serde_json::from_value::<JobEvent>`). If either side drifts,
+    /// every message DLQs. This test pins the shape so the contract
+    /// is checked by CI rather than discovered in production.
+    #[test]
+    fn sqs_message_body_round_trips_through_serde() {
+        let id = Uuid::new_v4();
+        let evt = JobEvent::ArtworkImageModerate {
+            artwork_image_id: id,
+        };
+
+        // Producer side: serialize the full tagged JSON. This is
+        // exactly what `sqs::enqueue` puts into the message body.
+        let body = serde_json::to_string(&evt).expect("serialize");
+        assert!(body.contains(r#""kind":"artwork_image_moderate""#));
+        assert!(body.contains(&id.to_string()));
+
+        // Consumer side: jobs-lambda parses with `serde_json::from_value`
+        // (via SqsEventObj<Value>). We mimic the same path here.
+        let value: serde_json::Value = serde_json::from_str(&body).expect("parse body");
+        let back: JobEvent = serde_json::from_value(value).expect("decode JobEvent");
+        assert_eq!(back, evt);
     }
 }

@@ -3,6 +3,39 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-10 — Deploy track: JobsBackend::Sqs driver + boot-time selector
+
+Closes the last "real prod" gap in the API path. With the api-search
+Lambda about to ship for real, enqueues from the request handlers
+need to land on SQS (where `jobs-lambda` consumes them), not in the
+local `jobs` table (where nothing in prod polls).
+
+- `core::jobs::JobsBackend::sqs(client, queue_url)` constructor +
+  `Inner::Sqs` variant + `core::jobs::sqs::enqueue()`. Sends the
+  full tagged JobEvent JSON as the SQS message body, with a
+  `kind` MessageAttribute mirroring the discriminator for cheap
+  routing if we ever shard the queue.
+- `Config::jobs_queue_url: Option<String>` — reads `JOBS_QUEUE_URL`
+  env var. Already injected into the api Lambda's env by TF, so
+  this just wires it through.
+- `api-search/src/main.rs` picks driver at boot: queue URL present
+  → SQS, absent → Postgres. Logs which path it took on init so
+  CloudWatch shows it in the first line.
+- New contract-pinning test in `core::jobs::tests`: serializes a
+  JobEvent through the same `serde_json::to_string` path that
+  `sqs::enqueue` uses, then deserializes through the same
+  `from_value` path that `jobs-lambda` uses. Catches drift between
+  producer and consumer before the first message DLQs in prod.
+- `aws-sdk-sqs ~> 1.55` added to workspace + threaded through core
+  and api-search.
+
+What now flows end-to-end (in code; needs real deploy to verify):
+- api Lambda receives a request → handler calls `jobs.enqueue(...)`
+- → `JobsBackend::Sqs` → `aws_sdk_sqs::send_message`
+- → SQS `ml-art-prod-jobs` queue
+- → event-source-mapping (max 5/batch, max 10 concurrent)
+- → `jobs-lambda` → `core::jobs::handle` → domain handler
+
 ## 2026-06-10 — Deploy track follow-up: jobs-lambda crate + deploy scripts + POST_DEPLOY runbook
 
 Bridges the gap between "infra is up with placeholders" and "real
