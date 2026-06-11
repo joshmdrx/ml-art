@@ -272,12 +272,29 @@ def main() -> None:
     # Map item.sha256 → embedding vector for lookup during insert.
     sha_to_vec = {item.sha256: embeddings[i] for i, item in enumerate(items)}
 
+    # Reopen the DB connection. Embedding can take 30+ min on Apple
+    # Silicon for the full corpus; managed Postgres (Neon's free tier
+    # in particular) auto-suspends idle connections after ~5 min, which
+    # would otherwise blow up the transaction below with
+    # `AdminShutdown: terminating connection due to administrator command`.
     try:
-        with conn.transaction():
-            artists_by_style = _ensure_artists(conn, grouped.keys())
-            _ensure_artworks(conn, s3, bucket, grouped, artists_by_style, sha_to_vec, embedder)
-            _ensure_neighborhoods(conn, grouped)
-            _ensure_locations(conn, artists_by_style)
+        conn.close()
+    except Exception:
+        pass
+    conn = psycopg.connect(args.database_url, autocommit=True)
+
+    # No outer transaction: with `autocommit=True`, each INSERT is its
+    # own short tx. We had a single `with conn.transaction()` here that
+    # batched all 2000+ artwork INSERTs into one long-running tx — Neon
+    # killed it mid-flight ("server closed the connection unexpectedly"
+    # at ~370 inserts). The seed is content-addressed (artworks by
+    # sha256, artists by display_name, neighborhoods by slug, locations
+    # by (artist_id, address)), so partial-progress + re-run is safe.
+    try:
+        artists_by_style = _ensure_artists(conn, grouped.keys())
+        _ensure_artworks(conn, s3, bucket, grouped, artists_by_style, sha_to_vec, embedder)
+        _ensure_neighborhoods(conn, grouped)
+        _ensure_locations(conn, artists_by_style)
     finally:
         conn.close()
     print("done.")
