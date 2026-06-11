@@ -3,6 +3,59 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-11 — Web is live: Next.js SSR via OpenNext on Lambda
+
+`https://wander.gallery` now serves the real Next.js app — full SSR,
+prod Clerk publishable key, prod API endpoint baked into the client
+bundle. All three Lambdas (api, jobs, web) are running real code.
+
+What ships in the bundle:
+- React Server Components compiled by Next 16.2.6
+- Clerk auth UI loading from `clerk.wander.gallery` (custom domain
+  via the CNAMEs we added earlier)
+- API client pointing at `https://api.wander.gallery`
+- Mapbox client token wired for the map mode
+- Static assets (`/_next/static/*`, fonts, public/) served from
+  the S3 web-assets bucket via CloudFront, immutable cache
+
+Footguns hit + fixed:
+
+1. **OpenNext 4.0 supports Next 16.2.6+** at the lower bound exactly.
+   Worked first try once we confirmed compat.
+2. **pnpm Node version mismatch.** Local Node is 20.19 (via nvm);
+   pnpm 11 requires 22.13+. Used Homebrew's Node 23 by pinning PATH
+   in deploy-web.sh (`PATH=/opt/homebrew/opt/node/bin:$PATH`).
+3. **OpenNext bundler stripped @swc/helpers/cjs/* + @next/env.**
+   Next's compiled output requires them at runtime but the bundler
+   doesn't see the deep imports through pnpm's symlinked store.
+   Fixes layered:
+   - `web/.npmrc` `node-linker=hoisted` — flat node_modules
+   - `pnpm add @swc/helpers @next/env@16.2.6` — direct deps so
+     they're top-level visible
+   - `next.config.ts` `outputFileTracingIncludes` for both pkgs —
+     forces Next to include the trees even when not auto-detected
+4. **`.env.production` was overridden by `.env.local`.** Next's
+   load order is `.env.production.local` > `.env.local` > `.env.production`.
+   Renamed to `.env.production.local` so prod values win for prod
+   builds without touching local dev.
+5. **70MB Lambda zip ceiling.** Initial broad include
+   (`node_modules/next/dist/**`) ballooned to 161 MB. Narrowed to
+   `@swc/helpers/**` + `@next/env/**` only — back to 8 MB.
+6. **`update-function-configuration` vs `update-function-code`
+   race.** Lambda rejects the second call while the first is still
+   in `InProgress`. Added `aws lambda wait function-updated` between
+   them.
+7. **OpenNext output path is `.open-next/server-functions/default/`,
+   not `.open-next/server-function/`** as the original deploy script
+   assumed. Updated.
+8. **Server-side env injection** (CLERK_SECRET_KEY etc) is done by
+   `deploy-web.sh` via `aws lambda update-function-configuration`
+   reading from SSM. Keeps secrets out of TF state; rotation =
+   update SSM + re-deploy.
+
+`make deploy-web` now runs end-to-end in ~2 min: build, zip, code
+upload, env sync, asset s3 sync, CloudFront invalidation, smoke test.
+
 ## 2026-06-11 — Real Rust Lambdas live: api-search + jobs-lambda
 
 First successful prod deploy of real code. End-to-end paths:

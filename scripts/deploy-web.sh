@@ -53,10 +53,13 @@ if [[ ! -d node_modules/@opennextjs ]]; then
   exit 1
 fi
 
-echo "▶ pnpm exec opennextjs-aws build"
-pnpm exec opennextjs-aws build
+echo "▶ pnpm exec open-next build"
+# Node 23 (matches pnpm >= v11.3 requirement). The OpenNext build
+# shells out to `pnpm build` internally — Node version must satisfy
+# both the workspace's pnpm and OpenNext's own scripts.
+PATH=/opt/homebrew/opt/node/bin:$PATH pnpm exec open-next build
 
-SERVER_DIR=".open-next/server-function"
+SERVER_DIR=".open-next/server-functions/default"
 ASSETS_DIR=".open-next/assets"
 
 if [[ ! -d "$SERVER_DIR" ]]; then
@@ -88,10 +91,46 @@ NEW_VERSION=$(aws lambda update-function-code \
   --query 'Version' --output text)
 echo "  → published version $NEW_VERSION"
 
-# Runtime (nodejs20.x) + handler (index.handler) are already set by
-# TF and match what OpenNext emits, so no `update-function-configuration`
-# call is needed here. If you ever change OpenNext's output handler,
-# update modules/web/main.tf in lockstep.
+# update-function-code returns immediately; the config update below
+# will fail with ResourceConflictException if the code update is
+# still in progress. Wait first.
+aws lambda wait function-updated \
+  --profile "$PROFILE" \
+  --region "$REGION" \
+  --function-name "$FUNCTION_NAME"
+
+# ─── Sync server-side env vars from SSM ───────────────────────────────────
+# OpenNext server lambda needs CLERK_SECRET_KEY (server middleware) at
+# runtime. NEXT_PUBLIC_* vars are baked into the JS at build time via
+# web/.env.production and don't need to be in the Lambda env.
+#
+# Pulling from SSM at deploy time keeps secrets out of TF state.
+# Rotation: update SSM, re-run `make deploy-web`. The TF
+# lifecycle.ignore_changes on `environment` means terraform plan
+# won't fight whatever the deploy script set.
+echo "▶ syncing CLERK_SECRET_KEY from SSM → web Lambda env"
+export CLERK_SECRET
+CLERK_SECRET=$(aws --profile "$PROFILE" --region "$REGION" ssm get-parameter \
+  --name "/ml-art-prod/clerk_secret_key" --with-decryption \
+  --query 'Parameter.Value' --output text)
+
+# Merge our env additions on top of whatever else TF set (CONFIG_PARAMETER_PATH,
+# NEXT_PUBLIC_API_BASE_URL, IMAGES_CDN_URL). Fetch current, edit, push back.
+CURRENT_ENV=$(aws --profile "$PROFILE" --region "$REGION" lambda get-function-configuration \
+  --function-name "$FUNCTION_NAME" \
+  --query 'Environment.Variables' --output json)
+NEW_ENV=$(echo "$CURRENT_ENV" | python3 -c "
+import json, sys, os
+env = json.load(sys.stdin) or {}
+env['CLERK_SECRET_KEY'] = os.environ['CLERK_SECRET']
+print(json.dumps({'Variables': env}))
+")
+
+aws --profile "$PROFILE" --region "$REGION" lambda update-function-configuration \
+  --function-name "$FUNCTION_NAME" \
+  --environment "$NEW_ENV" \
+  > /dev/null
+echo "  ✔ env updated"
 
 echo "▶ waiting for function to become active…"
 aws lambda wait function-updated \
