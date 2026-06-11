@@ -3,6 +3,42 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-11 — Real Rust Lambdas live: api-search + jobs-lambda
+
+First successful prod deploy of real code. End-to-end paths:
+
+- **api-search** — `https://api.wander.gallery/v1/health` returns
+  `{"auth_enabled":true,"db":true,"embedder_enabled":true,"env":"Dev","status":"ok"}`.
+  Connected to Neon (us-east-1), reads Clerk JWKS, embedder client built.
+- **jobs-lambda** — SQS `send-message` → cold-start 1020ms → handler
+  runs in 5ms warm. Test event consumed cleanly.
+
+Two things made this work end-to-end:
+
+1. **`core::config::bootstrap_ssm(prefix)`** — fetches every SecureString
+   under `/ml-art-prod/` at cold start (one `GetParametersByPath`),
+   injects each as an uppercased process env var. Existing
+   `Config::load()` then reads via `env::var()` as before — no
+   per-key plumbing needed for the 9 secrets. Called from both
+   lambda mains before `Config::load`. `aws-sdk-ssm ~> 1.55` added
+   to workspace.
+2. **TF runtime swap** — flipped both `aws_lambda_function`s from the
+   `nodejs20.x` placeholder to `provided.al2023` + `bootstrap` handler.
+   Added `architectures = ["arm64"]` to the jobs module (api module
+   already had it). One-time edit; subsequent `make deploy-{api,jobs}`
+   only swaps code via `update-function-code` (TF `lifecycle.ignore_changes`
+   keeps it from churning).
+
+Footguns hit + fixed:
+- jobs-lambda crate had `[[bin]] name = "bootstrap"` which made
+  cargo-lambda write to `target/lambda/bootstrap/` (vs api-search's
+  `target/lambda/api-search/`). Renamed bin to `jobs-lambda` for
+  consistency; cargo-lambda always renames the final exe to
+  `bootstrap` anyway because `provided.al2023` requires it.
+- Default Lambda architecture is x86_64; the jobs TF was missing the
+  explicit `architectures = ["arm64"]`, so the first invoke returned
+  `cannot execute binary file`. Now wired and consistent across modules.
+
 ## 2026-06-10 — Deploy track: web deploy script + artworks-to-S3 sync
 
 - `scripts/deploy-web.sh` + `make deploy-web` — builds via

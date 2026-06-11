@@ -78,6 +78,11 @@ aws-credential-types = "1.2"
 # gets one via env var and switches drivers at boot.
 aws-sdk-sqs = "1.55"
 
+# SSM — fetch the SecureString parameter tree at Lambda cold start
+# and inject into the process env so Config::load() sees them as if
+# they were native env vars. See core::config::ssm_bootstrap.
+aws-sdk-ssm = "1.55"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

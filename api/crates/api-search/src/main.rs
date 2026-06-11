@@ -11,6 +11,15 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     ml_art_core::telemetry::init();
+
+    // In Lambda: fetch SecureString parameters from SSM and inject
+    // them as env vars before Config::load reads them. The path is
+    // set by TF (modules/api/main.tf) and is absent locally — so
+    // dev still reads from .env via dotenvy.
+    if let Ok(prefix) = std::env::var("CONFIG_PARAMETER_PATH") {
+        ml_art_core::config::bootstrap_ssm(&prefix).await?;
+    }
+
     let cfg = Config::load()?;
     let pool = ml_art_core::db::make_pool(&cfg.database_url).await?;
     let embedder = Embedder::new(

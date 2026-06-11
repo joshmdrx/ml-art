@@ -185,14 +185,14 @@ resource "aws_lambda_function" "jobs" {
   function_name = "${var.name_prefix}-jobs"
   role          = aws_iam_role.jobs_lambda.arn
 
-  # Placeholder runtime + handler. When the real Rust artifact lands,
-  # we'll flip runtime → "provided.al2023" + handler → "bootstrap"
-  # in a follow-up commit (one-time change; CI deploys after that point
-  # only swap code, not config).
-  runtime     = "nodejs20.x"
-  handler     = "index.handler"
-  memory_size = var.lambda_memory_mb
-  timeout     = var.lambda_timeout_s
+  # Rust binary via cargo-lambda. `provided.al2023` is the
+  # bring-your-own-binary runtime; the handler name `bootstrap` is the
+  # required filename for the executable inside the zip.
+  runtime       = "provided.al2023"
+  handler       = "bootstrap"
+  architectures = ["arm64"] # matches `cargo lambda build --arm64` in deploy-jobs.sh
+  memory_size   = var.lambda_memory_mb
+  timeout       = var.lambda_timeout_s
 
   filename         = data.archive_file.placeholder.output_path
   source_code_hash = data.archive_file.placeholder.output_base64sha256

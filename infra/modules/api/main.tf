@@ -191,10 +191,11 @@ resource "aws_lambda_function" "api" {
   function_name = "${var.name_prefix}-api"
   role          = aws_iam_role.api_lambda.arn
 
-  # Placeholder runtime. Real artifact will be Rust on provided.al2023;
-  # one-time TF edit when we wire cargo-lambda.
-  runtime       = "nodejs20.x"
-  handler       = "index.handler"
+  # Rust binary built by cargo-lambda. `provided.al2023` is the
+  # bring-your-own-binary runtime; the handler name `bootstrap` is the
+  # required filename for the executable inside the zip.
+  runtime       = "provided.al2023"
+  handler       = "bootstrap"
   architectures = [var.lambda_architecture]
   memory_size   = var.lambda_memory_mb
   timeout       = var.lambda_timeout_s

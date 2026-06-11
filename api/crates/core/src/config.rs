@@ -186,3 +186,72 @@ impl Config {
         }
     }
 }
+
+/// Fetch every SecureString parameter under `prefix` and inject as
+/// uppercased process env vars. Called once at Lambda cold start
+/// **before** `Config::load()` runs, so the rest of the loader sees
+/// SSM-backed values as if they were native env vars.
+///
+/// Naming convention: SSM `database_url` → env `DATABASE_URL`.
+/// The mapping is just `to_ascii_uppercase` — the SSM paths were
+/// chosen in `modules/secrets/` to match what `Config::load()` reads.
+///
+/// Safety: `std::env::set_var` is `unsafe` from Rust 1.81+ because env
+/// access from multiple threads is a data race. We call this *before*
+/// the Tokio runtime starts (in `main`, single-threaded), so the
+/// invariant holds. Document this here so a future refactor doesn't
+/// move the call inside an async context.
+///
+/// Lambda execution role needs `ssm:GetParametersByPath` on the
+/// prefix — already wired in `modules/api/main.tf` +
+/// `modules/jobs/main.tf` + `modules/web/main.tf`.
+pub async fn bootstrap_ssm(prefix: &str) -> anyhow::Result<()> {
+    let aws_cfg = aws_config::load_from_env().await;
+    let client = aws_sdk_ssm::Client::new(&aws_cfg);
+
+    let mut next_token: Option<String> = None;
+    let mut total = 0usize;
+
+    // SSM caps GetParametersByPath at 10 results per page. Paginate
+    // (we have 9 today so this is one round-trip, but the loop
+    // future-proofs against config growth).
+    loop {
+        let resp = client
+            .get_parameters_by_path()
+            .path(prefix)
+            .recursive(false)
+            .with_decryption(true)
+            .set_next_token(next_token.clone())
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("ssm get-parameters-by-path failed: {e}"))?;
+
+        for p in resp.parameters() {
+            // Path: "/ml-art-prod/database_url" → key: "database_url"
+            // → env: "DATABASE_URL"
+            let name = p.name().unwrap_or("");
+            let leaf = name.rsplit('/').next().unwrap_or(name);
+            if let Some(value) = p.value() {
+                let env_key = leaf.to_ascii_uppercase();
+                // SAFETY: see fn-level doc — main()-time, pre-tokio,
+                // single-threaded.
+                unsafe {
+                    std::env::set_var(&env_key, value);
+                }
+                total += 1;
+            }
+        }
+
+        next_token = resp.next_token().map(|s| s.to_string());
+        if next_token.is_none() {
+            break;
+        }
+    }
+
+    tracing::info!(
+        ssm_path = prefix,
+        count = total,
+        "loaded SSM parameters into env"
+    );
+    Ok(())
+}

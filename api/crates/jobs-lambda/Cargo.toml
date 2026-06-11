@@ -9,8 +9,13 @@ publish.workspace = true
 # Single binary, deployed to AWS Lambda via cargo-lambda. Runtime is
 # `provided.al2023` (ARM64); see scripts/deploy-jobs.sh for the build
 # + upload incantation.
+#
+# `name = "jobs-lambda"` matches the crate name so cargo-lambda's
+# output lands at `target/lambda/jobs-lambda/bootstrap` (consistent
+# with api-search). cargo-lambda always renames the final executable
+# to `bootstrap` — that's what the `provided.al2023` runtime expects.
 [[bin]]
-name = "bootstrap"
+name = "jobs-lambda"
 path = "src/main.rs"
 
 [dependencies]

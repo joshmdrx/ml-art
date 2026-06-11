@@ -58,6 +58,13 @@ async fn main() -> Result<(), Error> {
         .without_time() // CloudWatch already timestamps each line
         .init();
 
+    // SSM → env injection before Config::load reads anything. The
+    // execution role has `ssm:GetParametersByPath` on this prefix
+    // (set in modules/jobs/main.tf).
+    if let Ok(prefix) = std::env::var("CONFIG_PARAMETER_PATH") {
+        ml_art_core::config::bootstrap_ssm(&prefix).await?;
+    }
+
     // Build deps ONCE — outside the handler closure — so the cost is
     // amortised across all invocations of a warm container. DB
     // connection setup is the most expensive piece (~200ms for the
