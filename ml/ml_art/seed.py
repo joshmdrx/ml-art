@@ -213,15 +213,28 @@ def main() -> None:
     if args.data_dir is None:
         sys.exit("--data-dir is required unless --locations-only is set")
 
-    # S3 / MinIO
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=os.environ.get("S3_ENDPOINT", "http://localhost:9000"),
-        aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID", "dev"),
-        aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY", "devpassword"),
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
-        config=BotoConfig(signature_version="s3v4", s3={"addressing_style": "path"}),
-    )
+    # S3 client. Two modes:
+    #   - Local: `S3_ENDPOINT=http://localhost:9000` → MinIO; credentials
+    #     default to the dev compose values.
+    #   - Prod : `S3_ENDPOINT` unset → real AWS S3; credentials picked
+    #     up from the env (AWS_PROFILE / SSO export, etc).
+    # The path-addressing override is harmless against AWS and required
+    # for MinIO, so we keep it for both.
+    s3_kwargs = {
+        "config": BotoConfig(signature_version="s3v4", s3={"addressing_style": "path"}),
+        "region_name": os.environ.get("AWS_REGION", "us-east-1"),
+    }
+    s3_endpoint = os.environ.get("S3_ENDPOINT", "").strip()
+    if s3_endpoint:
+        s3_kwargs["endpoint_url"] = s3_endpoint
+        # Only force credentials when an endpoint is set (i.e. MinIO);
+        # for real AWS S3 we want boto's default credential chain to
+        # pick up SSO / instance profile / env-vars.
+        s3_kwargs["aws_access_key_id"] = os.environ.get("AWS_ACCESS_KEY_ID", "dev")
+        s3_kwargs["aws_secret_access_key"] = os.environ.get(
+            "AWS_SECRET_ACCESS_KEY", "devpassword"
+        )
+    s3 = boto3.client("s3", **s3_kwargs)
     bucket = os.environ.get("S3_BUCKET_ARTWORKS", "artworks")
 
     if args.reset:

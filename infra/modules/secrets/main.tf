@@ -39,15 +39,17 @@ locals {
   # added but not provisioned — otherwise the Lambda silently boots
   # with a missing config and 500s.
   parameter_keys = [
-    "database_url",      # Neon postgres connection string
-    "jina_api_key",      # text-embedding API
-    "clerk_secret_key",  # JWT verification on the API side
-    "clerk_issuer",      # ditto — public but read at boot anyway
-    "clerk_jwks_url",    # ditto
-    "resend_api_key",    # inquiry + reply email send
-    "resend_from_email", # "From" address
-    "mapbox_token",      # forward geocoding
-    "web_base_url",      # for email link interpolation
+    "database_url",               # Neon postgres connection string
+    "jina_api_key",               # text-embedding API
+    "clerk_secret_key",           # JWT verification on the API side
+    "clerk_issuer",               # ditto — public but read at boot anyway
+    "clerk_jwks_url",             # ditto
+    "resend_api_key",             # inquiry + reply email send
+    "resend_from_email",          # "From" address
+    "mapbox_token",               # forward geocoding
+    "web_base_url",               # for email link interpolation
+    "image_base_url",             # `https://images.<domain>` — env-specific
+    "uploads_public_url_prefix",  # same host; key-prefix routes to uploads bucket
   ]
 }
 
