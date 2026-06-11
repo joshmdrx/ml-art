@@ -74,9 +74,15 @@ export default async function Home() {
           <h2 className="font-serif text-2xl mb-8">Recently added</h2>
           {recent.items.length === 0 ? (
             <p className="text-muted text-sm">
-              No artworks yet — make sure the API is running on{" "}
-              <code className="font-mono">localhost:9100</code> and the
-              seed has been applied.
+              Nothing here yet. Try{" "}
+              <Link href="/search" className="underline hover:text-foreground">
+                searching
+              </Link>{" "}
+              or{" "}
+              <Link href="/neighborhoods" className="underline hover:text-foreground">
+                exploring by neighborhood
+              </Link>
+              .
             </p>
           ) : (
             <ArtworkGrid items={recent.items} />
@@ -86,7 +92,7 @@ export default async function Home() {
 
       <footer className="border-t border-border py-8 text-xs text-muted">
         <div className="mx-auto max-w-screen-2xl px-6 flex flex-wrap gap-6">
-          <span>ml-art</span>
+          <span>Wander</span>
           <a href="/about" className="hover:text-foreground">About</a>
           <a href="/for-artists" className="hover:text-foreground">For Artists</a>
           <a href="/privacy" className="hover:text-foreground">Privacy</a>

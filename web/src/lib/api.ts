@@ -1179,7 +1179,7 @@ export async function uploadImageForSearch(
   // Build a multipart body by hand. The browser would normally do this
   // for us, but server actions hand us `File` -> we re-serialize before
   // forwarding to the Rust API.
-  const boundary = `----ml-art-${crypto.randomUUID()}`;
+  const boundary = `----wander-${crypto.randomUUID()}`;
   const enc = new TextEncoder();
   const head = enc.encode(
     `--${boundary}\r\n` +

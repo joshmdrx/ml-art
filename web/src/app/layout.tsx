@@ -21,7 +21,7 @@ const serif = Instrument_Serif({
 });
 
 export const metadata: Metadata = {
-  title: "ml-art — discover independent contemporary artists",
+  title: "Wander — discover independent contemporary artists",
   description:
     "A discovery platform for independent contemporary artists. No marketplace. No commissions. Just better search.",
 };

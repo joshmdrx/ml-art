@@ -5,7 +5,7 @@ import { reportError } from "@/lib/reportError";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Neighborhoods — ml-art",
+  title: "Neighborhoods — Wander",
   description: "Clusters of visually and conceptually related work.",
 };
 

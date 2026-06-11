@@ -16,9 +16,9 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { id } = await params;
   const data = await getCollection(id).catch(() => null);
-  if (!data) return { title: "Collection — ml-art" };
+  if (!data) return { title: "Collection — Wander" };
   return {
-    title: `${data.collection.name} — ml-art`,
+    title: `${data.collection.name} — Wander`,
     description: data.collection.description ?? undefined,
   };
 }

@@ -8,7 +8,7 @@ import { getStudioMe, listStudioLocations } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
 export const metadata: Metadata = {
-  title: "Studio settings — ml-art",
+  title: "Studio settings — Wander",
 };
 
 /**

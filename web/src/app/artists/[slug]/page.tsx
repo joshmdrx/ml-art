@@ -29,10 +29,10 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { slug } = await params;
   const data = await getArtist(slug).catch(() => null);
-  if (!data) return { title: "Artist not found — ml-art" };
+  if (!data) return { title: "Artist not found — Wander" };
   const a = data.artist;
   return {
-    title: `${a.display_name} — ml-art`,
+    title: `${a.display_name} — Wander`,
     description: a.bio?.slice(0, 160) ?? `Works by ${a.display_name}`,
   };
 }

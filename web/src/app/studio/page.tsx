@@ -8,7 +8,7 @@ import { getStudioMe, listMyArtworks } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
 export const metadata: Metadata = {
-  title: "Studio — ml-art",
+  title: "Studio — Wander",
 };
 
 type Search = {

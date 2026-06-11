@@ -30,10 +30,10 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { id } = await params;
   const a = await getArtwork(id).catch(() => null);
-  if (!a) return { title: "Artwork not found — ml-art" };
+  if (!a) return { title: "Artwork not found — Wander" };
   const title = a.title ?? "Untitled";
   return {
-    title: `${title} by ${a.artist.display_name} — ml-art`,
+    title: `${title} by ${a.artist.display_name} — Wander`,
     description:
       a.description?.slice(0, 160) ?? `${title} by ${a.artist.display_name}`,
   };

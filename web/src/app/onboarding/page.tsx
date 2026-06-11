@@ -20,7 +20,7 @@ import {
 import { reportError } from "@/lib/reportError";
 
 export const metadata: Metadata = {
-  title: "Onboarding — ml-art",
+  title: "Onboarding — Wander",
 };
 
 /**

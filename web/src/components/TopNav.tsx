@@ -24,7 +24,7 @@ export function TopNav({
           className="font-serif text-lg tracking-tight shrink-0"
           aria-label="Home"
         >
-          ml-art
+          Wander
         </Link>
         <div className="flex-1 flex justify-center">
           {!hideSearch && (
