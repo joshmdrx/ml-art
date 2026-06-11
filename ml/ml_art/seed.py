@@ -172,6 +172,16 @@ def main() -> None:
         help="Directory of WikiArt JPEGs (required unless --locations-only)",
     )
     parser.add_argument("--reset", action="store_true", help="Delete existing demo rows first")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Skip the 'demo content already present' bail. Each artwork is "
+            "now checked by s3_key before insert, so re-runs only do the "
+            "missing work. Use after a partial seed (e.g. a dropped DB "
+            "connection mid-ingestion)."
+        ),
+    )
     parser.add_argument("--limit", type=int, default=None, help="Cap artworks ingested (debug)")
     parser.add_argument(
         "--locations-only",
@@ -240,10 +250,11 @@ def main() -> None:
     if args.reset:
         _reset_demo(conn)
 
-    if _has_demo_content(conn):
+    if _has_demo_content(conn) and not args.resume:
         sys.exit(
             "demo content already present — pass --reset to wipe and re-seed, "
-            "or drop the existing rows manually."
+            "--resume to continue an interrupted run, or drop the existing "
+            "rows manually."
         )
 
     items = load_corpus(args.data_dir)
@@ -438,21 +449,39 @@ def _ensure_artworks(
     total = sum(len(v) for v in grouped.values())
     pbar = tqdm(total=total, desc="ingesting", unit="art")
 
-    with conn.cursor() as cur:
-        for style, items in grouped.items():
-            artist_id = artists_by_style[style]
-            pretty = style.replace("_", " ").title()
-            for item in items:
-                s3_key = f"demo/{style}/{item.sha256[:16]}.jpg"
-                # Upload (idempotent on key)
-                with item.path.open("rb") as f:
-                    s3.put_object(
-                        Bucket=bucket,
-                        Key=s3_key,
-                        Body=f,
-                        ContentType="image/jpeg",
-                        CacheControl="public, max-age=31536000, immutable",
-                    )
+    # We use a fresh cursor per artwork rather than one big `with conn.cursor()`
+    # so that an OperationalError from a flaky connection doesn't poison the
+    # cursor's transaction state — the per-artwork try/except below can
+    # reconnect cleanly and the next iteration gets a fresh cursor.
+    for style, items in grouped.items():
+        artist_id = artists_by_style[style]
+        pretty = style.replace("_", " ").title()
+        for item in items:
+            s3_key = f"demo/{style}/{item.sha256[:16]}.jpg"
+
+            # Idempotency: if this artwork's image row already exists,
+            # the whole 3-row block (artwork + image + embedding) is in
+            # place. Skip. Makes the seed resumable after a partial run.
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM artwork_images WHERE s3_key = %s LIMIT 1",
+                    (s3_key,),
+                )
+                if cur.fetchone():
+                    pbar.update(1)
+                    continue
+
+            # Upload (idempotent on key)
+            with item.path.open("rb") as f:
+                s3.put_object(
+                    Bucket=bucket,
+                    Key=s3_key,
+                    Body=f,
+                    ContentType="image/jpeg",
+                    CacheControl="public, max-age=31536000, immutable",
+                )
+
+            with conn.cursor() as cur:
 
                 # Insert artwork. Price + physical dimensions are
                 # populated from deterministic per-sha helpers so the
