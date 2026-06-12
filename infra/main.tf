@@ -115,6 +115,18 @@ module "web" {
   }
 }
 
+module "observability" {
+  source = "./modules/observability"
+
+  name_prefix                    = local.name_prefix
+  alert_email                    = var.budget_alert_email
+  api_lambda_name                = module.api.lambda_function_name
+  web_lambda_name                = module.web.server_lambda_name
+  jobs_lambda_name               = module.jobs.lambda_function_name
+  jobs_dlq_name                  = module.jobs.dlq_name
+  api_cloudfront_distribution_id = module.api.cloudfront_distribution_id
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AWS Budgets — T-015. Lives at the root rather than in a module
 # because it's a single small resource that consumes outputs from

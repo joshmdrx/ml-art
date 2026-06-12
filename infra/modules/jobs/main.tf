@@ -251,6 +251,11 @@ output "dlq_arn" {
   value       = aws_sqs_queue.dlq.arn
 }
 
+output "dlq_name" {
+  description = "DLQ queue name (the SQS CloudWatch metric dimension wants the name, not ARN)."
+  value       = aws_sqs_queue.dlq.name
+}
+
 output "lambda_function_name" {
   description = "Jobs Lambda function name — CI uses this for `aws lambda update-function-code` on deploy."
   value       = aws_lambda_function.jobs.function_name
