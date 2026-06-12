@@ -201,18 +201,18 @@ resource "aws_lambda_function" "jobs" {
     variables = {
       CONFIG_PARAMETER_PATH = var.config_parameter_path
       RUST_LOG              = "info"
+      ML_ART_ENV            = "prod"
     }
   }
 
   depends_on = [aws_cloudwatch_log_group.jobs]
 
-  # CI replaces the code on every deploy. Without this, every `terraform
-  # apply` would revert whatever CI shipped back to the placeholder.
   lifecycle {
+    # `environment` is owned by TF — runtime secrets layer on top
+    # via core::config::bootstrap_ssm. See modules/api comment.
     ignore_changes = [
       filename,
       source_code_hash,
-      environment, # CI may set extra env vars; let it
     ]
   }
 }

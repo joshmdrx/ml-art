@@ -208,16 +208,23 @@ resource "aws_lambda_function" "api" {
       CONFIG_PARAMETER_PATH = var.config_parameter_path
       JOBS_QUEUE_URL        = var.jobs_queue_url
       RUST_LOG              = "info"
+      # Flips Config::load's prod sanity checks ON: ANON_COOKIE_SECRET
+      # must not be the dev placeholder, Clerk vars must be set, etc.
+      ML_ART_ENV = "prod"
     }
   }
 
   depends_on = [aws_cloudwatch_log_group.api]
 
   lifecycle {
+    # `environment` is intentionally NOT ignored — TF owns the static
+    # Lambda config env (ML_ART_ENV, CONFIG_PARAMETER_PATH, etc.).
+    # Runtime secrets are layered on top by core::config::bootstrap_ssm
+    # at cold start (read from SSM, set as process env). That keeps
+    # secrets out of TF state without losing declarative env ownership.
     ignore_changes = [
       filename,
       source_code_hash,
-      environment,
     ]
   }
 }

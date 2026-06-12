@@ -96,17 +96,18 @@ module "api" {
 module "web" {
   source = "./modules/web"
 
-  name_prefix           = local.name_prefix
-  web_domain            = local.web_domain
-  web_assets_bucket     = local.web_assets_bucket
-  lambda_memory_mb      = var.web_lambda_memory_mb
-  lambda_timeout_s      = var.web_lambda_timeout_s
-  lambda_architecture   = var.web_lambda_architecture
-  cloudflare_zone_id    = module.dns.cloudflare_zone_id
-  acm_cert_arn          = module.dns.web_cert_arn
-  api_url               = "https://${local.api_domain}"
-  images_cdn_url        = "https://${local.images_domain}"
-  config_parameter_path = module.secrets.parameter_path_prefix
+  name_prefix             = local.name_prefix
+  web_domain              = local.web_domain
+  web_assets_bucket       = local.web_assets_bucket
+  lambda_memory_mb        = var.web_lambda_memory_mb
+  lambda_timeout_s        = var.web_lambda_timeout_s
+  lambda_architecture     = var.web_lambda_architecture
+  cloudflare_zone_id      = module.dns.cloudflare_zone_id
+  acm_cert_arn            = module.dns.web_cert_arn
+  api_url                 = "https://${local.api_domain}"
+  images_cdn_url          = "https://${local.images_domain}"
+  config_parameter_path   = module.secrets.parameter_path_prefix
+  waf_rate_limit_per_5min = var.waf_rate_limit_per_5min
 
   providers = {
     aws           = aws

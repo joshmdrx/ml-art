@@ -108,14 +108,20 @@ aws lambda wait function-updated \
 # Rotation: update SSM, re-run `make deploy-web`. The TF
 # lifecycle.ignore_changes on `environment` means terraform plan
 # won't fight whatever the deploy script set.
-echo "▶ syncing CLERK_SECRET_KEY from SSM → web Lambda env"
-export CLERK_SECRET
+echo "▶ syncing server-side secrets from SSM → web Lambda env"
+# The Next.js Lambda doesn't have the Rust SSM bootstrap, so any
+# secret read by server-side code (Clerk middleware, anon cookie
+# signer) must live in the Lambda's config env.
+export CLERK_SECRET ANON_COOKIE_SECRET
 CLERK_SECRET=$(aws --profile "$PROFILE" --region "$REGION" ssm get-parameter \
   --name "/ml-art-prod/clerk_secret_key" --with-decryption \
   --query 'Parameter.Value' --output text)
+ANON_COOKIE_SECRET=$(aws --profile "$PROFILE" --region "$REGION" ssm get-parameter \
+  --name "/ml-art-prod/anon_cookie_secret" --with-decryption \
+  --query 'Parameter.Value' --output text)
 
-# Merge our env additions on top of whatever else TF set (CONFIG_PARAMETER_PATH,
-# NEXT_PUBLIC_API_BASE_URL, IMAGES_CDN_URL). Fetch current, edit, push back.
+# Merge our additions on top of TF-managed env (CONFIG_PARAMETER_PATH,
+# NEXT_PUBLIC_API_BASE_URL, IMAGES_CDN_URL). Fetch current, edit, push.
 CURRENT_ENV=$(aws --profile "$PROFILE" --region "$REGION" lambda get-function-configuration \
   --function-name "$FUNCTION_NAME" \
   --query 'Environment.Variables' --output json)
@@ -123,6 +129,7 @@ NEW_ENV=$(echo "$CURRENT_ENV" | python3 -c "
 import json, sys, os
 env = json.load(sys.stdin) or {}
 env['CLERK_SECRET_KEY'] = os.environ['CLERK_SECRET']
+env['ANON_COOKIE_SECRET'] = os.environ['ANON_COOKIE_SECRET']
 print(json.dumps({'Variables': env}))
 ")
 

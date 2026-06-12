@@ -97,6 +97,11 @@ variable "config_parameter_path" {
   type        = string
 }
 
+variable "waf_rate_limit_per_5min" {
+  description = "Per-IP requests/5min ceiling. Same as the api WAF — both surfaces are write paths (web has /sign-up, /v1/upload via the SSR proxy)."
+  type        = number
+}
+
 # ─── Placeholder Lambda payload ──────────────────────────────────────────────
 
 data "archive_file" "placeholder" {
@@ -275,12 +280,82 @@ resource "aws_cloudfront_origin_access_control" "web_assets" {
   signing_protocol                  = "sigv4"
 }
 
+# ─── WAF — T-034 (web tier) ─────────────────────────────────────────────────
+# Mirrors the api WAF: rate-based per-IP + AWS managed common rules.
+# Distinct ACL (not shared with api) so we can tune limits independently
+# — web traffic is mostly static-asset GETs cached at CloudFront so it
+# rarely hits the rate-limit; the api's mix is more dynamic. Both ACLs
+# live in us-east-1 since CLOUDFRONT-scoped WAF is region-pinned there.
+
+resource "aws_wafv2_web_acl" "web" {
+  provider = aws.us_east_1
+
+  name        = "${var.name_prefix}-web"
+  description = "Rate limit + AWS common rules in front of the web CloudFront distribution."
+  scope       = "CLOUDFRONT"
+
+  default_action {
+    allow {}
+  }
+
+  rule {
+    name     = "RateLimitPerIp"
+    priority = 1
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = var.waf_rate_limit_per_5min
+        aggregate_key_type = "IP"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-web-rate-limit"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "AWSManagedCommonRules"
+    priority = 2
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesCommonRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-web-common-rules"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "${var.name_prefix}-web"
+    sampled_requests_enabled   = true
+  }
+}
+
 resource "aws_cloudfront_distribution" "web" {
   enabled         = true
   is_ipv6_enabled = true
   comment         = "${var.name_prefix} web"
   aliases         = [var.web_domain]
   price_class     = "PriceClass_100"
+  web_acl_id      = aws_wafv2_web_acl.web.arn
 
   # S3 origin — static assets.
   origin {
