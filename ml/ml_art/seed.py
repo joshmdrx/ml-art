@@ -36,6 +36,7 @@ import os
 import random
 import re
 import sys
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -303,11 +304,19 @@ def main() -> None:
     # by (artist_id, address)), so partial-progress + re-run is safe.
     try:
         artists_by_style = _ensure_artists(conn, grouped.keys())
-        _ensure_artworks(conn, s3, bucket, grouped, artists_by_style, sha_to_vec, embedder)
+        # _ensure_artworks may transparently reconnect on a dropped
+        # connection; capture the (possibly-replaced) conn so subsequent
+        # steps don't reuse a corpse.
+        conn = _ensure_artworks(
+            conn, args.database_url, s3, bucket, grouped, artists_by_style, sha_to_vec, embedder
+        )
         _ensure_neighborhoods(conn, grouped)
         _ensure_locations(conn, artists_by_style)
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
     print("done.")
 
 
@@ -435,117 +444,152 @@ def _demo_dimensions(sha: str) -> dict[str, int | str]:
 
 def _ensure_artworks(
     conn: psycopg.Connection,
+    database_url: str,
     s3,
     bucket: str,
     grouped: dict[str, list[CorpusItem]],
     artists_by_style: dict[str, str],
     sha_to_vec: dict[str, np.ndarray],
     embedder: CachedEmbedder,
-) -> None:
-    """Upload, insert artwork + image + embedding rows for each item."""
+) -> psycopg.Connection:
+    """Upload, insert artwork + image + embedding rows for each item.
+
+    Returns the connection (possibly replaced if a mid-loop reconnect
+    fired). Neon idle-suspends connections after ~15 min, so a long
+    ingestion run *will* see psycopg.OperationalError mid-flight. We
+    catch it, close, sleep, reconnect, and retry the current artwork.
+    The artwork-level work is idempotent — the dedup check skips
+    anything we already wrote, and the S3 put is keyed on a sha256
+    prefix — so retrying from scratch is safe.
+    """
     model_name = embedder.model_name
     model_version = embedder.model_version
 
     total = sum(len(v) for v in grouped.values())
     pbar = tqdm(total=total, desc="ingesting", unit="art")
 
-    # We use a fresh cursor per artwork rather than one big `with conn.cursor()`
-    # so that an OperationalError from a flaky connection doesn't poison the
-    # cursor's transaction state — the per-artwork try/except below can
-    # reconnect cleanly and the next iteration gets a fresh cursor.
+    def reconnect() -> None:
+        """Close + reopen the conn in this enclosing scope. nonlocal so
+        the rebind is visible to subsequent iterations of the loop."""
+        nonlocal conn
+        try:
+            conn.close()
+        except Exception:
+            pass
+        conn = psycopg.connect(database_url, autocommit=True)
+
     for style, items in grouped.items():
         artist_id = artists_by_style[style]
         pretty = style.replace("_", " ").title()
         for item in items:
             s3_key = f"demo/{style}/{item.sha256[:16]}.jpg"
 
-            # Idempotency: if this artwork's image row already exists,
-            # the whole 3-row block (artwork + image + embedding) is in
-            # place. Skip. Makes the seed resumable after a partial run.
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT 1 FROM artwork_images WHERE s3_key = %s LIMIT 1",
-                    (s3_key,),
-                )
-                if cur.fetchone():
+            # Per-artwork retry loop. On a connection drop we reconnect
+            # and retry from the top — the dedup check re-runs, so if
+            # the previous attempt happened to commit before the conn
+            # died we just skip the second time around.
+            max_retries = 3
+            for attempt in range(max_retries + 1):
+                try:
+                    # Idempotency: if this artwork's image row already
+                    # exists, the whole 3-row block is in place. Skip.
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT 1 FROM artwork_images WHERE s3_key = %s LIMIT 1",
+                            (s3_key,),
+                        )
+                        if cur.fetchone():
+                            pbar.update(1)
+                            break  # next item
+
+                    # Upload (idempotent on key)
+                    with item.path.open("rb") as f:
+                        s3.put_object(
+                            Bucket=bucket,
+                            Key=s3_key,
+                            Body=f,
+                            ContentType="image/jpeg",
+                            CacheControl="public, max-age=31536000, immutable",
+                        )
+
+                    with conn.cursor() as cur:
+                        # Insert artwork. Price + dimensions are populated
+                        # from deterministic per-sha helpers so demo studios
+                        # feel like real listings rather than a field of
+                        # NULLs. Currency stays at the schema default (USD).
+                        cur.execute(
+                            """
+                            INSERT INTO artworks (
+                                artist_id, title, description, medium,
+                                price_cents, dimensions, status,
+                                is_demo, published_at
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, 'published', true, now())
+                            RETURNING id;
+                            """,
+                            (
+                                artist_id,
+                                f"Untitled ({pretty})",
+                                f"Demo work in the {pretty} style, sourced from the public WikiArt dataset.",
+                                pretty,
+                                _demo_price_cents(item.sha256),
+                                Jsonb(_demo_dimensions(item.sha256)),
+                            ),
+                        )
+                        row = cur.fetchone()
+                        assert row is not None
+                        artwork_id = row[0]
+
+                        cur.execute(
+                            """
+                            INSERT INTO artwork_images (
+                                artwork_id, s3_key, width, height,
+                                is_primary, display_order, moderation_status
+                            )
+                            VALUES (%s, %s, %s, %s, true, 0, 'approved');
+                            """,
+                            (artwork_id, s3_key, item.width, item.height),
+                        )
+
+                        vec = sha_to_vec.get(item.sha256)
+                        if vec is None:
+                            # Shouldn't happen — embed_images covered the
+                            # full set. Skip the embedding insert; the
+                            # rest of the row is fine.
+                            pbar.update(1)
+                            break
+
+                        cur.execute(
+                            """
+                            INSERT INTO artwork_embeddings (
+                                artwork_id, model_name, model_version, embedding
+                            )
+                            VALUES (%s, %s, %s, %s);
+                            """,
+                            (
+                                artwork_id,
+                                model_name,
+                                model_version,
+                                _vec_to_pgvector(vec),
+                            ),
+                        )
+
                     pbar.update(1)
-                    continue
+                    break  # success — out of retry loop, next item
 
-            # Upload (idempotent on key)
-            with item.path.open("rb") as f:
-                s3.put_object(
-                    Bucket=bucket,
-                    Key=s3_key,
-                    Body=f,
-                    ContentType="image/jpeg",
-                    CacheControl="public, max-age=31536000, immutable",
-                )
-
-            with conn.cursor() as cur:
-
-                # Insert artwork. Price + physical dimensions are
-                # populated from deterministic per-sha helpers so the
-                # demo studios feel like real listings rather than a
-                # field of NULLs — without this the studio UI hides
-                # the price line and ArtworkCard never shows a price
-                # chip. Currency stays at the schema default ('USD').
-                cur.execute(
-                    """
-                    INSERT INTO artworks (
-                        artist_id, title, description, medium,
-                        price_cents, dimensions, status,
-                        is_demo, published_at
+                except (psycopg.OperationalError, psycopg.InterfaceError) as e:
+                    if attempt == max_retries:
+                        pbar.close()
+                        raise
+                    backoff = 2 ** attempt
+                    pbar.write(
+                        f"  conn dropped on {item.sha256[:8]} ({type(e).__name__}); "
+                        f"reconnecting in {backoff}s (attempt {attempt + 1}/{max_retries})…"
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, 'published', true, now())
-                    RETURNING id;
-                    """,
-                    (
-                        artist_id,
-                        f"Untitled ({pretty})",
-                        f"Demo work in the {pretty} style, sourced from the public WikiArt dataset.",
-                        pretty,
-                        _demo_price_cents(item.sha256),
-                        Jsonb(_demo_dimensions(item.sha256)),
-                    ),
-                )
-                row = cur.fetchone()
-                assert row is not None
-                artwork_id = row[0]
-
-                # Insert primary image row
-                cur.execute(
-                    """
-                    INSERT INTO artwork_images (
-                        artwork_id, s3_key, width, height,
-                        is_primary, display_order, moderation_status
-                    )
-                    VALUES (%s, %s, %s, %s, true, 0, 'approved');
-                    """,
-                    (artwork_id, s3_key, item.width, item.height),
-                )
-
-                # Insert embedding
-                vec = sha_to_vec.get(item.sha256)
-                if vec is None:
-                    # Should not happen — embed_images was called over the full set.
-                    continue
-                cur.execute(
-                    """
-                    INSERT INTO artwork_embeddings (
-                        artwork_id, model_name, model_version, embedding
-                    )
-                    VALUES (%s, %s, %s, %s);
-                    """,
-                    (
-                        artwork_id,
-                        model_name,
-                        model_version,
-                        _vec_to_pgvector(vec),
-                    ),
-                )
-
-                pbar.update(1)
+                    time.sleep(backoff)
+                    reconnect()
     pbar.close()
+    return conn
 
 
 def _ensure_neighborhoods(
