@@ -36,4 +36,5 @@ aws-config = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 aws-sdk-sqs = { workspace = true }
 aws-sdk-ssm = { workspace = true }
+sentry = { workspace = true }
 aws-credential-types = { workspace = true }

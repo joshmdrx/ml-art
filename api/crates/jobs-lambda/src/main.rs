@@ -65,6 +65,11 @@ async fn main() -> Result<(), Error> {
         ml_art_core::config::bootstrap_ssm(&prefix).await?;
     }
 
+    // Sentry after bootstrap_ssm so SENTRY_DSN is in scope. Guard
+    // lives until main() returns (= until the Lambda container is
+    // torn down) so events flush on the way out.
+    let _sentry_guard = ml_art_core::telemetry::init_sentry("jobs-lambda");
+
     // Build deps ONCE — outside the handler closure — so the cost is
     // amortised across all invocations of a warm container. DB
     // connection setup is the most expensive piece (~200ms for the

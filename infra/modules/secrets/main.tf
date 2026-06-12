@@ -54,6 +54,11 @@ locals {
     # middleware) + api (Rust extractor) so signatures round-trip. In
     # prod, Config::load bails if this is still the dev placeholder.
     "anon_cookie_secret",
+    # Sentry DSNs — one per project (wander-web, wander-api). The web
+    # DSN doubles as NEXT_PUBLIC_SENTRY_DSN at build time (DSNs are
+    # safe to expose; they're write-only).
+    "sentry_dsn_web",
+    "sentry_dsn_api",
   ]
 }
 

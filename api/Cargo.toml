@@ -83,6 +83,19 @@ aws-sdk-sqs = "1.55"
 # they were native env vars. See core::config::ssm_bootstrap.
 aws-sdk-ssm = "1.55"
 
+# Sentry — error tracking. `rustls` to avoid pulling OpenSSL via
+# Lambda's musl base image. `panic` catches Rust panics so we don't
+# silently lose them when the process crashes. `tracing` ferries
+# `tracing::error!` events as breadcrumbs + events to Sentry.
+sentry = { version = "0.42", default-features = false, features = [
+  "backtrace",
+  "contexts",
+  "panic",
+  "reqwest",
+  "rustls",
+  "tracing",
+] }
+
 [profile.release]
 opt-level = 3
 lto = "thin"

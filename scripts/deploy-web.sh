@@ -112,6 +112,11 @@ echo "▶ syncing server-side secrets from SSM → web Lambda env"
 # The Next.js Lambda doesn't have the Rust SSM bootstrap, so any
 # secret read by server-side code (Clerk middleware, anon cookie
 # signer) must live in the Lambda's config env.
+#
+# Sentry is NOT synced here — @sentry/nextjs is incompatible with
+# OpenNext 4.0's copyTracedFiles step (see next.config.ts for the
+# rationale). Web errors are caught via CloudWatch + CloudFront 5xx
+# alarms until OpenNext upstream fixes the interaction.
 export CLERK_SECRET ANON_COOKIE_SECRET
 CLERK_SECRET=$(aws --profile "$PROFILE" --region "$REGION" ssm get-parameter \
   --name "/ml-art-prod/clerk_secret_key" --with-decryption \

@@ -20,6 +20,11 @@ async fn main() -> anyhow::Result<()> {
         ml_art_core::config::bootstrap_ssm(&prefix).await?;
     }
 
+    // Sentry must init AFTER bootstrap_ssm so SENTRY_DSN is in scope,
+    // and we bind the guard for the lifetime of main so Drop flushes
+    // events. No-op locally (no DSN set).
+    let _sentry_guard = ml_art_core::telemetry::init_sentry("api-search");
+
     let cfg = Config::load()?;
     let pool = ml_art_core::db::make_pool(&cfg.database_url).await?;
     let embedder = Embedder::new(
