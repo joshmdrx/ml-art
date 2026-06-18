@@ -14,7 +14,7 @@ import { reportError } from "@/lib/reportError";
  */
 
 export const metadata: Metadata = {
-  title: "Inquiry confirmed — Wander",
+  title: "Inquiry confirmed",
 };
 
 type Params = Promise<{ token: string }>;

@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import { TopNav } from "@/components/TopNav";
 
 export const metadata: Metadata = {
-  title: "For artists — Wander",
+  title: "For artists",
   description:
     "A free studio on Wander. No marketplace, no commissions, no algorithm pushing you down the feed.",
 };

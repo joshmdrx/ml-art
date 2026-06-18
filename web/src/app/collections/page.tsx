@@ -7,7 +7,7 @@ import { listMyCollections } from "@/lib/api";
 import type { CollectionSummary } from "@/lib/api";
 
 export const metadata: Metadata = {
-  title: "Your collections — Wander",
+  title: "Your collections",
 };
 
 export default async function CollectionsPage() {

@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import { TopNav } from "@/components/TopNav";
 
 export const metadata: Metadata = {
-  title: "Terms — Wander",
+  title: "Terms",
   description: "The rules of using Wander, in plain English.",
 };
 

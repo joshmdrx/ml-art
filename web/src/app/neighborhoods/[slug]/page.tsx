@@ -24,10 +24,10 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { slug } = await params;
   const data = await getNeighborhood(slug).catch(() => null);
-  if (!data) return { title: "Neighborhood not found — Wander" };
+  if (!data) return { title: "Neighborhood not found" };
   const n = data.neighborhood;
   return {
-    title: `${n.name} — Neighborhoods — Wander`,
+    title: `${n.name} — Neighborhoods`,
     description: n.description ?? `Works in the ${n.name} neighborhood.`,
   };
 }

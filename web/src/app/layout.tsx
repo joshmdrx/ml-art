@@ -21,9 +21,43 @@ const serif = Instrument_Serif({
 });
 
 export const metadata: Metadata = {
-  title: "Wander — discover independent contemporary artists",
+  metadataBase: new URL("https://wander.gallery"),
+  title: {
+    default: "Wander — discover independent contemporary artists",
+    template: "%s — Wander",
+  },
   description:
     "A discovery platform for independent contemporary artists. No marketplace. No commissions. Just better search.",
+  icons: {
+    icon: [
+      { url: "/favicon.ico", sizes: "any" },
+      { url: "/icon.svg", type: "image/svg+xml" },
+    ],
+    apple: "/apple-touch-icon.png",
+  },
+  openGraph: {
+    type: "website",
+    siteName: "Wander",
+    url: "https://wander.gallery",
+    title: "Wander — discover independent contemporary artists",
+    description:
+      "A discovery platform for independent contemporary artists. No marketplace. No commissions. Just better search.",
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Wander — discover independent contemporary artists",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Wander — discover independent contemporary artists",
+    description:
+      "A discovery platform for independent contemporary artists. No marketplace. No commissions. Just better search.",
+    images: ["/og.png"],
+  },
 };
 
 export default function RootLayout({

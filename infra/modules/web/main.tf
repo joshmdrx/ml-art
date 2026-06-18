@@ -415,6 +415,29 @@ resource "aws_cloudfront_distribution" "web" {
     cache_policy_id        = "658327ea-f89d-4fab-a63d-7e88639e58f6"
   }
 
+  # Root-level static assets. Next.js serves files from `web/public/`
+  # at the URL root (e.g. `public/favicon.ico` → `/favicon.ico`), and
+  # OpenNext copies them to the root of the assets bucket. Without
+  # these path patterns, every static file at the root falls through
+  # to the Lambda — and Next.js's metadata routes (icon/og/etc.) end
+  # up serving empty bytes in OpenNext's runtime.
+  #
+  # One behaviour per extension because CloudFront patterns don't
+  # support brace-expansion. Add more (`*.webp`, `*.txt`, …) as we
+  # need them.
+  dynamic "ordered_cache_behavior" {
+    for_each = toset(["*.ico", "*.svg", "*.png", "*.jpg", "*.webp", "*.txt", "*.xml", "*.json", "*.webmanifest"])
+    content {
+      path_pattern           = ordered_cache_behavior.value
+      target_origin_id       = "s3-web-assets"
+      viewer_protocol_policy = "redirect-to-https"
+      allowed_methods        = ["GET", "HEAD"]
+      cached_methods         = ["GET", "HEAD"]
+      compress               = true
+      cache_policy_id        = "658327ea-f89d-4fab-a63d-7e88639e58f6" # CachingOptimized
+    }
+  }
+
   viewer_certificate {
     acm_certificate_arn      = var.acm_cert_arn
     ssl_support_method       = "sni-only"

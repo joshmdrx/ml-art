@@ -9,7 +9,7 @@ import { getStudioMe, listStudioInquiries } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
 export const metadata: Metadata = {
-  title: "Inquiries — Studio",
+  title: "Studio inquiries",
 };
 
 type Search = { status?: string };

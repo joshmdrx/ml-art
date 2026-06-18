@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import { TopNav } from "@/components/TopNav";
 
 export const metadata: Metadata = {
-  title: "About — Wander",
+  title: "About",
   description:
     "Wander is a discovery platform for independent contemporary artists. No marketplace. No commissions. Just better search.",
 };
