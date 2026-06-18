@@ -17,6 +17,81 @@ Format:
 
 ---
 
+## 2026-06-17 — Event storage: Postgres hot tier, S3 Parquet cold archive (when volume justifies)
+
+**Context:** `T-050` introduces a write path into the existing `events` table. At realistic mid-term scale (~1k DAU, 10-20 events/session) that's 10-100K events/day → 20-35M rows/year → ~10-15 GB/year on Neon. Storage cost is real ($0.30/GB-month); query latency on analytical aggregations gets painful past ~100M rows in a single non-partitioned table. Question: where do events live in the medium term?
+
+**Decided:** Postgres now, S3 Parquet cold archive later — driven by volume, not in advance.
+
+- **Now (`T-050` + promoted `T-016`):** events write to Postgres `events`, partitioned monthly. The ML jobs (`user_profile.refresh`, recommendation, Discover Weekly) read recent partitions only — they weight by recency and don't care about >60-day-old data.
+- **Later (~6 months of real usage, or when partition row count hits ~10M):** nightly Lambda exports yesterday's partition to `s3://wander-events/year=YYYY/month=MM/day=DD.parquet`. Both tiers populated from this point.
+- **Even later (~12 months in, or when query latency hurts):** drop Postgres partitions older than 90 days. Athena or DuckDB over the S3 archive picks up long-tail analytics.
+
+**Architecture commitment:** events are written via `JobEvent::EventLog` (handler-side fire-and-forget), never in the request transaction. This decouples storage from the request path and means the future storage swap is purely a handler implementation change.
+
+**Alternatives considered + rejected:**
+- **Pure data lake from day one** (S3 + Firehose). Rejected at v1 volume: eventual consistency complicates the ML read path (taste-vector job either reads via Athena at 5-30s latency or maintains a Parquet → Postgres extract); operational complexity isn't justified by 10-100K events/day.
+- **Clickhouse / Timescale / specialised OLAP.** Rejected: new service to operate, new credentials to rotate, new failure modes. Worth revisiting only if a real-time analytics use case emerges that Athena over Parquet can't serve.
+- **Keep everything in Postgres forever.** Rejected: storage cost on Neon at 100M+ rows is real, and analytical query latency gets painful even with partitioning. The S3 archive layer is cheap insurance.
+
+**Why:** Postgres + monthly partitioning carries us cleanly through v1.x scale with zero new infra. The job-queue write abstraction means future storage tier additions are additive, not migrative. We don't pay for a data lake until we get the value of one.
+
+**Reversibility:** Medium. The `JobEvent::EventLog` abstraction is the swap point — changing the storage destination is a handler-impl change, not a schema change. But once analytics queries depend on a particular storage shape (Postgres SQL vs Athena SQL), they're somewhat coupled.
+
+---
+
+## 2026-06-17 — Algorithmic neighbourhoods as primary discovery primitive
+
+**Context:** Hand-curated neighbourhoods shipped with v1 (6-12 hand-picked themes from `seed.py::_NEIGHBORHOODS`). `99-deferred.md` originally called for algorithmic clustering (HDBSCAN + LLM label) only "when corpus > 2000 artworks." With v1 sitting at ~2000 demo artworks and real artists arriving, the threshold question is becoming live. Compounded by the editorial decision (below) which removes hand-curation as a sustainable surface.
+
+**Decided:** Promote algorithmic neighbourhoods to the primary discovery primitive (`T-057`). The schema already supports it — `neighborhoods.kind ∈ ('curated', 'semantic', 'geographic')`, `cluster_centroid vector(1024)`, `representative_artwork_ids uuid[]`, `computed_at timestamptz` were all designed for this. Algorithmic clusters power neighbourhood pages, cluster-of-an-artwork ("more from this neighbourhood"), cluster-of-a-user (sort neighbourhoods by sim-to-taste), and feed sampling for Discover Weekly.
+
+**Alternatives considered + rejected:**
+- **Keep hand-curated; defer algorithmic until 10k+ artworks.** Rejected — hand-curation doesn't scale on founder time (see editorial decision below), and at the current corpus HDBSCAN already produces meaningful clusters even if they reflect WikiArt's style structure today.
+- **Pure personalised feed; no clusters.** Rejected — clusters are the *public* navigation surface (everyone shares the same neighbourhood URLs, can link to them, can browse them anonymously). Personalised feeds can't substitute for a shared vocabulary of regions.
+
+**Why:** The schema was clearly designed for this; using only the `curated` kind today is leaving most of the table empty. Algorithmic clusters compose with every other ML feature (`T-055` taste vector, `T-060` Discover Weekly, `T-061` calibrator). Wider corpus surface area is more navigable when the regions of the embedding space have stable named addresses (`/neighborhoods/moody-coastal`) that update their membership weekly but keep their slugs.
+
+**Coexistence with `kind='curated'`:** the hand-curated set stays in place during the transition. UX call (filter? merge? curated-first then algorithmic?) deferred to `T-057` implementation. The schema supports either.
+
+**Reversibility:** High. Disabling the algorithmic job leaves the `'semantic'` rows untouched but stale; falling back to curated-only is a `WHERE kind = 'curated'` clause.
+
+---
+
+## 2026-06-17 — Discovery is ML-driven; no editorial curation surface
+
+**Context:** The discovery layer has two paradigms available: founder-led editorial picks (hand-curated neighbourhoods, weekly "what we're looking at" digest, taste-as-brand voice) or ML-driven retrieval (per-user taste vectors, algorithmic neighbourhoods, content-based recommendations). The strategy review surfaced this as a forking-decision point because both paths shape the same user-facing surfaces — homepage row, neighbourhood concept, weekly digest — but require different ongoing investment and yield different products.
+
+**Decided:** ML-driven. All retention-loop surfaces (homepage rows, neighbourhood pages, weekly digest, "for you" feed) are computed from event-driven taste vectors and HDBSCAN-discovered clusters. There is no editor-led "curator picks" surface, no founder-as-taste-voice positioning, no manual weekly newsletter.
+
+**Alternatives considered + rejected:**
+- **Editorial-led** (curator picks + weekly newsletter + hand-picked neighbourhoods). Rejected: doesn't scale on founder time; collapses the moment the founder stops curating; ties brand identity to one person's taste rather than to the product's aesthetic + the quality of the artists on it.
+- **Hybrid** (algorithmic primary + editorial accent row). Rejected on net — the editorial accent always becomes the visual centre of gravity because it's higher contrast (a person picked these). Pulls energy from the ML loop without adding much. Revisit only at scale (10k+ artists).
+- **Personalised-only, no clustering.** Rejected: cold-start is brutal without clusters to navigate. Algorithmic neighbourhoods provide the public navigation primitive (everyone sees the same clusters) that personalised feeds can't.
+
+**Why:** Aligns with positioning — "no marketplace, no commission, no human-driven ranking" generalises to "no editor-driven ranking either." ML produces fresher surfaces with less ongoing work, scales naturally as the corpus grows, and composes with every other ML feature (search re-rank, similar-artists, Discover Weekly). Brand voice is communicated by aesthetic restraint and the quality of artists on the platform, not by editorial picks.
+
+**Reversibility:** Medium. Building an editorial workflow later is straightforward (CMS + a row component). Tearing one out once readers depend on it is harder. Sequence is therefore: ship the ML loop first, only consider editorial if it materially under-delivers and we can articulate what an editor would add.
+
+---
+
+## 2026-06-17 — No in-platform messaging; inquiries are email-stitched threads
+
+**Context:** Phase 4b (`T-011`) shipped artist → inquirer reply via Resend; the inquirer can't reply back today. Two paths to close the loop: build a real in-platform messaging UI (real-time chat, notifications inbox), or stitch the conversation by tokenised Reply-To addresses so both parties keep emailing while the platform persists the full thread.
+
+**Decided:** Email-stitching, indefinitely. Conversations are real-time email; we persist the full thread in `inquiry_replies` (extended with `from_role` per `T-054`); both parties see what they expect — artist sees the thread in their studio inbox, inquirer just keeps emailing.
+
+**Alternatives considered + rejected:**
+- **Full in-platform messaging.** Rejected: forces the artist to check yet another inbox (hostile to their actual workflow — most live in email), and forces the anonymous inquirer to sign up to reply (destroys 70-90% of conversions). The "feels like an app" upside is mostly cosmetic at our use-case scale.
+- **In-platform for signed-in inquirers, email-stitching for anon.** Rejected: bifurcated model that doubles UX and complicates the persistence story.
+- **Status quo (no inquirer-back reply at all).** Rejected: real inquiries are conversations; today we silently drop the inquirer's second email into the void.
+
+**Why:** Email is what the parties already use. It handles attachments, mobile push, formatting, search, and 30 years of accumulated UX for free. Our DB still ends up with the full conversation. We graduate to in-platform messaging only when we need a feature email literally can't do — group conversations, structured offer/accept flows, embedded transactions. None of those are v1 or v1.x.
+
+**Reversibility:** High. Same `inquiry_replies` substrate supports both surfaces; adding a UI later is purely additive — no schema change needed.
+
+---
+
 ## 2026-05-29 — Jobs queue: Postgres local, SQS + Lambda prod
 
 **Context:** Several v1 surfaces need background work — geocoding `artist_locations` rows (currently `tokio::spawn`, fragile across api restarts), email delivery via Resend (T-032), image moderation via Rekognition (T-008), and the deferred LLM-assisted onboarding (T-012 Phase 2). The state-of-the-build review surfaced the worker-runtime question as the biggest unblocker for those.

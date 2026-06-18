@@ -36,9 +36,11 @@ The `/admin/submissions` page from the original spec.
 
 ### Algorithmic neighborhood discovery (HDBSCAN + LLM labeling)
 
-Original spec called for a weekly Inngest job that clusters all published artwork embeddings with HDBSCAN and uses an LLM to label clusters.
+Original spec called for a weekly scheduled job that clusters all published artwork embeddings with HDBSCAN and uses an LLM to label clusters.
 
-**Why deferred:** clustering needs a corpus large enough to produce meaningful clusters (~thousands of artworks). At v1 launch (hundreds), it produces noise + one mega-blob. V1 uses **manually curated** neighborhoods: 6–12 hand-picked themes with hand-picked representative artworks.
+**Status update 2026-06-17:** promoted to active roadmap as `T-057` per `decisions.md` 2026-06-17 "Algorithmic neighbourhoods as primary discovery primitive." Remainder of this entry is historical context.
+
+**Why deferred (original v1):** clustering needs a corpus large enough to produce meaningful clusters (~thousands of artworks). At v1 launch (hundreds), it produces noise + one mega-blob. V1 uses **manually curated** neighborhoods: 6–12 hand-picked themes with hand-picked representative artworks.
 
 **Trigger to revive:** when published artwork count crosses ~2000, prototype clustering against the manually curated set and compare. Only ship algorithmic if it's at least as coherent as manual.
 
@@ -46,7 +48,9 @@ Original spec called for a weekly Inngest job that clusters all published artwor
 
 `user_profiles.taste_embedding` exists in v1 schema but isn't surfaced on the homepage in v1 — the homepage is the same for everyone (curated neighborhoods + recent additions).
 
-**Why deferred:** cold-start. New users have no profile. Showing empty rec slots reads worse than not having them. The taste embedding builds up via the `user_profile.refresh` Inngest job and becomes useful once a user has ≥10 qualifying interactions.
+**Status update 2026-06-17:** promoted to active roadmap as `T-055` (taste vector + refresh) + `T-056` ("For you" row).
+
+**Why deferred (original v1):** cold-start. New users have no profile. Showing empty rec slots reads worse than not having them. The taste embedding builds up via the `user_profile.refresh` scheduled job and becomes useful once a user has ≥10 qualifying interactions.
 
 **When revived:** add a "For you" row on the homepage that only renders if `interaction_count ≥ 10`. Falls back to curated neighborhoods otherwise.
 
@@ -155,7 +159,7 @@ event_artworks (
 ## Product features
 
 - **Public user profile pages** (`/users/:username`) — schema supports a future `users.username`, `users.public_collections` flag.
-- **Saved searches & alerts** — table `saved_searches`, Inngest job to email matches.
+- ~~**Saved searches & alerts** — table `saved_searches`, scheduled job to email matches.~~ Promoted 2026-06-17 → `T-059`.
 - **Notifications system** — in-app inbox for inquiry replies, saved-artwork-now-available, etc.
 - **Multi-currency conversion** — artworks already store currency; need an exchange-rate service and per-user display preference.
 - **Artist-to-artist messaging.**

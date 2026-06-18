@@ -35,7 +35,7 @@ if the item was dropped, with a one-line reason.
 - 22 new Rust tests + 4 new Playwright specs
 
 **Follow-ups (not blocking v1):**
-- Replace `tokio::spawn` in `trigger_background_geocode` with a real Inngest `artist_location.geocode` function once the Inngest runtime lands (same signature, same semantics — one-line swap)
+- ~~Replace `tokio::spawn` in `trigger_background_geocode` with the canonical `JobEvent::ArtistLocationGeocode` enqueue.~~ Shipped 2026-05-29 with `T-044` (jobs queue) — see `decisions.md`.
 - Seed at least one `artist_locations` row for the WikiArt demo corpus so the artist-profile map + `/search?map=1` show real pins out of the box
 - Geographic neighborhoods (`neighborhoods.kind = 'geographic'`) — editorial work, still deferred per `99-deferred.md` Phase 1
 
@@ -105,6 +105,16 @@ if the item was dropped, with a one-line reason.
 **Why:** current design writes all `.npy` files at the end of `embed_images`. A mid-run crash on a 2000-image embed loses everything. Burned us once during the WikiArt pass.
 **Acceptance:** stream-style writes; survives `kill -9` mid-run; existing tests pass; add a partial-completion resume test.
 
+### `T-016` Convert `events` table to monthly partitioning
+**Where:** new migration `0015_events_partition.sql`; lands with `T-050`.
+**Why:** Promoted from soft maintenance. Partitioning is the prerequisite that makes the eventual hot → cold tier swap (S3 Parquet archive) safe and cheap. Without it, pruning becomes a destructive whole-table operation and analytical queries get progressively slower past ~100M rows. See `decisions.md` 2026-06-17 "Event storage."
+**Acceptance:**
+- Convert `events` to `PARTITION BY RANGE (occurred_at)`, monthly partitions, auto-created N months ahead by a small DDL job.
+- Migration is online: copy existing rows into the first partition, swap with a single transactional rename.
+- All three indexes from `0006_events_profiles.sql` recreated per partition.
+- Integration test: insert spanning a partition boundary still queries cleanly via the parent.
+- Lands in lockstep with `T-050` so the writer never targets the un-partitioned table.
+
 ### ~~`T-008` Image moderation — artwork_images pipeline~~ — shipped 2026-06-01
 
 - ✅ `core::moderation` `ModerationClient` enum (`Disabled` / `for_tests`); `JobEvent::ArtworkImageModerate` variant + handler dispatch.
@@ -153,7 +163,7 @@ if the item was dropped, with a one-line reason.
 
 ### `T-012` Onboarding flow `/onboarding`
 - ✅ **Phase 1 (landed 2026-05-28):** `POST /v1/onboarding/start` (mint artist + link `user_id`, slug w/ collision suffix) and `POST /v1/onboarding/complete` (`pending → active`, idempotent). Five-step wizard at `/onboarding` (identity → profile → artworks → locations → review) reusing existing studio mutations. `/studio` + `/studio/settings` redirect signed-in non-artists into the wizard. 10 Rust integration tests + 6 slugify unit tests + 1 Playwright spec.
-- Phase 2 (blocked on Inngest runtime):
+- Phase 2 (blocked on the LLM-extraction + scrape handlers landing in `core::jobs`):
   - `POST /v1/onboarding/import` — website / Instagram scrape job; pre-fills bio + image URLs
   - `POST /v1/onboarding/extract-metadata` — Anthropic conversational extraction per artwork (gated by `ANTHROPIC_ENABLED`)
   - `POST /v1/onboarding/polish-statement` — optional LLM polish on the artist statement
@@ -162,7 +172,7 @@ if the item was dropped, with a one-line reason.
 **Where:** `infra/` (Terraform, not yet started)
 **Acceptance:**
 - AWS Budgets at $20/mo (prod) → email
-- Per-service spend monitors via Inngest cron
+- Per-service spend monitors via scheduled jobs (cron-enqueued `JobEvent`)
 - Pre-launch checklist in `COST.md` satisfied
 
 ### `T-034` Edge rate limiting (AWS WAF / CloudFront)
@@ -183,17 +193,167 @@ if the item was dropped, with a one-line reason.
 
 ---
 
-## Soft maintenance (do when it bites)
+## Post-launch tracks (v1.x — retention + ML)
 
-### `T-016` Convert `events` table to monthly partitioning
-- Already documented in `db/README.md` as a v1 deviation
-- Trigger: events table > 10M rows or queries get slow
+The retention loop + ML discovery surface, defined as a coherent body of
+work in the 2026-06-17 strategy session. See `decisions.md` for the four
+underlying positions: no in-platform messaging, ML-driven discovery,
+algorithmic neighbourhoods as primary primitive, Postgres-hot / S3-cold
+event storage.
+
+Ordered roughly by precondition graph: foundation (`T-050`) → retention
+(`T-051..T-053`) → loops (`T-054`) → ML core (`T-055..T-057`) → UX
+additions (`T-058..T-063`).
+
+### `T-050` Behavioural events writer
+**Where:** `core::events` (new module) + handler call sites in `search.rs`, `artwork.rs`, `inquiries.rs`, `studio/*`, `me/*`, `uploads.rs`.
+**Why:** `0006_events_profiles.sql` shipped the table; no writer exists. Every taste-vector, recommendation, analytics, and CF feature below is blocked on event data flowing in. Single highest-leverage piece of plumbing on the post-launch board.
+**Acceptance:**
+- New `JobEvent::EventLog { name, anonymous_id, user_id, properties, context }` variant. Fire-and-forget enqueue from API handlers — never blocks the request path.
+- Initial event set: `search_executed`, `artwork_viewed`, `artwork_saved`, `artwork_unsaved`, `inquiry_started`, `inquiry_submitted`, `modifier_applied`, `visual_search_uploaded`, `artist_viewed`, `neighborhood_viewed`, `artist_followed`, `artist_unfollowed`.
+- Anonymous + signed-in paths both write; `T-033` merge logic now actually does something.
+- Lands in lockstep with `T-016` so the writer never targets an unpartitioned table.
+- Integration tests assert ≥1 event per relevant handler.
+- Storage abstraction: handler-side only knows the `JobEvent::EventLog` variant. Storage destination is an implementation detail of `core::jobs::handle` and is swappable per the event-storage decision.
+
+### `T-051` Per-artwork + per-artist OG cards
+**Where:** `web/src/app/artworks/[id]/opengraph-image.tsx` (new) + `web/src/app/artists/[slug]/opengraph-image.tsx` (new).
+**Why:** Every share of an artwork page currently advertises the homepage card. Free distribution lost on every paste into iMessage / Slack / WhatsApp / Twitter. Tier-1 retention + acquisition with very little code.
+**Acceptance:**
+- Each route returns 1200×630 PNG via Next.js `ImageResponse`. Artwork variant: primary image + title + artist name. Artist variant: 4-up grid + name.
+- **Spike first** to verify `@vercel/og` (Satori + Resvg WASM) bundles cleanly under OpenNext 4.x — has historically been touchy with font loading on Lambda.
+- **Fallback if spike fails:** precompute PNGs at artwork-publish time via the same Pillow pipeline used for the homepage `og.png`; serve from S3 with a CloudFront behaviour for `/og/*.png`.
+- Cache headers: `public, max-age=86400, s-maxage=86400`.
+- `<meta property="og:image">` automatically wired by Next's convention.
+
+### `T-052` Follow-an-artist + new-work notifications
+**Where:** New migration (`follows`); `api-search::me::follows` handlers; artist-page Follow button; studio dashboard followers count.
+**Why:** Single biggest retention hook missing. Foundation for new-work email notifications, Discover Weekly (`T-060`), the personalised feed (`T-056`).
+**Acceptance:**
+- Migration: `follows (user_id uuid, artist_id uuid, created_at timestamptz, PRIMARY KEY (user_id, artist_id))` + `(artist_id, created_at)` index.
+- Endpoints: `POST /v1/me/follows/:artist_id`, `DELETE /v1/me/follows/:artist_id`, `GET /v1/me/follows`.
+- Anonymous flow: queue the follow in cookie-scoped pending-actions; `T-033` anonymous-merge bridge applies on sign-in.
+- Artist publish action enqueues `JobEvent::NotifyFollowers`; handler batches per-day per-user (one digest, never one email per artwork) and posts via Resend.
+- `/studio` dashboard surfaces "N followers" + a recent-followers list.
+- Integration tests assert follow / unfollow / idempotency / per-user isolation.
+
+### `T-053` Shareable collections (public read)
+**Where:** `web/src/app/c/[share_id]/page.tsx` (new); extend `api-search::collections` with a public-read-by-share-id endpoint.
+**Why:** `user_collections.is_public` + `share_id` are already in the schema — no UI exposes them. Public collections are how non-artist users will pitch the product to friends ("here's my mood board").
+**Acceptance:**
+- Collection settings UI gains a "Make public" toggle. On first toggle, mint a 22-char URL-safe `share_id`.
+- New public path `/c/<share_id>` renders the collection read-only — no save/edit affordances, no signed-in nav.
+- API: `GET /v1/collections/by-share-id/:share_id`. Auth-optional. 404 if not public.
+- Per-collection OG card (composes the first 4 artwork covers via the same primitive as `T-051`).
+- "Copy link" affordance in the owner view.
+- Privacy page line acknowledging that public collections are publicly indexable.
+
+### `T-054` Inquirer-inbound replies (email-stitched threads)
+**Where:** Migration extending `inquiry_replies` with `from_role text` + nullable `artist_id`; Resend inbound-webhook handler; tokenised Reply-To.
+**Why:** Phase 4b shipped artist → inquirer reply; inquirer-back is missing. Real inquiries are conversations. Closes the loop with zero in-platform-messaging cost — see `decisions.md` 2026-06-17.
+**Acceptance:**
+- Migration: `ALTER TABLE inquiry_replies ADD COLUMN from_role text NOT NULL DEFAULT 'artist'`; `ALTER COLUMN artist_id DROP NOT NULL`.
+- Reply-To on outbound emails is `r-<inquiry_id>-<hmac_token>@reply.wander.gallery`.
+- New endpoint `POST /v1/webhooks/resend/inbound`. Verifies the Resend signature; verifies the HMAC in the To address against `(inquiry_id, secret)`. Persists a new `inquiry_replies` row with `from_role='inquirer'`. Enqueues `JobEvent::InquirySendReplyForward` to forward to the artist.
+- DNS: MX records for `reply.wander.gallery` via the Cloudflare module.
+- Studio inbox renders the thread chronologically with role chips.
+- Integration tests: token round-trip, wrong-token rejection, replay-protection.
+
+### `T-055` User taste vector + nightly refresh
+**Where:** New `core::user_profile` module; `JobEvent::UserProfileRefresh` variant + handler; cron trigger (CloudWatch Events → SQS in prod / Postgres job-poller cron in dev).
+**Why:** Foundation for `T-056` (personalised search re-rank), `T-060` (Discover Weekly), cluster-of-a-user, similar-artists. Schema (`user_profiles.taste_embedding` + HNSW) already exists.
+**Acceptance:**
+- Job: for each user with new events in the last 24h, fetch recent N events + associated artwork embeddings, compute weighted EWMA, L2-normalise, persist with `profile_updated_at = now()`.
+- Initial weights — `inquiry: 5 / follow: 4 / save: 3 / visual_upload: 3 / modifier: 2 / dwell>15s: 1 / click: 0.5 / scroll-past: -0.1`. Decay 0.95 per week.
+- Anonymous users get refreshed too (keyed by `anonymous_id`); merge on sign-in via `T-033`.
+- `interaction_count` on `user_profiles` is incremented per refresh so downstream surfaces can gate on it (≥10 to enable personalised retrieval).
+- Acceptance test: ≥10 saves of artworks near a centroid → resulting taste vector cosine-sim to that centroid > 0.6.
+
+### `T-056` Personalised search re-rank + "For you" row
+**Where:** `api-search::search.rs` adds a `taste_ranked` CTE; new `/v1/me/recommendations/for-you` endpoint; homepage row.
+**Why:** First user-visible payoff of `T-055`. Personalised retrieval is the bridge from "good search" to "comes back daily."
+**Acceptance:**
+- `search.rs` extends the RRF fusion with a third channel: `taste_ranked` = nearest artworks to `user_profiles.taste_embedding` via HNSW. Blended alongside `semantic_ranked` + `text_ranked`. Skipped when `interaction_count < 10`.
+- `GET /v1/me/recommendations/for-you` returns top-K by sim-to-taste with a small jitter (random rank ±5 on top 50) for serendipity.
+- Homepage shows "For you" row when `interaction_count ≥ 10`; otherwise the current curated/featured row.
+- Mode flag `?personalize=off` for debugging on both API + page.
+- Per-request log line `personalise=on user=<id> alpha=…` for diagnosis.
+
+### `T-057` Algorithmic neighbourhoods (HDBSCAN + Claude label)
+**Where:** `ml/scripts/compute_neighborhoods.py` (new); persistence via a new ingestion endpoint or direct DB write; runs as a containerised Lambda or scheduled batch.
+**Why:** Replace hand-curated set with discovered clusters per `decisions.md` 2026-06-17. Schema (`neighborhoods.kind='semantic'`, `cluster_centroid`, `representative_artwork_ids`, `computed_at`) is fully ready.
+**Acceptance:**
+- Pull all `artworks.status='published'` embeddings; HDBSCAN with `min_cluster_size` tuned around ~30. Output per cluster: centroid, member artwork ids, top-K nearest to centroid.
+- Label step: sample 10 nearest per cluster; one Claude call per cluster with structured output `{name: 2-4 words, one_sentence_description}`. Cache by centroid hash so re-runs only re-label drifted clusters.
+- Persistence: write rows with `kind='semantic'`. Match old centroids to new by greedy nearest-match for slug stability across re-runs.
+- Hand-curated set (`kind='curated'`) coexists. UX call (filter? merge? curated-first then algorithmic?) deferred to implementation time.
+- Cadence: weekly via cron-enqueued job. Skip if artwork population shifted < 5% since last run.
+
+### `T-058` Series concept for artists
+**Where:** New migration (`series` table + `artworks.series_id` FK); studio UI; artist-page "View by series" layout option.
+**Why:** Behance-style "project format." Real artists work in series; the current flat-grid portfolio is hostile to how artists present their practice. Series also becomes a clusterable / recommendable entity.
+**Acceptance:**
+- Migration: `series (id, artist_id, slug, title, statement, cover_artwork_id?, created_at, updated_at)` + `artworks.series_id uuid REFERENCES series(id) ON DELETE SET NULL`.
+- Studio: new "Series" tab with CRUD; drag-to-assign existing artworks; cover-image picker.
+- Artist page: optional "View by series" toggle that groups artworks under series headers.
+- API: `GET /v1/artists/:slug/series`, `GET /v1/series/:id`.
+- Artwork detail surfaces "More from this series" when `series_id` is set.
+
+### `T-059` Saved searches + alerts
+**Where:** Migration (`saved_searches`); `core::user_searches`; weekly cron-enqueued job re-running each saved query.
+**Why:** Etsy / Saatchi-style retention. Composes with the taste vector — a saved search is both a notification trigger and a strong explicit-intent signal feeding `T-055`.
+**Acceptance:**
+- Migration: `saved_searches (id, user_id, name, params jsonb, frequency text default 'weekly', last_notified_at, last_match_max_id, created_at)`.
+- "Save this search" affordance on `/search`. Persists current query string + filter state.
+- Weekly job: per saved search, re-run with `since=last_notified_at`, email up to top-5 new matches.
+- Per-search unsubscribe via signed token + `/me/saved-searches` management page.
+
+### `T-060` Discover Weekly digest
+**Where:** Cron-driven variant of the `T-055` refresh job; new email template via `core::emails`.
+**Why:** ML-driven equivalent of an editorial weekly. Same retention mechanic, taste-vector engine — explicitly preferred over editorial per `decisions.md` 2026-06-17.
+**Acceptance:**
+- Per-user, once per week: take the taste vector, sample 12 artworks the user hasn't seen (`events.artwork_viewed` cross-check), bias 8 from nearest clusters + 4 from far clusters for serendipity.
+- New `templates::discover_weekly` Resend template — 4×3 grid, link straight to artwork pages.
+- Skip if `interaction_count < 10`. Skip if user opened a previous digest within 2 days. Skip during quiet hours per user-TZ.
+- Per-user opt-out link (separate from saved-search unsubscribe).
+
+### `T-061` First-session taste calibrator
+**Where:** Web component on first homepage visit (anon-cookie flag); `POST /v1/me/calibrate` endpoint that seeds the anonymous taste vector.
+**Why:** Makes `T-056` "For you" useful from session one. Solves the cold-start problem where new users see generic surfaces until they've generated enough events.
+**Acceptance:**
+- Dismissable inline panel on first visit: "Help us tune what to show you — 5 quick comparisons."
+- 5 pairs sampled from far-apart cluster centroids (uses `T-057` output); user picks one per pair.
+- Each chosen artwork's embedding (weight 2.0) seeds the anonymous taste vector. Merges into user vector on sign-in via `T-033`.
+- A/B against a no-calibration cohort once events flow — measure 7-day return rate.
+
+### `T-062` Filter UI: size / price / medium
+**Where:** `web/src/components/FilterBar.tsx` extensions + URL params; API already accepts most of these via `api-search::search`.
+**Why:** Schema + API are mostly there. "Something small under £500" is a real query we silently can't serve. Keep the visual restraint — this isn't a marketplace.
+**Acceptance:**
+- Price range slider (currency-aware via `lib/format.ts`).
+- Dimension band: S / M / L preset + custom range in cm.
+- Medium multi-select (uses existing taxonomy).
+- All URL-driven via the established `useUrlState` pattern.
+- API-side gaps closed where present (currently `medium=` is a single-value param).
+
+### `T-063` Inline "more like this" in grid
+**Where:** `ArtworkCard` extension + a small flyout component; backend already has `GET /v1/artworks/:id/similar`.
+**Why:** Pinterest-style discovery deep-dive. Engine exists; we just don't surface it inline.
+**Acceptance:**
+- Desktop: hover ≥600ms reveals a 4-thumb similar-works tray below the card.
+- Mobile: long-press equivalent.
+- Doesn't navigate the main page; clicking a similar thumb does.
+- Lazy-loaded — only fires the fetch on hover threshold.
+
+---
+
+## Soft maintenance (do when it bites)
 
 ### `T-017` Search facet counts
 - Spec'd but currently returns nothing. Costs per-search COUNT queries; needs precomputation or approximation at scale.
 
 ### `T-018` Query embedding cache TTL job
-- `query_cache.cleanup` Inngest cron, daily
+- `query_cache.cleanup` scheduled job, daily
 - `DELETE WHERE last_used_at < now() - interval '30 days'`
 
 ### `T-019` Voyage multimodal embedder
