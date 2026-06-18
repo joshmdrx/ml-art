@@ -61,6 +61,15 @@ export default function PrivacyPage() {
             expire after a short window.
           </p>
 
+          <p>
+            Collections (your saved lists of artworks) are private by
+            default. If you choose to make one public, anyone with the
+            share link can view it; the link itself is unguessable, but
+            search engines may index it once it&apos;s shared anywhere
+            public. Making a collection private again rotates the link
+            so the old one stops working.
+          </p>
+
           <h2 className="font-serif text-2xl pt-4">If you contact an artist</h2>
 
           <p>

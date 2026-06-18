@@ -112,6 +112,12 @@ pub fn build_app(state: Arc<AppState>) -> Router {
             "/v1/me/collections/:id/artworks/:artwork_id",
             delete(me::collections::remove_artwork),
         )
+        // T-053 — public read by share token. No auth; 404 if private or
+        // not found. The share token is the entire credential.
+        .route(
+            "/v1/collections/share/:share_id",
+            get(me::collections::public_by_share),
+        )
         .route(
             "/v1/artworks/:id/inquiries",
             post(inquiries::create).layer(from_fn_with_state(limiters.clone(), inquiry_limit)),

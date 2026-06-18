@@ -238,16 +238,20 @@ additions (`T-058..T-063`).
 - `/studio` dashboard surfaces "N followers" + a recent-followers list.
 - Integration tests assert follow / unfollow / idempotency / per-user isolation.
 
-### `T-053` Shareable collections (public read)
-**Where:** `web/src/app/c/[share_id]/page.tsx` (new); extend `api-search::collections` with a public-read-by-share-id endpoint.
-**Why:** `user_collections.is_public` + `share_id` are already in the schema — no UI exposes them. Public collections are how non-artist users will pitch the product to friends ("here's my mood board").
-**Acceptance:**
-- Collection settings UI gains a "Make public" toggle. On first toggle, mint a 22-char URL-safe `share_id`.
-- New public path `/c/<share_id>` renders the collection read-only — no save/edit affordances, no signed-in nav.
-- API: `GET /v1/collections/by-share-id/:share_id`. Auth-optional. 404 if not public.
-- Per-collection OG card (composes the first 4 artwork covers via the same primitive as `T-051`).
-- "Copy link" affordance in the owner view.
-- Privacy page line acknowledging that public collections are publicly indexable.
+### ~~`T-053` Shareable collections (public read)~~ — shipped 2026-06-18
+
+- ✅ API: `GET /v1/collections/share/:share_id` — unauthenticated read, returns `CollectionDetail`. 404 indistinguishably for not-found / private / soft-deleted. Cheap pre-DB guard rejects malformed tokens (length + alphanumeric) before the query.
+- ✅ Schema reuse: `user_collections.is_public` + `share_id` were already there from 0003. No migration. The existing `PATCH /v1/me/collections/:id` already mints + rotates `share_id` on public→toggle cycles.
+- ✅ Factored `fetch_collection_artworks` out of the owner-side `detail` handler so both the owner read and the public read share the same filtering rules (published + active + approved primary image).
+- ✅ Web: `/c/[share_id]/page.tsx` — public read-only view. `notFound()` on miss → clean 404.
+- ✅ Web: `/c/[share_id]/opengraph-image.tsx` — per-collection OG card, 2×2 cover-image grid right + name + work-count left. Same Instrument Serif treatment as `T-051`.
+- ✅ Web: `<CollectionShareControl>` client component on `/collections/[id]` — "Make public" button → `setCollectionPublicState` server action → renders the share URL + a Copy button + a "Make private" toggle. Explicit note in the UI that going private rotates the link.
+- ✅ Server-action plumbing: `setCollectionPublicState` in `actions/collections.ts` so the client component doesn't pull `next/headers` + Clerk's server-only modules into the browser bundle.
+- ✅ Privacy page updated: public collections may be indexed by search engines once shared; toggling private rotates the link.
+- ✅ 5 new integration tests (19 collections total): happy / private / unknown / malformed / rotates-on-toggle-old-link-dies.
+- ✅ Verified in prod: public surface routes return clean 404 + render fallback OG PNG on unknown tokens.
+
+**Architectural note recorded inline:** the public-read handler currently lives in `me/collections.rs` despite not being a "me" route, to share the row types. If `api-search::collections` grows much more public surface area (T-058 series, T-057 neighbourhoods evolution), worth refactoring to a top-level `collections` module with `pub(crate)` row types.
 
 ### `T-054` Inquirer-inbound replies (email-stitched threads)
 **Where:** Migration extending `inquiry_replies` with `from_role text` + nullable `artist_id`; Resend inbound-webhook handler; tokenised Reply-To.

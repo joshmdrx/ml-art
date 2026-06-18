@@ -4,6 +4,7 @@ import Link from "next/link";
 import { auth } from "@clerk/nextjs/server";
 import { TopNav } from "@/components/TopNav";
 import { ArtworkGrid } from "@/components/ArtworkGrid";
+import { CollectionShareControl } from "@/components/CollectionShareControl";
 import { getCollection } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
@@ -72,6 +73,14 @@ export default async function CollectionPage({ params }: { params: Params }) {
         ) : (
           <ArtworkGrid items={artworks.items} />
         )}
+
+        <CollectionShareControl
+          collectionId={collection.id}
+          initial={{
+            is_public: collection.is_public,
+            share_id: collection.share_id,
+          }}
+        />
 
         <p className="mt-16 text-xs text-muted">
           <Link href="/collections" className="hover:text-foreground">

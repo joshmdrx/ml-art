@@ -735,6 +735,27 @@ export async function getCollection(
   return (await res.json()) as CollectionDetail;
 }
 
+/** T-053 — public read of a collection by its share token. Unauthenticated.
+ *  Returns null for 404 (no row, private, or deleted) — the API does not
+ *  distinguish these cases. */
+export async function getPublicCollection(
+  shareId: string,
+  init?: RequestInit
+): Promise<CollectionDetail | null> {
+  const res = await apiFetch(
+    `/v1/collections/share/${encodeURIComponent(shareId)}`,
+    init
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `public collection ${res.status}: ${text || res.statusText}`
+    );
+  }
+  return (await res.json()) as CollectionDetail;
+}
+
 export async function createCollection(input: {
   name: string;
   description?: string;

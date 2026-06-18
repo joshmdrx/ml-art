@@ -1,9 +1,14 @@
 //! `/v1/me/collections/*` — the authenticated user's saved-artwork collections.
 //!
-//! Every handler authenticates first, then enforces row-level ownership in
-//! SQL (`WHERE user_id = $auth_user_id`). A collection that doesn't exist
+//! Every "me" handler authenticates first, then enforces row-level ownership
+//! in SQL (`WHERE user_id = $auth_user_id`). A collection that doesn't exist
 //! OR belongs to someone else returns the same 404 so we don't leak the
 //! existence of others' rows.
+//!
+//! T-053 also adds `public_by_share` here — a public-read endpoint mounted
+//! outside the `/me/` prefix at `/v1/collections/share/:share_id`. It shares
+//! the row types in this file but skips the AuthedUser extractor; the share
+//! token is the entire auth check.
 
 use axum::{
     extract::{Path, Query, State},
@@ -279,41 +284,71 @@ pub async fn detail(
     .await?;
     let row = row.ok_or(ApiError::NotFound)?;
 
-    let artworks: Vec<ArtworkRow> = sqlx::query_as(
+    let summaries = fetch_collection_artworks(&state.pool, row.id).await?;
+    let cover_image_urls = summaries
+        .iter()
+        .filter_map(|a| a.primary_image_url.clone())
+        .take(COVER_THUMB_COUNT)
+        .collect();
+
+    Ok(Json(CollectionDetail {
+        collection: row.into_summary(cover_image_urls),
+        artworks: Paginated {
+            items: summaries,
+            next_cursor: None,
+        },
+    }))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /v1/collections/share/:share_id  (T-053, public, no auth)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Unauthenticated read of a collection by its public share token.
+///
+/// Returns 404 indistinguishably for any of:
+///   - no row matches the token (typoed link, or owner toggled the
+///     collection private → public again, which rotates `share_id`),
+///   - the row exists but `is_public = false` (owner toggled off),
+///   - the row is soft-deleted.
+///
+/// Payload shape matches [`detail`] so the same `CollectionDetail` type
+/// drives both views on the web side. We deliberately do NOT include any
+/// owner identity in the response.
+pub async fn public_by_share(
+    State(state): State<Arc<AppState>>,
+    Path(share_id): Path<String>,
+) -> Result<Json<CollectionDetail>, ApiError> {
+    // Cheap belt-and-braces guard: every share_id we mint is 12 chars
+    // URL-safe alphanumeric. Reject obviously-malformed inputs before
+    // hitting the DB so log volume isn't spammed by crawlers probing
+    // random paths.
+    if share_id.len() < 8
+        || share_id.len() > 64
+        || !share_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric())
+    {
+        return Err(ApiError::NotFound);
+    }
+
+    let row: Option<CollectionRow> = sqlx::query_as(
         r#"
         SELECT
-            a.id,
-            a.title,
-            ar.id           AS artist_id,
-            ar.display_name AS artist_name,
-            ar.slug         AS artist_slug,
-            ai.s3_key       AS primary_s3_key,
-            a.price_cents,
-            a.currency,
-            a.availability
-        FROM collection_artworks ca
-        JOIN artworks a   ON a.id = ca.artwork_id
-        JOIN artists ar   ON ar.id = a.artist_id
-        LEFT JOIN artwork_images ai
-               ON ai.artwork_id = a.id
-              AND ai.is_primary
-              AND ai.moderation_status = 'approved'
-        WHERE ca.collection_id = $1
-          AND a.deleted_at IS NULL
-          AND a.status = 'published'
-          AND ar.deleted_at IS NULL
-          AND ar.status = 'active'
-        ORDER BY ca.display_order ASC NULLS LAST, ca.added_at DESC
-        LIMIT $2
+            uc.id, uc.name, uc.description, uc.is_public, uc.share_id, uc.updated_at,
+            (SELECT count(*)::int FROM collection_artworks ca WHERE ca.collection_id = uc.id) AS artwork_count
+        FROM user_collections uc
+        WHERE uc.share_id = $1
+          AND uc.is_public = true
+          AND uc.deleted_at IS NULL
         "#,
     )
-    .bind(row.id)
-    .bind(COLLECTION_PAGE_LIMIT)
-    .fetch_all(&state.pool)
+    .bind(&share_id)
+    .fetch_optional(&state.pool)
     .await?;
+    let row = row.ok_or(ApiError::NotFound)?;
 
-    let summaries: Vec<ArtworkSummary> =
-        artworks.into_iter().map(ArtworkRow::into_summary).collect();
+    let summaries = fetch_collection_artworks(&state.pool, row.id).await?;
     let cover_image_urls = summaries
         .iter()
         .filter_map(|a| a.primary_image_url.clone())
@@ -436,6 +471,49 @@ pub async fn remove_artwork(
 fn new_share_id() -> String {
     // URL-safe, 12 chars, ~71 bits of entropy. Collisions effectively never.
     Alphanumeric.sample_string(&mut rand::thread_rng(), 12)
+}
+
+/// Pull the visible artworks for a single collection in display order.
+/// Used by both the owner's `detail` handler and the public-by-share
+/// handler — same filtering rules (published + active artist + approved
+/// primary image) apply to both.
+async fn fetch_collection_artworks(
+    pool: &sqlx::PgPool,
+    collection_id: Uuid,
+) -> Result<Vec<ArtworkSummary>, ApiError> {
+    let rows: Vec<ArtworkRow> = sqlx::query_as(
+        r#"
+        SELECT
+            a.id,
+            a.title,
+            ar.id           AS artist_id,
+            ar.display_name AS artist_name,
+            ar.slug         AS artist_slug,
+            ai.s3_key       AS primary_s3_key,
+            a.price_cents,
+            a.currency,
+            a.availability
+        FROM collection_artworks ca
+        JOIN artworks a   ON a.id = ca.artwork_id
+        JOIN artists ar   ON ar.id = a.artist_id
+        LEFT JOIN artwork_images ai
+               ON ai.artwork_id = a.id
+              AND ai.is_primary
+              AND ai.moderation_status = 'approved'
+        WHERE ca.collection_id = $1
+          AND a.deleted_at IS NULL
+          AND a.status = 'published'
+          AND ar.deleted_at IS NULL
+          AND ar.status = 'active'
+        ORDER BY ca.display_order ASC NULLS LAST, ca.added_at DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(collection_id)
+    .bind(COLLECTION_PAGE_LIMIT)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(ArtworkRow::into_summary).collect())
 }
 
 async fn fetch_collection_covers(

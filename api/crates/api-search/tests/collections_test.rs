@@ -528,3 +528,155 @@ async fn collections_list_rejects_malformed_artwork_id(pool: PgPool) {
     .await;
     assert_eq!(status, 400);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T-053 — public read by share_id
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Helper: create a public collection, add an artwork, return (share_id, collection_id).
+async fn make_public_collection(app: axum::Router) -> (String, String) {
+    let body = json!({"name": "Mood board", "is_public": true}).to_string();
+    let (_, bytes) = send_authed(
+        app.clone(),
+        "POST",
+        "/v1/me/collections",
+        ALICE,
+        Some(&body),
+    )
+    .await;
+    let created: Summary = serde_json::from_slice(&bytes).unwrap();
+    let share_id = created.share_id.clone().expect("share_id minted on public create");
+
+    let add_body = json!({"artwork_id": ARTWORK_BLUE_MORNING}).to_string();
+    let (status, _) = send_authed(
+        app,
+        "POST",
+        &format!("/v1/me/collections/{}/artworks", created.id),
+        ALICE,
+        Some(&add_body),
+    )
+    .await;
+    assert_eq!(status, 204);
+
+    (share_id, created.id)
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn public_share_happy(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+    let (share_id, _) = make_public_collection(app.clone()).await;
+
+    let (status, detail): (_, DetailBody) =
+        common::get_json(app, &format!("/v1/collections/share/{share_id}")).await;
+    assert_eq!(status, 200);
+    assert!(detail.collection.is_public);
+    assert_eq!(detail.collection.name, "Mood board");
+    assert_eq!(detail.artworks.items.len(), 1);
+    assert_eq!(detail.collection.artwork_count, 1);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn public_share_private_collection_returns_404(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+
+    // Create a *private* collection. share_id is null at this point, so
+    // we have no way to even craft a malicious URL — but verify that a
+    // valid-looking arbitrary token still 404s.
+    let body = json!({"name": "Private mood"}).to_string();
+    let (_, _bytes) = send_authed(
+        app.clone(),
+        "POST",
+        "/v1/me/collections",
+        ALICE,
+        Some(&body),
+    )
+    .await;
+
+    let (status, _) =
+        common::get_status(app, "/v1/collections/share/aaaaaaaaaaaa").await;
+    assert_eq!(status, 404);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn public_share_unknown_token_returns_404(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+    // No collections created — any token must 404.
+    let (status, _) =
+        common::get_status(app, "/v1/collections/share/zzzz9999yyyy").await;
+    assert_eq!(status, 404);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn public_share_malformed_token_returns_404(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+    // Special chars, too short, too long — all 404 (the API rejects
+    // obviously-malformed tokens before hitting the DB).
+    for bad in ["short", "a", "../../etc/passwd", "tokenWith!Special"] {
+        let (status, _) = common::get_status(
+            app.clone(),
+            &format!("/v1/collections/share/{bad}"),
+        )
+        .await;
+        assert_eq!(status, 404, "expected 404 for token {bad:?}");
+    }
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn public_share_id_rotates_on_toggle_old_link_dies(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+
+    // Step 1: create + go public → s1
+    let (s1, collection_id) = make_public_collection(app.clone()).await;
+    let (status, _) = common::get_status(
+        app.clone(),
+        &format!("/v1/collections/share/{s1}"),
+    )
+    .await;
+    assert_eq!(status, 200, "s1 should work while public");
+
+    // Step 2: go private → s1 dies
+    let patch = json!({"is_public": false}).to_string();
+    let (status, _) = send_authed(
+        app.clone(),
+        "PATCH",
+        &format!("/v1/me/collections/{collection_id}"),
+        ALICE,
+        Some(&patch),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (status, _) = common::get_status(
+        app.clone(),
+        &format!("/v1/collections/share/{s1}"),
+    )
+    .await;
+    assert_eq!(status, 404, "s1 should 404 once collection is private");
+
+    // Step 3: go public again → new share_id (s2) ≠ s1
+    let patch = json!({"is_public": true}).to_string();
+    let (_, bytes) = send_authed(
+        app.clone(),
+        "PATCH",
+        &format!("/v1/me/collections/{collection_id}"),
+        ALICE,
+        Some(&patch),
+    )
+    .await;
+    let again: Summary = serde_json::from_slice(&bytes).unwrap();
+    let s2 = again.share_id.expect("share_id re-minted on second toggle");
+    assert_ne!(s1, s2, "share_id rotates across the private toggle");
+
+    // s1 still 404; s2 works.
+    let (status, _) = common::get_status(
+        app.clone(),
+        &format!("/v1/collections/share/{s1}"),
+    )
+    .await;
+    assert_eq!(status, 404, "old s1 must stay dead even after re-publishing");
+    let (status, _detail): (_, DetailBody) = common::get_json(
+        app,
+        &format!("/v1/collections/share/{s2}"),
+    )
+    .await;
+    assert_eq!(status, 200, "new s2 works");
+}

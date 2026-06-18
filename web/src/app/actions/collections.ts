@@ -16,6 +16,7 @@ import {
   addArtworkToCollection,
   createCollection,
   listMyCollections,
+  patchCollection,
   removeArtworkFromCollection,
   type CollectionSummary,
 } from "@/lib/api";
@@ -62,4 +63,20 @@ export async function createCollectionWithFirstArtwork(
   revalidatePath(`/artworks/${artworkId}`);
   revalidatePath("/collections");
   return { ...c, artwork_count: 1 };
+}
+
+/**
+ * T-053 — toggle a collection's public/private state. On a true→public
+ * transition the API mints a new `share_id`; on private→public again the
+ * id rotates, so old links die. The returned summary carries the current
+ * `is_public` + `share_id` for the client to mirror.
+ */
+export async function setCollectionPublicState(
+  collectionId: string,
+  isPublic: boolean
+): Promise<CollectionSummary> {
+  const updated = await patchCollection(collectionId, { is_public: isPublic });
+  revalidatePath(`/collections/${collectionId}`);
+  revalidatePath("/collections");
+  return updated;
 }
