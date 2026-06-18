@@ -216,15 +216,16 @@ additions (`T-058..T-063`).
 - Integration tests assert ≥1 event per relevant handler.
 - Storage abstraction: handler-side only knows the `JobEvent::EventLog` variant. Storage destination is an implementation detail of `core::jobs::handle` and is swappable per the event-storage decision.
 
-### `T-051` Per-artwork + per-artist OG cards
-**Where:** `web/src/app/artworks/[id]/opengraph-image.tsx` (new) + `web/src/app/artists/[slug]/opengraph-image.tsx` (new).
-**Why:** Every share of an artwork page currently advertises the homepage card. Free distribution lost on every paste into iMessage / Slack / WhatsApp / Twitter. Tier-1 retention + acquisition with very little code.
-**Acceptance:**
-- Each route returns 1200×630 PNG via Next.js `ImageResponse`. Artwork variant: primary image + title + artist name. Artist variant: 4-up grid + name.
-- **Spike first** to verify `@vercel/og` (Satori + Resvg WASM) bundles cleanly under OpenNext 4.x — has historically been touchy with font loading on Lambda.
-- **Fallback if spike fails:** precompute PNGs at artwork-publish time via the same Pillow pipeline used for the homepage `og.png`; serve from S3 with a CloudFront behaviour for `/og/*.png`.
-- Cache headers: `public, max-age=86400, s-maxage=86400`.
-- `<meta property="og:image">` automatically wired by Next's convention.
+### ~~`T-051` Per-artwork + per-artist OG cards~~ — shipped 2026-06-18
+
+- ✅ `web/src/app/artworks/[id]/opengraph-image.tsx` — 1200×630 split layout: primary artwork image on dark backdrop (left 630px), title + artist byline + domain footer in Instrument Serif on cream (right 570px). Title size clamps by length.
+- ✅ `web/src/app/artists/[slug]/opengraph-image.tsx` — name + city left, 2×2 grid of `representative_image_urls` right. Pads with dark cells when artist has <4 representative images.
+- ✅ Instrument Serif (regular + italic) bundled into `web/src/app/og-fonts/`; Turbopack hashes them into `.next/server/assets/` at build time.
+- ✅ Page meta auto-wired by Next's `opengraph-image.tsx` convention — overrides the homepage `og.png` from `layout.tsx` per-route.
+- ✅ `revalidate = 86_400` on both routes — social platforms re-crawl periodically; cache for a day.
+- ✅ Fallback "Wander" card when the artwork/artist isn't found (deleted, unpublished, bad id) — never returns a broken share.
+
+**Spike outcome (the gotcha):** the Next.js-docs pattern `fetch(new URL('./font.ttf', import.meta.url))` does **not** work under OpenNext on Node Lambda — Vercel's edge runtime supports `fetch('file://…')` but vanilla Node's undici throws `not implemented... yet...` on the `file:` scheme. Fix: read the bundled font with `readFile(fileURLToPath(new URL(…, import.meta.url)))`. Turbopack bundles the asset correctly either way; only the load path changes. Documented inline in both route files so the next person doesn't reach for `fetch` first.
 
 ### `T-052` Follow-an-artist + new-work notifications
 **Where:** New migration (`follows`); `api-search::me::follows` handlers; artist-page Follow button; studio dashboard followers count.
