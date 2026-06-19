@@ -61,6 +61,22 @@ export interface ArtistDetail {
    * Optional on the type so callers don't crash when an older API
    * build (pre-T-038) omits the field. T-038. */
   locations?: PublicArtistLocation[];
+  /** T-052 — true when the request carried valid auth AND that user
+   * follows this artist. False/missing on signed-out responses and
+   * older API builds. */
+  is_following?: boolean;
+  /** T-052 — total follower count regardless of caller. */
+  follower_count?: number;
+}
+
+/** T-052 — one row in `GET /v1/me/follows`. */
+export interface FollowedArtist {
+  slug: string;
+  display_name: string;
+  city: string | null;
+  country: string | null;
+  primary_image_url: string | null;
+  followed_at: string;
 }
 
 /** Lighter mirror of `StudioLocation` for public surfaces — same wire
@@ -218,6 +234,12 @@ export interface StudioArtist {
   status: "pending" | "active" | "paused" | "rejected";
   created_at: string;
   updated_at: string;
+  /** T-052 — number of followers across all signed-in users. Surfaced on
+   * the `/studio` dashboard. Server returns `StudioMe` (flattens
+   * `StudioArtist` + `follower_count`); from the client's view it's
+   * just an extra field on this shape. Defaults to 0 in tests / older
+   * builds. */
+  follower_count?: number;
 }
 
 /** Body for `PATCH /v1/studio/settings`. Every field optional; omitting
@@ -733,6 +755,44 @@ export async function getCollection(
     throw new Error(`collection ${res.status}: ${text || res.statusText}`);
   }
   return (await res.json()) as CollectionDetail;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T-052 — Follow graph
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Idempotent — double POST stays 204. 404 if the artist doesn't exist
+ *  or has been soft-deleted. */
+export async function followArtist(artistId: string): Promise<void> {
+  const res = await apiFetch(`/v1/me/follows/${encodeURIComponent(artistId)}`, {
+    method: "POST",
+  });
+  if (!res.ok && res.status !== 204) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`follow ${res.status}: ${text || res.statusText}`);
+  }
+}
+
+/** Idempotent — deleting a non-existent follow still 204. */
+export async function unfollowArtist(artistId: string): Promise<void> {
+  const res = await apiFetch(`/v1/me/follows/${encodeURIComponent(artistId)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 204) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`unfollow ${res.status}: ${text || res.statusText}`);
+  }
+}
+
+export async function listMyFollows(
+  init?: RequestInit
+): Promise<Paginated<FollowedArtist>> {
+  const res = await apiFetch("/v1/me/follows", init);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`follows ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as Paginated<FollowedArtist>;
 }
 
 /** T-053 — public read of a collection by its share token. Unauthenticated.

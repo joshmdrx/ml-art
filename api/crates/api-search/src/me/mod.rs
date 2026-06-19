@@ -6,6 +6,7 @@
 
 pub mod collections;
 pub mod current_user;
+pub mod follows;
 pub mod merge_anonymous;
 
 pub use current_user::current_user;

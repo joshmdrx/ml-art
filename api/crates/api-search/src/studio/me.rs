@@ -38,11 +38,21 @@ pub struct StudioArtist {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Response wrapper: studio artist record + lightweight stats the
+/// dashboard surfaces. T-052 adds `follower_count`; future stats join
+/// this struct without changing the artist row shape.
+#[derive(Debug, Serialize)]
+pub struct StudioMe {
+    #[serde(flatten)]
+    pub artist: StudioArtist,
+    pub follower_count: i32,
+}
+
 pub async fn current_artist(
     State(state): State<Arc<AppState>>,
     AuthedUser(user): AuthedUser,
-) -> Result<Json<StudioArtist>, ApiError> {
-    let row: Option<StudioArtist> = sqlx::query_as(
+) -> Result<Json<StudioMe>, ApiError> {
+    let artist: StudioArtist = sqlx::query_as(
         r#"
         SELECT
             id, slug, display_name, bio, artist_statement,
@@ -56,6 +66,19 @@ pub async fn current_artist(
     )
     .bind(user.id)
     .fetch_optional(&state.pool)
-    .await?;
-    row.map(Json).ok_or(ApiError::NotFound)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+
+    let follower_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM follows WHERE artist_id = $1",
+    )
+    .bind(artist.id)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or(0);
+
+    Ok(Json(StudioMe {
+        artist,
+        follower_count: follower_count as i32,
+    }))
 }

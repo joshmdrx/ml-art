@@ -227,16 +227,39 @@ additions (`T-058..T-063`).
 
 **Spike outcome (the gotcha):** the Next.js-docs pattern `fetch(new URL('./font.ttf', import.meta.url))` does **not** work under OpenNext on Node Lambda — Vercel's edge runtime supports `fetch('file://…')` but vanilla Node's undici throws `not implemented... yet...` on the `file:` scheme. Fix: read the bundled font with `readFile(fileURLToPath(new URL(…, import.meta.url)))`. Turbopack bundles the asset correctly either way; only the load path changes. Documented inline in both route files so the next person doesn't reach for `fetch` first.
 
-### `T-052` Follow-an-artist + new-work notifications
-**Where:** New migration (`follows`); `api-search::me::follows` handlers; artist-page Follow button; studio dashboard followers count.
-**Why:** Single biggest retention hook missing. Foundation for new-work email notifications, Discover Weekly (`T-060`), the personalised feed (`T-056`).
+### ~~`T-052` Follow-an-artist (Phase 1: graph + UI)~~ — shipped 2026-06-18
+
+- ✅ Migration `0015_follows.sql` — `(user_id, artist_id)` PK + reverse `(artist_id, created_at DESC)` index.
+- ✅ API: `POST /v1/me/follows/:artist_id` (idempotent UPSERT, 404 on unknown artist), `DELETE` (idempotent), `GET /v1/me/follows` (paginated list w/ slug + display_name + city/country + first thumb + `followed_at`).
+- ✅ `ArtistDetail` now carries `is_following` (auth-conditional, defaults false when signed-out) + `follower_count`. Wired with `Option<AuthedUser>` so the public endpoint stays publicly readable.
+- ✅ `GET /v1/studio/me` flattened into a `StudioMe` wrapper that adds `follower_count`. Forward-compatible via `#[serde(flatten)]` — the wire shape is identical for existing fields.
+- ✅ Web: `<FollowButton>` client component on `/artists/[slug]` — optimistic flip, redirects to sign-in when signed-out (with `redirect_url=`), uses server actions so client bundle stays clean of `next/headers` + Clerk server-only modules.
+- ✅ Web: artist page shows "N followers" pill when count > 0; `/studio` dashboard surfaces the same.
+- ✅ 9 integration tests: auth gates / 204+listed / idempotent / 404 unknown / unfollow round-trip / per-user isolation / `is_following` true for signed-in follower / `is_following` false for signed-out + count still flows.
+- ✅ Prod-verified: API endpoints, ArtistDetail new fields, signed-out artist page HTML contains the Follow control.
+
+**Phase 1 limits, captured for follow-ups:**
+- Events: `JobEvent::EventLog` writes for `artist_followed` / `artist_unfollowed` are marked `TODO(T-050)` in the handlers — they're the obvious next signal source for the taste vector.
+
+### `T-052b` Follow-an-artist: notification digest
+**Where:** New `JobEvent::NotifyFollowers` variant + handler; cron trigger or per-publish enqueue; new email template via `core::emails`.
+**Why:** Phase 1 ships the graph; this turns it into a retention loop. Batches per-day per-follower so a 10-artwork drop sends one email, not ten.
 **Acceptance:**
-- Migration: `follows (user_id uuid, artist_id uuid, created_at timestamptz, PRIMARY KEY (user_id, artist_id))` + `(artist_id, created_at)` index.
-- Endpoints: `POST /v1/me/follows/:artist_id`, `DELETE /v1/me/follows/:artist_id`, `GET /v1/me/follows`.
-- Anonymous flow: queue the follow in cookie-scoped pending-actions; `T-033` anonymous-merge bridge applies on sign-in.
-- Artist publish action enqueues `JobEvent::NotifyFollowers`; handler batches per-day per-user (one digest, never one email per artwork) and posts via Resend.
-- `/studio` dashboard surfaces "N followers" + a recent-followers list.
-- Integration tests assert follow / unfollow / idempotency / per-user isolation.
+- Triggered on `artworks.status` transitioning to `published` (today: the `studio::artworks` update handler enqueues; future: events stream).
+- Handler: collect last 24h of newly-published artworks per artist with >0 followers, group by follower, emit one email each.
+- New `templates::new_work_from_followed` Resend template.
+- Per-user opt-out link (signed token; reused from saved-searches when T-059 lands).
+- Skip if user has opted out, or if they viewed any artwork by this artist in the last 24h (don't email about things they just saw).
+- Integration tests: dedup across artworks, opt-out honored, multi-artist digest groups correctly.
+
+### `T-052c` Follow-an-artist: anonymous queueing
+**Where:** Extend the anon cookie pending-actions payload + the T-033 merge handler.
+**Why:** Today an anonymous user clicking Follow gets bounced to sign-in but their click is lost. Queueing the intent + replaying on sign-in closes the funnel.
+**Acceptance:**
+- Anon cookie carries up to N pending follow intents (`artist_id` + `intent_ts`).
+- On sign-in, the merge bridge replays queued follows via `POST /v1/me/follows/:artist_id` (idempotent, so safe).
+- TTL on the pending queue (~7 days); old entries expire.
+- Per-user cap on queue size so the cookie doesn't bloat.
 
 ### ~~`T-053` Shareable collections (public read)~~ — shipped 2026-06-18
 

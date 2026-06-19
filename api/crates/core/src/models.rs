@@ -89,6 +89,18 @@ pub struct ArtistDetail {
     /// the artist's `based in` city pill in that case. See T-038.
     #[serde(default)]
     pub locations: Vec<ArtistLocation>,
+    /// T-052 — true when the request carried valid auth AND that user
+    /// follows this artist. False for signed-out requests; false for
+    /// signed-in requests where no follow row exists. Lets the
+    /// `<FollowButton>` render the right state without a second
+    /// roundtrip.
+    #[serde(default)]
+    pub is_following: bool,
+    /// T-052 — number of followers this artist has, regardless of who
+    /// is asking. Surfaces on the artist page; matches the studio
+    /// dashboard count.
+    #[serde(default)]
+    pub follower_count: i32,
 }
 
 /// A physical place where an artist's work can be seen — gallery the

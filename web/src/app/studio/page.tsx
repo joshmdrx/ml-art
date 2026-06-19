@@ -82,6 +82,14 @@ export default async function StudioPage({
                 ? `${artist.display_name} — ${artist.status === "active" ? "Published" : "Unpublished"}`
                 : "Your portfolio"}
             </p>
+            {/* T-052 — follower count surfaced on the dashboard.
+                Defaults to 0 if the API hasn't been redeployed yet. */}
+            {(artist.follower_count ?? 0) > 0 && (
+              <p className="mt-1 text-xs text-muted">
+                {artist.follower_count}{" "}
+                {artist.follower_count === 1 ? "follower" : "followers"}
+              </p>
+            )}
           </div>
           <nav className="flex items-center gap-4">
             <Link

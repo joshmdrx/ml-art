@@ -4,6 +4,7 @@ import { TopNav } from "@/components/TopNav";
 import { ArtworkGrid } from "@/components/ArtworkGrid";
 import { ArtistLocationsMap } from "@/components/ArtistLocationsMap";
 import { BackToSearchLink } from "@/components/BackToSearchLink";
+import { FollowButton } from "@/components/FollowButton";
 import { getArtist } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
@@ -64,16 +65,36 @@ export default async function ArtistPage({ params }: { params: Params }) {
       <main className="flex-1 mx-auto w-full max-w-screen-2xl px-6 py-12 md:py-16">
         {/* Header */}
         <header className="max-w-3xl mb-12 md:mb-16">
-          <h1 className="font-serif text-4xl md:text-5xl tracking-tight">
-            {artist.display_name}
-          </h1>
+          <div className="flex items-start justify-between gap-6">
+            <div>
+              <h1 className="font-serif text-4xl md:text-5xl tracking-tight">
+                {artist.display_name}
+              </h1>
 
-          {(artist.location || artist.city) && (
-            <p className="mt-2 text-sm text-muted">
-              {artist.location ??
-                [artist.city, artist.country].filter(Boolean).join(", ")}
-            </p>
-          )}
+              {(artist.location || artist.city) && (
+                <p className="mt-2 text-sm text-muted">
+                  {artist.location ??
+                    [artist.city, artist.country].filter(Boolean).join(", ")}
+                </p>
+              )}
+            </div>
+
+            {/* T-052 — Follow / Following. Sized to sit beside the name on
+                desktop, drops below on mobile. */}
+            <div className="shrink-0 flex flex-col items-end gap-1">
+              <FollowButton
+                artistId={artist.id}
+                artistSlug={artist.slug}
+                initialIsFollowing={data.is_following ?? false}
+              />
+              {(data.follower_count ?? 0) > 0 && (
+                <p className="text-xs text-muted">
+                  {data.follower_count}{" "}
+                  {data.follower_count === 1 ? "follower" : "followers"}
+                </p>
+              )}
+            </div>
+          </div>
 
           {artist.bio && (
             <p className="mt-6 text-base leading-relaxed max-w-2xl">

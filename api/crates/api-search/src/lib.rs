@@ -118,6 +118,12 @@ pub fn build_app(state: Arc<AppState>) -> Router {
             "/v1/collections/share/:share_id",
             get(me::collections::public_by_share),
         )
+        // T-052 — follow graph. POST/DELETE are idempotent.
+        .route("/v1/me/follows", get(me::follows::list))
+        .route(
+            "/v1/me/follows/:artist_id",
+            post(me::follows::create).delete(me::follows::delete),
+        )
         .route(
             "/v1/artworks/:id/inquiries",
             post(inquiries::create).layer(from_fn_with_state(limiters.clone(), inquiry_limit)),

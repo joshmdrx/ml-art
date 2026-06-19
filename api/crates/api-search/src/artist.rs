@@ -4,6 +4,7 @@
 //! Pagination for the artworks subresource lands as `/v1/artists/:slug/artworks`
 //! once we have cursor pagination plumbed.
 
+use crate::extractors::AuthedUser;
 use crate::AppState;
 use axum::{
     extract::{Path, State},
@@ -25,6 +26,10 @@ const REPRESENTATIVE_COUNT: usize = 3;
 pub async fn handle(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
+    // T-052 — when present we light up `is_following` for the
+    // Follow button. Missing/invalid auth is non-fatal; the field
+    // defaults to false.
+    auth: Option<AuthedUser>,
 ) -> Result<Json<ArtistDetail>, ApiError> {
     // 1. Look up the artist.
     let artist_row: Option<ArtistRow> = sqlx::query_as(
@@ -131,6 +136,30 @@ pub async fn handle(
         representative_image_urls,
     };
 
+    // 4. Follow graph state (T-052): follower count + this caller's
+    //    is_following flag. Two queries because the count is unconditional
+    //    and the flag is per-caller; combining them would mean coalescing
+    //    a NULL for signed-out requests for marginal gain.
+    let follower_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM follows WHERE artist_id = $1",
+    )
+    .bind(artist.id)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or(0);
+
+    let is_following = match &auth {
+        Some(AuthedUser(user)) => sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM follows WHERE user_id = $1 AND artist_id = $2)",
+        )
+        .bind(user.id)
+        .bind(artist.id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(false),
+        None => false,
+    };
+
     Ok(Json(ArtistDetail {
         artist: full,
         artworks: Paginated {
@@ -138,6 +167,8 @@ pub async fn handle(
             next_cursor: None,
         },
         locations,
+        is_following,
+        follower_count: follower_count as i32,
     }))
 }
 
