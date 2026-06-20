@@ -244,6 +244,27 @@ resource "aws_apigatewayv2_integration" "web" {
   integration_method     = "POST"
   payload_format_version = "2.0"
   timeout_milliseconds   = 29000
+
+  # Pin the Lambda's view of `Host` to the canonical public hostname.
+  #
+  # Without this, the Lambda receives `Host: <apigw-invoke>.execute-api.…`
+  # because CloudFront's `AllViewerExceptHostHeader` origin policy strips
+  # the original viewer Host (required for SNI compatibility with the
+  # API Gateway certificate). Clerk's middleware then constructs all
+  # absolute URLs — including the `redirect_url` in its session-handshake
+  # 307 — from that wrong host, and Clerk's Frontend API rejects with
+  # "redirect_url is invalid" because the API Gateway URL isn't an
+  # allowed origin.
+  #
+  # API Gateway parameter mapping lets us rewrite headers at the
+  # integration → Lambda boundary. Overwriting Host here means every
+  # downstream consumer (clerkMiddleware, headers().get('host'),
+  # request-derived URL helpers) sees `wander.gallery` natively without
+  # any middleware-layer reconstruction (which hung the Lambda at 10s
+  # when we tried).
+  request_parameters = {
+    "overwrite:header.Host" = "wander.gallery"
+  }
 }
 
 resource "aws_apigatewayv2_route" "web_default" {

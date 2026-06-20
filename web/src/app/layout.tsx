@@ -65,6 +65,18 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <ClerkProvider
+      // Pin Clerk's redirect URLs to relative paths so the SDK never
+      // has to derive them from request context. The underlying
+      // host-mismatch bug is fixed at API Gateway (Host is pinned to
+      // wander.gallery before invoking the Lambda — see
+      // `infra/modules/web/main.tf`); these stay as defensive belt-
+      // and-braces so a future proxy-chain change can't silently
+      // reintroduce a bad-redirect bug.
+      signInUrl="/sign-in"
+      signUpUrl="/sign-up"
+      signInFallbackRedirectUrl="/"
+      signUpFallbackRedirectUrl="/"
+      afterSignOutUrl="/"
       // Keep Clerk's hosted UI visually quiet — defaults are fine for v0.
       appearance={{
         variables: {
