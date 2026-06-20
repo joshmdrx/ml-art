@@ -38,18 +38,18 @@ locals {
   # placeholders means `terraform apply` fails fast if a new key is
   # added but not provisioned — otherwise the Lambda silently boots
   # with a missing config and 500s.
+  # Real secrets only. Public/static config (clerk_jwks_url,
+  # clerk_issuer, web_base_url, image_base_url,
+  # uploads_public_url_prefix, resend_from_email) used to live here as
+  # SecureString too, which burned a KMS Decrypt call per param per
+  # cold start for no security benefit. Those moved to TF-managed
+  # Lambda env vars on the api + jobs modules (free, zero KMS calls).
   parameter_keys = [
-    "database_url",              # Neon postgres connection string
-    "jina_api_key",              # text-embedding API
-    "clerk_secret_key",          # JWT verification on the API side
-    "clerk_issuer",              # ditto — public but read at boot anyway
-    "clerk_jwks_url",            # ditto
-    "resend_api_key",            # inquiry + reply email send
-    "resend_from_email",         # "From" address
-    "mapbox_token",              # forward geocoding
-    "web_base_url",              # for email link interpolation
-    "image_base_url",            # `https://images.<domain>` — env-specific
-    "uploads_public_url_prefix", # same host; key-prefix routes to uploads bucket
+    "database_url",     # Neon postgres connection string
+    "jina_api_key",     # text-embedding API
+    "clerk_secret_key", # JWT verification on the API side
+    "resend_api_key",   # inquiry + reply email send
+    "mapbox_token",     # forward geocoding
     # HMAC secret signing the anon_id cookie. Same value on web (Next.js
     # middleware) + api (Rust extractor) so signatures round-trip. In
     # prod, Config::load bails if this is still the dev placeholder.

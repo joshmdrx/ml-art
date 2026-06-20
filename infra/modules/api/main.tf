@@ -211,6 +211,16 @@ resource "aws_lambda_function" "api" {
       # Flips Config::load's prod sanity checks ON: ANON_COOKIE_SECRET
       # must not be the dev placeholder, Clerk vars must be set, etc.
       ML_ART_ENV = "prod"
+      # Public/static config — was previously fetched per cold start
+      # from SSM as SecureString (one KMS Decrypt each). These aren't
+      # secrets so they live in TF-managed Lambda env now; bootstrap_ssm
+      # only loads actual credentials. See modules/secrets/main.tf.
+      CLERK_ISSUER              = "https://clerk.wander.gallery"
+      CLERK_JWKS_URL            = "https://clerk.wander.gallery/.well-known/jwks.json"
+      WEB_BASE_URL              = "https://wander.gallery"
+      IMAGE_BASE_URL            = "https://images.wander.gallery"
+      UPLOADS_PUBLIC_URL_PREFIX = "https://images.wander.gallery"
+      RESEND_FROM_EMAIL         = "info@wander.gallery"
     }
   }
 

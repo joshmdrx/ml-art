@@ -202,6 +202,14 @@ resource "aws_lambda_function" "jobs" {
       CONFIG_PARAMETER_PATH = var.config_parameter_path
       RUST_LOG              = "info"
       ML_ART_ENV            = "prod"
+      # Public/static config — see modules/api/main.tf for the same
+      # rationale (was SecureString in SSM, now free in TF env).
+      CLERK_ISSUER              = "https://clerk.wander.gallery"
+      CLERK_JWKS_URL            = "https://clerk.wander.gallery/.well-known/jwks.json"
+      WEB_BASE_URL              = "https://wander.gallery"
+      IMAGE_BASE_URL            = "https://images.wander.gallery"
+      UPLOADS_PUBLIC_URL_PREFIX = "https://images.wander.gallery"
+      RESEND_FROM_EMAIL         = "info@wander.gallery"
     }
   }
 
