@@ -373,6 +373,19 @@ additions (`T-058..T-063`).
 - Doesn't navigate the main page; clicking a similar thumb does.
 - Lazy-loaded — only fires the fetch on hover threshold.
 
+### `T-064` Lock API Gateway invoke URL to CloudFront-only
+**Where:** `infra/modules/web/main.tf` — add a custom-header check on the integration; CloudFront origin config gains a shared secret header.
+**Why:** The API Gateway invoke URL (`*.execute-api.us-east-1.amazonaws.com`) is publicly reachable today. Two real consequences:
+- Direct hits serve the same Lambda as `wander.gallery` (Host is rewritten to the canonical host by parameter mapping, so content is correct) — but the address bar shows the ugly URL and search engines could index a duplicate-content copy.
+- We initially tried a middleware-layer 308 redirect from API Gateway URL → `wander.gallery`. It produced an infinite loop because API Gateway's response handling rewrites absolute `Location` headers back to relative when the host matches the (rewritten) request Host. The middleware redirect is removed; the proper fix is to block direct hits entirely.
+
+**Acceptance:**
+- CloudFront origin `custom_header` adds a `X-CloudFront-Secret: <random>` (sourced from SSM).
+- API Gateway integration / route has a request-validation rule (or a small Lambda authorizer) that requires the header and returns 403 otherwise.
+- Direct curl to `https://*.execute-api…/` returns 403 with no body.
+- Browser hits via `wander.gallery` continue to work unchanged.
+- Rotate the secret via SSM; deploy script picks it up.
+
 ---
 
 ## Soft maintenance (do when it bites)
