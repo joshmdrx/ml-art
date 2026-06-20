@@ -242,15 +242,46 @@ additions (`T-058..T-063`).
 - Events: `JobEvent::EventLog` writes for `artist_followed` / `artist_unfollowed` are marked `TODO(T-050)` in the handlers — they're the obvious next signal source for the taste vector.
 
 ### `T-052b` Follow-an-artist: notification digest
-**Where:** New `JobEvent::NotifyFollowers` variant + handler; cron trigger or per-publish enqueue; new email template via `core::emails`.
-**Why:** Phase 1 ships the graph; this turns it into a retention loop. Batches per-day per-follower so a 10-artwork drop sends one email, not ten.
+**Where:** `JobEvent::NotifyFollowersDigestKickoff` + `NotifyFollowersDigestUser` variants + handlers in `core::jobs`; cron trigger via `aws_cloudwatch_event_rule` → SQS; new `core::emails::templates::new_works_digest`; `user_notification_log` table.
+**Depends on:** `T-068` (preferences spine). Builds on `T-052` follow graph (shipped 2026-06-18).
+**Why:** Phase 1 shipped the graph; this turns it into the actual retention loop — a user signs up, follows 3-5 artists, comes back when one of them publishes new work. Daily-batched (avoids hammering the inbox when an artist seeds 10 works in one session); reuses the per-artwork OG cards from `T-051` for share-friendly previews when followers click through.
 **Acceptance:**
-- Triggered on `artworks.status` transitioning to `published` (today: the `studio::artworks` update handler enqueues; future: events stream).
-- Handler: collect last 24h of newly-published artworks per artist with >0 followers, group by follower, emit one email each.
-- New `templates::new_work_from_followed` Resend template.
-- Per-user opt-out link (signed token; reused from saved-searches when T-059 lands).
-- Skip if user has opted out, or if they viewed any artwork by this artist in the last 24h (don't email about things they just saw).
-- Integration tests: dedup across artworks, opt-out honored, multi-artist digest groups correctly.
+- Daily cron at 11:00 UTC (`aws_cloudwatch_event_rule` → SQS) enqueues `JobEvent::NotifyFollowersDigestKickoff`.
+- Kickoff handler scans users with ≥1 follow whose followed artists published anything in the last 24h; checks `core::emails::user_wants(NotificationKind::NewWorksDigest)` (T-068); fans out to one `JobEvent::NotifyFollowersDigestUser { user_id }` per qualifying user.
+- Per-user handler builds the digest (grouped by artist, capped at 12 works total, sorted by most-recently-published), sends via `core::emails`, writes a `user_notification_log` row.
+- Migration: `user_notification_log (user_id, kind, sent_at, context jsonb, PK(user_id, kind, sent_at))` for cross-handler idempotency + audit trail. Kickoff filters `WHERE NOT EXISTS (SELECT 1 FROM user_notification_log WHERE user_id = ? AND kind = 'new_works_digest' AND sent_at > now() - interval '20 hours')`.
+- Backfill protection at launch: `users.notifications_started_at` stamped on first qualifying scan per user; digest only counts artworks published after that timestamp. Prevents the launch-day "everything they ever followed shows up as new."
+- Email subject: "1 new work from {artist_name}" (single artist) or "{N} new works from artists you follow" (multi). Footer carries per-kind unsubscribe link + `List-Unsubscribe` header (both from T-068).
+- Empty-state behaviour: silent (zero new work → no email).
+- Tests: kickoff dedup (rerun within 20h is no-op), per-user digest correctness across multiple artists, opt-out honoured, backfill protection (existing follows pre-launch + zero new post-launch → no email), empty case (follows but no new work → no email).
+
+**Deferred from this slice:**
+- "Skip if user viewed any work by this artist in last 24h" — gated on `T-050` events writer. Layer on when T-050 lands.
+- Per-artist mute. Defer to follow-up.
+- Quiet hours per user timezone. Defer until non-US user base appears.
+
+### `T-068` Email-notification preferences + unsubscribe machinery
+**Where:** `db/migrations/0016_notification_preferences.sql`; `core::emails::{NotificationKind, user_wants, unsubscribe_token}`; web routes `/u/[token]` (one-click) + `/me/settings/notifications`; API `GET`/`PATCH /v1/me/notification-preferences`.
+**Why:** Prerequisite for every non-transactional email we'll ever send (`T-052b` new-work digest, `T-059` saved-search alerts, `T-060` Discover Weekly, future artist-side new-follower + new-inquiry digests). Per-feature opt-out plumbing would mean rebuilding the same signed-token + preferences UI three times. Build the spine once; each notification feature adds one `NotificationKind` enum variant + a row in the settings UI.
+
+Splits emails into three classes:
+- **Transactional** — inquiry verification, artist reply to inquirer, Clerk account/security. Sent regardless of preferences. Required for service operation; CAN-SPAM / CASL / GDPR exempt from opt-in.
+- **Notifications** — automated, user-controllable, default-on. Per-kind toggle. Each carries a footer unsubscribe link + `List-Unsubscribe` header so Gmail/Outlook show their one-click UI (and our sender reputation benefits).
+- **Marketing / product** — explicit opt-in only. None today; reserved slot.
+
+**Acceptance:**
+- Migration: `notification_preferences (user_id uuid, kind text, enabled bool, updated_at, PK(user_id, kind))`. Default-on implicit (no row = enabled). Partial index `WHERE enabled = true` for cron-side "everyone opted in to kind X" lookups.
+- `users.global_email_notifications_enabled boolean default true` — master kill switch separate from per-kind, satisfies legal "easy single-step unsubscribe."
+- `core::emails::NotificationKind` enum (initially `NewWorksDigest`; `is_transactional()` method returns false for it). New kinds added via enum + UI row only.
+- `core::emails::user_wants(pool, user_id, kind)` async helper — every notification-email-sending handler routes through this. Transactional kinds bypass; non-transactional checks master + per-kind.
+- Signed unsubscribe token: HMAC over `(user_id, kind, expires_at)` with the existing `ANON_COOKIE_SECRET`-style server secret (separate key, separate SSM param). Token embedded in email footer + `List-Unsubscribe` header.
+- Web route `GET /u/[token]` — verifies, flips preference off, renders confirmation page with "switch back on" CTA + link to manage all preferences. Idempotent on double-click.
+- Web page `/me/settings/notifications` — lists every `NotificationKind` with friendly description + toggle; master "unsubscribe from all notifications" toggle at top. Reached via `/me/settings` index (new parent page; future home for account / privacy / data-export settings).
+- UserButton dropdown gets a "Settings" link to `/me/settings`.
+- API `GET /v1/me/notification-preferences` returns the user's full preference map (defaults filled in) + global flag.
+- API `PATCH /v1/me/notification-preferences` accepts `{ global?: bool, kinds?: {kind: bool, ...} }`; upserts rows.
+- Anonymous users have no preferences (no email). Whole system gates on signed-in `user_id`.
+- Tests: defaults (no row → opted in), master-off blocks notifications, transactional bypasses master, token round-trip, token tamper rejection, token expiry, double-click idempotency, settings PATCH partial updates don't clobber other kinds.
 
 ### `T-052c` Follow-an-artist: anonymous queueing
 **Where:** Extend the anon cookie pending-actions payload + the T-033 merge handler.
@@ -329,21 +360,24 @@ additions (`T-058..T-063`).
 
 ### `T-059` Saved searches + alerts
 **Where:** Migration (`saved_searches`); `core::user_searches`; weekly cron-enqueued job re-running each saved query.
+**Depends on:** `T-068` (preferences spine) for the unsubscribe + opt-out plumbing. Adds `NotificationKind::SavedSearchAlert`.
 **Why:** Etsy / Saatchi-style retention. Composes with the taste vector — a saved search is both a notification trigger and a strong explicit-intent signal feeding `T-055`.
 **Acceptance:**
 - Migration: `saved_searches (id, user_id, name, params jsonb, frequency text default 'weekly', last_notified_at, last_match_max_id, created_at)`.
 - "Save this search" affordance on `/search`. Persists current query string + filter state.
-- Weekly job: per saved search, re-run with `since=last_notified_at`, email up to top-5 new matches.
-- Per-search unsubscribe via signed token + `/me/saved-searches` management page.
+- Weekly job: per saved search, re-run with `since=last_notified_at`, check `user_wants(NotificationKind::SavedSearchAlert)`, email up to top-5 new matches.
+- Per-search mute via the search row itself; global notification opt-out via `T-068` machinery.
+- `/me/saved-searches` management page (separate from `/me/settings/notifications`).
 
 ### `T-060` Discover Weekly digest
 **Where:** Cron-driven variant of the `T-055` refresh job; new email template via `core::emails`.
+**Depends on:** `T-055` (taste vector), `T-068` (preferences spine — adds `NotificationKind::DiscoverWeekly`).
 **Why:** ML-driven equivalent of an editorial weekly. Same retention mechanic, taste-vector engine — explicitly preferred over editorial per `decisions.md` 2026-06-17.
 **Acceptance:**
 - Per-user, once per week: take the taste vector, sample 12 artworks the user hasn't seen (`events.artwork_viewed` cross-check), bias 8 from nearest clusters + 4 from far clusters for serendipity.
 - New `templates::discover_weekly` Resend template — 4×3 grid, link straight to artwork pages.
 - Skip if `interaction_count < 10`. Skip if user opened a previous digest within 2 days. Skip during quiet hours per user-TZ.
-- Per-user opt-out link (separate from saved-search unsubscribe).
+- Per-kind opt-out + master kill switch from `T-068`.
 
 ### `T-061` First-session taste calibrator
 **Where:** Web component on first homepage visit (anon-cookie flag); `POST /v1/me/calibrate` endpoint that seeds the anonymous taste vector.
