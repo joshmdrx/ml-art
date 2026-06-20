@@ -43,10 +43,10 @@ export async function uploadAndStartVisualSearch(
     uploadId = ack.upload_id;
   } catch (err) {
     reportError(err, { surface: "visual-search-upload" });
-    redirect(
-      "/search?upload_error=" +
-        encodeURIComponent(err instanceof Error ? err.message : String(err))
-    );
+    // Pass a stable error code, not the raw message — the search page
+    // maps it to friendly copy. Keeps server-component error verbiage
+    // out of URLs (and out of the user's address bar).
+    redirect("/search?upload_error=1");
   }
 
   redirect(`/search?image_upload_id=${encodeURIComponent(uploadId)}`);

@@ -16,7 +16,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { updateStudioSettings } from "@/app/actions/studio";
 import { normalizeWebsiteUrl } from "@/lib/normalizeUrl";
-import { reportError } from "@/lib/reportError";
+import { toUserMessage } from "@/lib/reportError";
 import type { StudioArtist, StudioSettingsPatch } from "@/lib/api";
 
 interface Props {
@@ -63,8 +63,11 @@ export function ProfileStep({ initial }: Props) {
         await updateStudioSettings(patch);
         router.push("/onboarding?step=artworks");
       } catch (e) {
-        reportError(e, { surface: "onboarding-profile" });
-        setError(e instanceof Error ? e.message : "Couldn't save profile");
+        setError(
+          toUserMessage(e, "Couldn't save your profile. Try again.", {
+            surface: "onboarding-profile",
+          }),
+        );
       }
     });
   }

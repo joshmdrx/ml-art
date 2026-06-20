@@ -34,3 +34,27 @@ export function reportError(
     // toString(), we just drop the report.
   }
 }
+
+/**
+ * Convert a caught error into copy safe to render to a user, while
+ * shipping the raw error to the reporter for diagnosis.
+ *
+ * Always returns `fallback` — we deliberately never render `e.message`
+ * directly. Server-action failures, API HTTP errors, framework
+ * exceptions, and "internal error in Server Components render"
+ * messages all surface as actionable, neutral copy ("Couldn't load
+ * collections.", "Couldn't save settings.", etc). The actual details
+ * still land in CloudWatch / Sentry via `reportError`.
+ *
+ * The intent matters: a privacy-conscious surface should never leak
+ * internal class names, framework jargon, or stack traces to the
+ * person trying to use the product.
+ */
+export function toUserMessage(
+  err: unknown,
+  fallback: string,
+  context?: Record<string, unknown>
+): string {
+  reportError(err, context);
+  return fallback;
+}

@@ -13,6 +13,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useEffect, useState, useTransition, type FormEvent } from "react";
 import { clsx } from "clsx";
 import type { CollectionSummary } from "@/lib/api";
+import { toUserMessage } from "@/lib/reportError";
 import {
   createCollectionWithFirstArtwork,
   fetchMyCollectionsForArtwork,
@@ -70,7 +71,11 @@ export function SaveModal({
         if (!cancelled) {
           setState({
             kind: "error",
-            message: e instanceof Error ? e.message : String(e),
+            message: toUserMessage(
+              e,
+              "Couldn't load your collections. Try again in a moment.",
+              { surface: "save-modal", call: "list", artworkId },
+            ),
           });
         }
       });
@@ -108,7 +113,13 @@ export function SaveModal({
         );
         setState({
           kind: "error",
-          message: e instanceof Error ? e.message : String(e),
+          message: toUserMessage(
+            e,
+            isSaved
+              ? "Couldn't remove from this collection. Try again."
+              : "Couldn't save to this collection. Try again.",
+            { surface: "save-modal", call: "toggle", artworkId },
+          ),
         });
       }
     });
@@ -133,7 +144,11 @@ export function SaveModal({
       } catch (e) {
         setState({
           kind: "error",
-          message: e instanceof Error ? e.message : String(e),
+          message: toUserMessage(
+            e,
+            "Couldn't create that collection. Try again.",
+            { surface: "save-modal", call: "create", artworkId },
+          ),
         });
       }
     });
@@ -159,10 +174,7 @@ export function SaveModal({
           )}
 
           {state.kind === "error" && (
-            <p className="text-sm text-foreground py-4">
-              Couldn&apos;t load collections.{" "}
-              <code className="font-mono text-xs">{state.message}</code>
-            </p>
+            <p className="text-sm text-foreground py-4">{state.message}</p>
           )}
 
           {state.kind === "ready" && (

@@ -13,6 +13,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useUser } from "@clerk/nextjs";
 import { useEffect, useState, useTransition, type FormEvent } from "react";
+import { toUserMessage } from "@/lib/reportError";
 import { sendInquiry } from "@/app/actions/inquiries";
 import type { InquiryAck } from "@/lib/api";
 
@@ -88,7 +89,11 @@ export function InquiryModal({
       } catch (e) {
         setState({
           kind: "error",
-          message: e instanceof Error ? e.message : String(e),
+          message: toUserMessage(
+            e,
+            "Couldn't send your inquiry. Check your details and try again.",
+            { surface: "inquiry-modal" },
+          ),
         });
       }
     });
@@ -182,8 +187,7 @@ export function InquiryModal({
 
               {state.kind === "error" && (
                 <p className="text-sm text-foreground bg-background border border-border p-3">
-                  Couldn&apos;t send.{" "}
-                  <code className="font-mono text-xs">{state.message}</code>
+                  {state.message}
                 </p>
               )}
 

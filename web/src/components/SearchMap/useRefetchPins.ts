@@ -96,15 +96,15 @@ export function useRefetchPins(
       setPins(next);
       setError(null);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
       // 429 is our own rate limit — surface a friendly note rather
-      // than reportError. Clear the dedup so the next move retries.
-      if (msg.includes("429")) {
+      // than reporting it. Clear the dedup so the next move retries.
+      const rawMsg = e instanceof Error ? e.message : String(e);
+      if (rawMsg.includes("429")) {
         setError("Slow down a moment — refreshing pins again shortly.");
         lastFetchedBboxRef.current = null;
       } else {
         reportError(e, { surface: "search-map-refetch" });
-        setError(msg || "Couldn't refresh map");
+        setError("Couldn't refresh the map. Try moving again.");
       }
     } finally {
       setLoading(false);

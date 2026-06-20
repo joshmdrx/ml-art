@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { CollectionSummary } from "@/lib/api";
+import { toUserMessage } from "@/lib/reportError";
 import { setCollectionPublicState } from "@/app/actions/collections";
 
 /**
@@ -44,7 +45,12 @@ export function CollectionShareControl({
         // header and any other derived state stay consistent.
         router.refresh();
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Couldn't update sharing");
+        setError(
+          toUserMessage(e, "Couldn't update sharing. Try again.", {
+            surface: "collection-share-control",
+            collectionId,
+          }),
+        );
       }
     });
   }

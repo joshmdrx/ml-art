@@ -17,7 +17,7 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { completeOnboarding } from "@/app/actions/onboarding";
-import { reportError } from "@/lib/reportError";
+import { toUserMessage } from "@/lib/reportError";
 import type { StudioArtist, StudioArtworkSummary, StudioLocation } from "@/lib/api";
 
 interface Props {
@@ -41,8 +41,11 @@ export function ReviewStep({ artist, artworks, locations }: Props) {
         // the way a visitor will.
         router.push(`/artists/${artist.slug}`);
       } catch (e) {
-        reportError(e, { surface: "onboarding-publish" });
-        setError(e instanceof Error ? e.message : "Couldn't publish");
+        setError(
+          toUserMessage(e, "Couldn't publish your studio. Try again.", {
+            surface: "onboarding-publish",
+          }),
+        );
       }
     });
   }

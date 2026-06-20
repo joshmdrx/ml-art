@@ -17,7 +17,7 @@ import {
   type SearchParams,
 } from "@/lib/api";
 import { priceParamsFromToken } from "@/lib/filterBar";
-import { reportError } from "@/lib/reportError";
+import { reportError, toUserMessage } from "@/lib/reportError";
 
 /** Page size for the grid query. Surfaced as a named const because
  * the disconnect explainer needs to know whether the result set is
@@ -160,7 +160,11 @@ export default async function SearchPage({
     }
   } catch (e) {
     resp = { items: [], next_cursor: null };
-    error = e instanceof Error ? e.message : String(e);
+    error = toUserMessage(
+      e,
+      "Couldn't reach the search API. Try again in a moment.",
+      { surface: "search-page", call: "searchArtworks" },
+    );
   }
 
   // Map mode (T-038 G5). Server-fetches the first page of pins so
@@ -279,7 +283,7 @@ export default async function SearchPage({
           <div className="mb-6 p-4 border border-border bg-surface text-sm">
             <p className="font-medium mb-1">Image upload failed.</p>
             <p className="text-muted">
-              <code className="font-mono">{sp.upload_error}</code>
+              Try a different image (JPG / PNG / WebP, under 10 MB).
             </p>
           </div>
         )}
@@ -308,14 +312,7 @@ export default async function SearchPage({
 
         {error && (
           <div className="mb-6 p-4 border border-border bg-surface text-sm">
-            <p className="font-medium mb-1">Couldn’t reach the search API.</p>
-            <p className="text-muted">
-              Is{" "}
-              <code className="font-mono">
-                {process.env.NEXT_PUBLIC_API_BASE_URL}
-              </code>{" "}
-              running? Error: <code className="font-mono">{error}</code>
-            </p>
+            <p>{error}</p>
           </div>
         )}
 

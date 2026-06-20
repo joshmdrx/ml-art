@@ -18,6 +18,7 @@ import { useRouter } from "next/navigation";
 import { clsx } from "clsx";
 import { updateStudioSettings } from "@/app/actions/studio";
 import { normalizeWebsiteUrl } from "@/lib/normalizeUrl";
+import { toUserMessage } from "@/lib/reportError";
 import type { StudioArtist, StudioSettingsPatch } from "@/lib/api";
 
 interface Props {
@@ -73,7 +74,12 @@ export function StudioSettingsForm({ initial }: Props) {
         setSavedFlash(true);
         router.refresh();
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(
+          toUserMessage(err, "Couldn't save your settings. Try again.", {
+            surface: "studio-settings",
+            call: "save",
+          }),
+        );
       }
     });
   }
@@ -90,7 +96,12 @@ export function StudioSettingsForm({ initial }: Props) {
         setSavedFlash(true);
         router.refresh();
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(
+          toUserMessage(err, "Couldn't change visibility. Try again.", {
+            surface: "studio-settings",
+            call: "toggle-visibility",
+          }),
+        );
       }
     });
   }

@@ -22,6 +22,7 @@ import Link from "next/link";
 import clsx from "clsx";
 
 import type { StudioInquiry, StudioInquiryReply } from "@/lib/api";
+import { toUserMessage } from "@/lib/reportError";
 
 interface Props {
   initialItems: StudioInquiry[];
@@ -224,9 +225,9 @@ function ReplyForm({
       onSent(reply);
     } catch (e) {
       setError(
-        e instanceof Error
-          ? e.message
-          : "Couldn’t send the reply. Try again?",
+        toUserMessage(e, "Couldn't send the reply. Try again.", {
+          surface: "studio-inquiry-reply",
+        }),
       );
     } finally {
       setLoading(false);

@@ -11,7 +11,7 @@
 import { useState, useTransition, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { startOnboarding } from "@/app/actions/onboarding";
-import { reportError } from "@/lib/reportError";
+import { toUserMessage } from "@/lib/reportError";
 
 export function IdentityStep() {
   const router = useRouter();
@@ -35,8 +35,11 @@ export function IdentityStep() {
         });
         router.push("/onboarding?step=profile");
       } catch (e) {
-        reportError(e, { surface: "onboarding-identity" });
-        setError(e instanceof Error ? e.message : "Couldn't start onboarding");
+        setError(
+          toUserMessage(e, "Couldn't start onboarding. Try again.", {
+            surface: "onboarding-identity",
+          }),
+        );
       }
     });
   }

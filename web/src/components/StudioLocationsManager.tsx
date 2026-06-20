@@ -31,7 +31,7 @@ import {
 } from "@/app/actions/studio";
 import type { StudioLocation } from "@/lib/api";
 import { normalizeWebsiteUrl } from "@/lib/normalizeUrl";
-import { reportError } from "@/lib/reportError";
+import { reportError, toUserMessage } from "@/lib/reportError";
 
 interface Props {
   initial: StudioLocation[];
@@ -161,8 +161,11 @@ function AddLocationForm({
         });
         onCreated();
       } catch (e) {
-        reportError(e, { surface: "studio-locations-add" });
-        setError(e instanceof Error ? e.message : "Couldn't add location");
+        setError(
+          toUserMessage(e, "Couldn't add this location. Try again.", {
+            surface: "studio-locations-add",
+          }),
+        );
       }
     });
   }
@@ -272,8 +275,11 @@ function LocationRow({
         await deleteLocation(location.id);
         onDeleted();
       } catch (e) {
-        reportError(e, { surface: "studio-locations-delete" });
-        setError(e instanceof Error ? e.message : "Couldn't delete");
+        setError(
+          toUserMessage(e, "Couldn't delete this location. Try again.", {
+            surface: "studio-locations-delete",
+          }),
+        );
       }
     });
   }
@@ -420,8 +426,11 @@ function EditLocationForm({
         await patchLocation(location.id, patch);
         onSaved();
       } catch (e) {
-        reportError(e, { surface: "studio-locations-edit" });
-        setError(e instanceof Error ? e.message : "Couldn't save");
+        setError(
+          toUserMessage(e, "Couldn't save changes. Try again.", {
+            surface: "studio-locations-edit",
+          }),
+        );
       }
     });
   }

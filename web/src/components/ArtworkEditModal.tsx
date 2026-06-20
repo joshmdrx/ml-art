@@ -34,7 +34,7 @@ import {
 import type { StudioArtworkDetail, StudioImage } from "@/lib/api";
 import { normalizeWebsiteUrl } from "@/lib/normalizeUrl";
 import { formatPriceForInput, parsePrice } from "@/lib/parsePrice";
-import { reportError } from "@/lib/reportError";
+import { reportError, toUserMessage } from "@/lib/reportError";
 
 const AVAILABILITY_OPTIONS = [
   { value: "available", label: "Available" },
@@ -116,10 +116,12 @@ export function ArtworkEditModal({
       })
       .catch((e) => {
         if (!cancelled) {
-          reportError(e, { surface: "artwork-edit-modal", target });
           setLoad({
             kind: "error",
-            message: e instanceof Error ? e.message : String(e),
+            message: toUserMessage(e, "Couldn't load this artwork.", {
+              surface: "artwork-edit-modal",
+              target,
+            }),
           });
         }
       });
@@ -325,7 +327,12 @@ function ArtworkForm({
           });
         }
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(
+          toUserMessage(e, "Couldn't save this artwork. Try again.", {
+            surface: "artwork-edit-modal",
+            call: "save",
+          }),
+        );
       }
     });
   }
@@ -339,7 +346,12 @@ function ArtworkForm({
         await deleteArtwork(detail.id);
         onDeleted();
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(
+          toUserMessage(e, "Couldn't delete this artwork. Try again.", {
+            surface: "artwork-edit-modal",
+            call: "delete",
+          }),
+        );
       }
     });
   }
@@ -613,12 +625,12 @@ function ImageManager({
           running = [...running, img];
           onChanged(running);
         } catch (e) {
-          reportError(e, {
-            surface: "studio-artwork-image-upload",
-            file: file.name,
-          });
+          // Per-file failures get a generic line; details go to Sentry.
           errors.push(
-            `${file.name}: ${e instanceof Error ? e.message : String(e)}`,
+            `${file.name}: ${toUserMessage(e, "couldn't upload", {
+              surface: "studio-artwork-image-upload",
+              file: file.name,
+            })}`,
           );
         }
         setBatchStatus({ done: i + 1, total: valid.length });
@@ -639,7 +651,12 @@ function ImageManager({
         await removeArtworkImage(artworkId, imageId);
         onChanged(images.filter((i) => i.id !== imageId));
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(
+          toUserMessage(e, "Couldn't remove that image. Try again.", {
+            surface: "artwork-edit-modal",
+            call: "remove-image",
+          }),
+        );
       }
     });
   }
