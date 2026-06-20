@@ -65,15 +65,27 @@ export function TopNav({
             >
               Collections
             </Link>
-            {/* `<UserButton>` is Clerk's pre-styled avatar + dropdown. We
-                size it down to fit the nav row height. */}
+            {/* `<UserButton>` is Clerk's pre-styled avatar + dropdown.
+                We size it down to fit the nav row height and add a
+                "Settings" menu item that links to our own `/me/settings`
+                hub (notification preferences, future account/privacy
+                surfaces). Clerk's account-management surfaces are still
+                reachable via "Manage account". */}
             <UserButton
               appearance={{
                 elements: {
                   avatarBox: "w-8 h-8",
                 },
               }}
-            />
+            >
+              <UserButton.MenuItems>
+                <UserButton.Link
+                  label="Settings"
+                  labelIcon={<span aria-hidden>⚙</span>}
+                  href="/me/settings"
+                />
+              </UserButton.MenuItems>
+            </UserButton>
           </Show>
         </nav>
       </div>

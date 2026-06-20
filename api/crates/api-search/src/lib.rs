@@ -124,6 +124,25 @@ pub fn build_app(state: Arc<AppState>) -> Router {
             "/v1/me/follows/:artist_id",
             post(me::follows::create).delete(me::follows::delete),
         )
+        // T-068 — notification preferences. GET returns the full map
+        // with defaults filled in; PATCH does sparse partial updates.
+        .route(
+            "/v1/me/notification-preferences",
+            get(me::notifications::get).patch(me::notifications::patch),
+        )
+        // T-068 — public one-click unsubscribe. No auth — the signed
+        // token in the request body is the credential. Two surfaces:
+        // `/v1/notifications/unsubscribe` (web confirmation page POSTs
+        // here, gets a friendly label back) and `/.../oneclick` (RFC
+        // 8058 mail-client POST, returns 204).
+        .route(
+            "/v1/notifications/unsubscribe",
+            post(me::notifications::unsubscribe),
+        )
+        .route(
+            "/v1/notifications/unsubscribe/oneclick",
+            post(me::notifications::unsubscribe_oneclick),
+        )
         .route(
             "/v1/artworks/:id/inquiries",
             post(inquiries::create).layer(from_fn_with_state(limiters.clone(), inquiry_limit)),

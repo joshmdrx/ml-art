@@ -260,28 +260,24 @@ additions (`T-058..T-063`).
 - Per-artist mute. Defer to follow-up.
 - Quiet hours per user timezone. Defer until non-US user base appears.
 
-### `T-068` Email-notification preferences + unsubscribe machinery
-**Where:** `db/migrations/0016_notification_preferences.sql`; `core::emails::{NotificationKind, user_wants, unsubscribe_token}`; web routes `/u/[token]` (one-click) + `/me/settings/notifications`; API `GET`/`PATCH /v1/me/notification-preferences`.
-**Why:** Prerequisite for every non-transactional email we'll ever send (`T-052b` new-work digest, `T-059` saved-search alerts, `T-060` Discover Weekly, future artist-side new-follower + new-inquiry digests). Per-feature opt-out plumbing would mean rebuilding the same signed-token + preferences UI three times. Build the spine once; each notification feature adds one `NotificationKind` enum variant + a row in the settings UI.
+### ~~`T-068` Email-notification preferences + unsubscribe machinery~~ — shipped 2026-06-20
 
-Splits emails into three classes:
-- **Transactional** — inquiry verification, artist reply to inquirer, Clerk account/security. Sent regardless of preferences. Required for service operation; CAN-SPAM / CASL / GDPR exempt from opt-in.
-- **Notifications** — automated, user-controllable, default-on. Per-kind toggle. Each carries a footer unsubscribe link + `List-Unsubscribe` header so Gmail/Outlook show their one-click UI (and our sender reputation benefits).
-- **Marketing / product** — explicit opt-in only. None today; reserved slot.
+- ✅ Migration `0016_notification_preferences.sql` — `notification_preferences (user_id, kind, enabled, updated_at)` table with composite PK + partial index on enabled rows; `users.global_email_notifications_enabled boolean default true` master kill switch. Default-on semantics implicit (no row = enabled).
+- ✅ `core::notifications::NotificationKind` enum (`InquiryVerification`, `InquiryReply`, `NewWorksDigest`). `is_transactional()` method; user-facing kinds excluded from the toggle UI.
+- ✅ `core::notifications::user_wants(pool, user_id, kind)` — single chokepoint. Returns true immediately for transactional kinds; otherwise checks master kill switch then per-kind row (default true).
+- ✅ JWT-based unsubscribe token via `jsonwebtoken` (already a dep) — `mint_unsubscribe_token` + `verify_unsubscribe_token`. HS256 over `(sub: user_id, kind, exp)`, 90-day TTL. Signed with `ANON_COOKIE_SECRET` (existing infra, no new SSM param). Constant-time signature comparison via the jsonwebtoken crate.
+- ✅ API `GET /v1/me/notification-preferences` — returns full preference map with every user-facing kind defaulted to true + master flag.
+- ✅ API `PATCH /v1/me/notification-preferences` — sparse partial update; validates kind names (400 on unknown or transactional) before any DB write.
+- ✅ API `POST /v1/notifications/unsubscribe` (no auth — token IS the credential) + `POST /v1/notifications/unsubscribe/oneclick` (returns 204 for RFC 8058 mail-client one-click).
+- ✅ Web `/me/settings` index page (future home for account / privacy / data-export sections).
+- ✅ Web `/me/settings/notifications` — server-rendered initial state + `<NotificationSettingsForm>` client component with optimistic toggles + server-action persistence.
+- ✅ Web `/u/[token]` route — GET redirects to `/u/confirm?token=...` (user-friendly), POST returns 204 (Gmail/Outlook one-click).
+- ✅ Web `/u/confirm` — server-renders the unsubscribe action, shows "you're unsubscribed from {friendly_label}" with a CTA back to settings.
+- ✅ `<UserButton>` dropdown gets a "Settings" link to `/me/settings` via Clerk's `<UserButton.MenuItems>`.
+- ✅ 7 unit tests (token round-trip, kind enum, tamper rejection, unknown kind, transactional detection, user-facing exclusion) + 13 integration tests (auth gates, defaults, partial PATCH semantics, per-user isolation, unsubscribe round-trip, idempotency, bad-token rejection, wrong-secret rejection, one-click 204).
+- ✅ Prod-verified: `/v1/me/notification-preferences` requires auth, `/v1/notifications/unsubscribe` rejects bad tokens, web auth gating works, GET on `/u/<token>` redirects to confirm, POST returns 400 on bad tokens.
 
-**Acceptance:**
-- Migration: `notification_preferences (user_id uuid, kind text, enabled bool, updated_at, PK(user_id, kind))`. Default-on implicit (no row = enabled). Partial index `WHERE enabled = true` for cron-side "everyone opted in to kind X" lookups.
-- `users.global_email_notifications_enabled boolean default true` — master kill switch separate from per-kind, satisfies legal "easy single-step unsubscribe."
-- `core::emails::NotificationKind` enum (initially `NewWorksDigest`; `is_transactional()` method returns false for it). New kinds added via enum + UI row only.
-- `core::emails::user_wants(pool, user_id, kind)` async helper — every notification-email-sending handler routes through this. Transactional kinds bypass; non-transactional checks master + per-kind.
-- Signed unsubscribe token: HMAC over `(user_id, kind, expires_at)` with the existing `ANON_COOKIE_SECRET`-style server secret (separate key, separate SSM param). Token embedded in email footer + `List-Unsubscribe` header.
-- Web route `GET /u/[token]` — verifies, flips preference off, renders confirmation page with "switch back on" CTA + link to manage all preferences. Idempotent on double-click.
-- Web page `/me/settings/notifications` — lists every `NotificationKind` with friendly description + toggle; master "unsubscribe from all notifications" toggle at top. Reached via `/me/settings` index (new parent page; future home for account / privacy / data-export settings).
-- UserButton dropdown gets a "Settings" link to `/me/settings`.
-- API `GET /v1/me/notification-preferences` returns the user's full preference map (defaults filled in) + global flag.
-- API `PATCH /v1/me/notification-preferences` accepts `{ global?: bool, kinds?: {kind: bool, ...} }`; upserts rows.
-- Anonymous users have no preferences (no email). Whole system gates on signed-in `user_id`.
-- Tests: defaults (no row → opted in), master-off blocks notifications, transactional bypasses master, token round-trip, token tamper rejection, token expiry, double-click idempotency, settings PATCH partial updates don't clobber other kinds.
+**Notes for `T-052b` (next):** the email-side wiring lives here. When `T-052b` sends the new-works digest, it calls `core::notifications::user_wants(NewWorksDigest)` to gate the send, then mints an unsubscribe token via `mint_unsubscribe_token(user_id, NewWorksDigest, anon_cookie_secret)` and embeds it in the footer as `https://wander.gallery/u/<token>` plus a `List-Unsubscribe: <https://wander.gallery/u/<token>>, <mailto:unsubscribe@wander.gallery>` header (with `List-Unsubscribe-Post: List-Unsubscribe=One-Click` so Gmail uses the URL path).
 
 ### `T-052c` Follow-an-artist: anonymous queueing
 **Where:** Extend the anon cookie pending-actions payload + the T-033 merge handler.

@@ -8,6 +8,7 @@ pub mod collections;
 pub mod current_user;
 pub mod follows;
 pub mod merge_anonymous;
+pub mod notifications;
 
 pub use current_user::current_user;
 pub use merge_anonymous::merge_anonymous;

@@ -1301,3 +1301,71 @@ export async function removeStudioArtworkImage(
     );
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T-068 — Notification preferences
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface NotificationPreferences {
+  /** Master kill switch. False = no notification emails of any kind
+   *  (transactional emails still go through). */
+  global_enabled: boolean;
+  /** Per-kind state. Keys are snake_case kind names; values are
+   *  whether that kind is currently enabled for this user.
+   *  Always includes every user-facing kind with defaults filled in. */
+  kinds: Record<string, boolean>;
+}
+
+export async function getNotificationPreferences(
+  init?: RequestInit
+): Promise<NotificationPreferences> {
+  const res = await apiFetch("/v1/me/notification-preferences", init);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `notification-preferences ${res.status}: ${text || res.statusText}`
+    );
+  }
+  return (await res.json()) as NotificationPreferences;
+}
+
+export async function patchNotificationPreferences(input: {
+  global_enabled?: boolean;
+  kinds?: Record<string, boolean>;
+}): Promise<NotificationPreferences> {
+  const res = await apiFetch("/v1/me/notification-preferences", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `notification-preferences PATCH ${res.status}: ${text || res.statusText}`
+    );
+  }
+  return (await res.json()) as NotificationPreferences;
+}
+
+export interface UnsubscribeAck {
+  kind: string;
+  friendly_label: string;
+}
+
+/** Public — no auth. The signed token in the body IS the credential. */
+export async function unsubscribeWithToken(
+  token: string,
+  init?: RequestInit
+): Promise<UnsubscribeAck> {
+  const res = await apiFetch("/v1/notifications/unsubscribe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+    ...init,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`unsubscribe ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as UnsubscribeAck;
+}
