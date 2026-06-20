@@ -5,15 +5,19 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import {
   followArtistAction,
+  queueAnonFollowAction,
   unfollowArtistAction,
 } from "@/app/actions/follows";
+import { reportError } from "@/lib/reportError";
 
 /**
  * T-052 — follow/unfollow control rendered on `/artists/[slug]`.
  *
- * Signed-out: clicking redirects to sign-in with `redirect_url=` set
- * to the current artist page; the follow itself is *not* queued
- * (anonymous follows land with T-052c).
+ * Signed-out: queue the follow intent against the anon_id cookie
+ * (T-052c) so the merge-anonymous handler replays it after sign-in,
+ * then redirect to sign-in with `redirect_url=` set to the current
+ * artist page. The intent capture is best-effort — failures don't
+ * block the redirect.
  *
  * Signed-in: optimistic update (flip state immediately, let the
  * server action settle); on error, revert.
@@ -38,8 +42,23 @@ export function FollowButton({
     if (!isLoaded) return;
 
     if (!isSignedIn) {
-      const redirect = encodeURIComponent(`/artists/${artistSlug}`);
-      router.push(`/sign-in?redirect_url=${redirect}`);
+      // T-052c — capture the intent so it replays after sign-in.
+      // Best-effort: don't block the redirect on a queue failure
+      // (the user can always click Follow again after signing in).
+      // Use a transition so the redirect doesn't fire until the
+      // queue call has at least had a tick.
+      startTransition(async () => {
+        try {
+          await queueAnonFollowAction(artistId);
+        } catch (e) {
+          reportError(e, {
+            surface: "follow-button-queue-anon",
+            artistId,
+          });
+        }
+        const redirect = encodeURIComponent(`/artists/${artistSlug}`);
+        router.push(`/sign-in?redirect_url=${redirect}`);
+      });
       return;
     }
 

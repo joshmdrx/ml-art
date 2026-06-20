@@ -8,10 +8,14 @@
  *
  * Both mutations are idempotent on the API side so the UI doesn't have
  * to guard against double-fires.
+ *
+ * T-052c adds a no-auth variant: `queueAnonFollowAction` records the
+ * intent on the anon_id cookie so the merge-anonymous handler replays
+ * it after sign-in.
  */
 
 import { revalidatePath } from "next/cache";
-import { followArtist, unfollowArtist } from "@/lib/api";
+import { followArtist, queueAnonFollow, unfollowArtist } from "@/lib/api";
 
 export async function followArtistAction(
   artistId: string,
@@ -29,4 +33,19 @@ export async function unfollowArtistAction(
   await unfollowArtist(artistId);
   revalidatePath(`/artists/${artistSlug}`);
   revalidatePath("/studio");
+}
+
+/**
+ * T-052c — anon-side capture of a follow intent. Called from the
+ * signed-out branch of `<FollowButton>` *before* the redirect to
+ * sign-in, so the merge-anonymous handler can replay it once the
+ * user comes back. Best-effort: failures are swallowed at the caller
+ * (the user can re-click after sign-in).
+ *
+ * No revalidate — the anon user can't see any UI that reflects this.
+ */
+export async function queueAnonFollowAction(
+  artistId: string,
+): Promise<void> {
+  await queueAnonFollow(artistId);
 }

@@ -1,6 +1,7 @@
 //! api-search library — exposes the route handlers and app builder so
 //! integration tests can call them without binding a network port.
 
+pub mod anon;
 pub mod artist;
 pub mod artwork;
 pub mod extractors;
@@ -142,6 +143,13 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route(
             "/v1/notifications/unsubscribe/oneclick",
             post(me::notifications::unsubscribe_oneclick),
+        )
+        // T-052c — anon-side intent queue. POST is keyed on the
+        // signed `X-Anonymous-Id` header; the merge-anonymous
+        // handler drains + replays on sign-in.
+        .route(
+            "/v1/anon/pending/follows/:artist_id",
+            post(anon::queue_follow),
         )
         .route(
             "/v1/artworks/:id/inquiries",

@@ -21,9 +21,15 @@
 //! - `uploads.anonymous_id` (visual-search uploads from anon browsers)
 //! - `events.anonymous_id`  (behavioral analytics; no writers yet but
 //!   the column + indexes exist per migration 0006)
+//! - `anon_pending_actions` — T-052c. Captured intents (today: queued
+//!   follow-artist clicks) get drained + replayed onto the user.
+//!   `follow_artist` becomes a `follows` row; the pending row is
+//!   deleted whether or not it replayed cleanly (the alternative is
+//!   surprising the user weeks later if they sign in after the
+//!   feature is half-broken).
 //!
-//! Both tables are updated in a single transaction so a partial merge
-//! can't leave the user only partly linked.
+//! All updates run in a single transaction so a partial merge can't
+//! leave the user only partly linked.
 
 use axum::{extract::State, Json};
 use ml_art_core::{auth::OptionalAnonId, error::ApiError};
@@ -41,6 +47,11 @@ pub struct MergeResponse {
     /// (no events writers); shape is here so the client doesn't break
     /// when T-016 starts writing events.
     pub events_merged: u64,
+    /// T-052c — pending follow-artist intents replayed as follows.
+    /// Idempotent: existing follows aren't duplicated. Zero when the
+    /// anon user never clicked Follow before signing in.
+    #[serde(default)]
+    pub follows_replayed: u64,
 }
 
 pub async fn merge_anonymous(
@@ -55,6 +66,7 @@ pub async fn merge_anonymous(
         return Ok(Json(MergeResponse {
             uploads_merged: 0,
             events_merged: 0,
+            follows_replayed: 0,
         }));
     };
 
@@ -90,14 +102,77 @@ pub async fn merge_anonymous(
     .await?
     .rows_affected();
 
+    // T-052c — drain queued anonymous intents. Today only
+    // `follow_artist` is wired; future kinds (save-to-collection,
+    // inquiry-start) add another match arm here. We delete all rows
+    // for this anon_id whether or not their kind was recognised: a
+    // half-broken intent shouldn't surprise the user weeks later
+    // when this code learns a new kind name.
+    let pending: Vec<PendingRow> = sqlx::query_as(
+        r#"
+        SELECT kind, payload
+          FROM anon_pending_actions
+         WHERE anon_id = $1
+           AND expires_at > now()
+        "#,
+    )
+    .bind(anon_id)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let mut follows_replayed: u64 = 0;
+    for row in &pending {
+        match row.kind.as_str() {
+            "follow_artist" => {
+                let Some(artist_id) = row
+                    .payload
+                    .get("artist_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                else {
+                    tracing::warn!(?row, "malformed follow_artist payload; dropping");
+                    continue;
+                };
+                let res = sqlx::query(
+                    r#"
+                    INSERT INTO follows (user_id, artist_id)
+                    SELECT $1, $2
+                     WHERE EXISTS (
+                       SELECT 1 FROM artists
+                        WHERE id = $2 AND deleted_at IS NULL
+                     )
+                     ON CONFLICT (user_id, artist_id) DO NOTHING
+                    "#,
+                )
+                .bind(user.id)
+                .bind(artist_id)
+                .execute(&mut *tx)
+                .await?;
+                follows_replayed += res.rows_affected();
+            }
+            other => {
+                tracing::warn!(kind = %other, "unknown pending action kind; dropping");
+            }
+        }
+    }
+
+    // Drain everything for this anon_id — recognised + unknown
+    // kinds, expired + still-valid. A drained-but-failed intent is
+    // better than a stale intent that fires next month.
+    sqlx::query("DELETE FROM anon_pending_actions WHERE anon_id = $1")
+        .bind(anon_id)
+        .execute(&mut *tx)
+        .await?;
+
     tx.commit().await?;
 
-    if uploads_merged > 0 || events_merged > 0 {
+    if uploads_merged > 0 || events_merged > 0 || follows_replayed > 0 {
         tracing::info!(
             user_id = %user.id,
             %anon_id,
             uploads_merged,
             events_merged,
+            follows_replayed,
             "merged anonymous trail into user",
         );
     }
@@ -105,5 +180,12 @@ pub async fn merge_anonymous(
     Ok(Json(MergeResponse {
         uploads_merged,
         events_merged,
+        follows_replayed,
     }))
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct PendingRow {
+    kind: String,
+    payload: serde_json::Value,
 }

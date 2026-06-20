@@ -24,19 +24,26 @@ minimal").
 | Search | `/search?q=…&medium=…&price=…&availability=…&location=…&image_upload_id=…&modifiers=…` | `/v1/search` (hybrid + geographic + filters + visual anchor + modifier δ-vectors at α=0.8) |
 | Visual upload | camera icon on the hero | `/v1/uploads/image` (multipart → S3 → inline Jina embed) |
 | Artwork detail | `/artworks/[id]` | `/v1/artworks/:id` + `/v1/artworks/:id/similar` |
-| Artist portfolio | `/artists/[slug]` | `/v1/artists/:slug` (incl. `locations[]` → map widget) |
+| Artwork share preview | shared link of `/artworks/[id]` | `/artworks/[id]/opengraph-image` — 1200×630 PNG composed at request time (T-051) |
+| Artist portfolio | `/artists/[slug]` | `/v1/artists/:slug` (incl. `locations[]` → map widget; `is_following` + `follower_count`) |
+| Artist share preview | shared link of `/artists/[slug]` | `/artists/[slug]/opengraph-image` — name + 2×2 work grid (T-051) |
+| Follow / unfollow an artist | button on `/artists/[slug]` | `POST`/`DELETE /v1/me/follows/:artist_id`; `<FollowButton>` queues the intent against the anon cookie if signed-out so the merge handler replays it after sign-in (T-052 + T-052c) |
 | Search by map | `/search?map=1&bbox=…&artist=…` | `/v1/search/map` — clustered pins, "Near me" geolocation, city-pivot pills, per-artist filter |
 | Map city pivots | strip above `/search?map=1` | `/v1/search/map/cities` — top cities by venue count |
 | Neighborhoods index | `/neighborhoods` | `/v1/neighborhoods` |
 | Neighborhood detail | `/neighborhoods/[slug]` | `/v1/neighborhoods/:slug` (filterable) |
 | Sign in / up | `/sign-in`, `/sign-up` | Clerk |
 | Become an artist | `/onboarding` | `/v1/onboarding/start` + `/v1/onboarding/complete` (5-step wizard) |
-| Artist studio | `/studio`, `/studio/settings` | `/v1/studio/*` (artworks CRUD, settings, locations CRUD) |
+| Artist studio | `/studio`, `/studio/settings`, `/studio/inquiries` | `/v1/studio/*` (artworks CRUD, settings, locations CRUD, inquiry inbox + threaded replies, follower count) |
 | Current user (debug) | `/me` | `/v1/me` |
 | Save to collection | modal on artwork detail | `/v1/me/collections/*` |
 | My collections | `/collections`, `/collections/[id]` | `/v1/me/collections/*` |
-| Inquire about an artwork | modal on artwork detail | `/v1/artworks/:id/inquiries` (anonymous → verify email link → delivered) |
+| Public collection link | `/c/[share_id]` (anyone) | `/v1/collections/share/:share_id` — owner toggles via the "Sharing" panel on `/collections/[id]`; per-collection OG card (T-053) |
+| Inquire about an artwork | modal on artwork detail | `/v1/artworks/:id/inquiries` (anonymous → verify email link → delivered via Resend) |
 | Verify anonymous inquiry | `/inquiries/verify/[token]` | `/v1/inquiries/verify/:token` |
+| Email notification settings | `/me/settings/notifications` | `/v1/me/notification-preferences` — per-kind toggles + master kill switch (T-068) |
+| Unsubscribe from a kind | `/u/[token]` (from email footer; GET or RFC 8058 POST) | `/v1/notifications/unsubscribe[/oneclick]` (T-068) |
+| Daily new-works digest | email (daily 11:00 UTC) | EventBridge cron → SQS → `JobEvent::NotifyFollowersDigestKickoff` → per-user fan-out → Resend with `List-Unsubscribe` headers (T-052b) |
 
 Vector search activates when `JINA_API_KEY` is set in `api/.env`. Without
 it, search degrades cleanly to keyword-only and the empty state explains
@@ -50,9 +57,15 @@ Without them, the schema + APIs still work but map widgets fall back to
 a non-interactive list view (no JS map bundle loads). Free tier covers
 100k geocoding + 50k map loads per month — well above any v0 traffic.
 
-Real email delivery (Resend) is **not** wired yet — anonymous inquiries
-return the verification token in the response body in dev mode so manual
-testing works without an inbox (see `T-032`).
+Real email delivery (Resend) is wired and live in prod for inquiry
+verification, inquiry-delivered-to-artist, artist replies (T-032 + T-011
+Phase 4b), and the daily new-works digest (T-052b). Dev mode still
+returns the verification token in the response body when `RESEND_API_KEY`
+is unset so manual testing works without an inbox.
+
+Every notification email carries an unsubscribe link + RFC 8058
+`List-Unsubscribe` + `List-Unsubscribe-Post` headers so Gmail/Outlook
+render their built-in one-click unsubscribe UI (T-068).
 
 ## Quick start
 

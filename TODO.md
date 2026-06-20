@@ -314,14 +314,20 @@ The digest filter is `artworks.published_at > GREATEST(follows.created_at, now()
 
 **Notes for `T-052b` (next):** the email-side wiring lives here. When `T-052b` sends the new-works digest, it calls `core::notifications::user_wants(NewWorksDigest)` to gate the send, then mints an unsubscribe token via `mint_unsubscribe_token(user_id, NewWorksDigest, anon_cookie_secret)` and embeds it in the footer as `https://wander.gallery/u/<token>` plus a `List-Unsubscribe: <https://wander.gallery/u/<token>>, <mailto:unsubscribe@wander.gallery>` header (with `List-Unsubscribe-Post: List-Unsubscribe=One-Click` so Gmail uses the URL path).
 
-### `T-052c` Follow-an-artist: anonymous queueing
-**Where:** Extend the anon cookie pending-actions payload + the T-033 merge handler.
-**Why:** Today an anonymous user clicking Follow gets bounced to sign-in but their click is lost. Queueing the intent + replaying on sign-in closes the funnel.
-**Acceptance:**
-- Anon cookie carries up to N pending follow intents (`artist_id` + `intent_ts`).
-- On sign-in, the merge bridge replays queued follows via `POST /v1/me/follows/:artist_id` (idempotent, so safe).
-- TTL on the pending queue (~7 days); old entries expire.
-- Per-user cap on queue size so the cookie doesn't bloat.
+### ~~`T-052c` Follow-an-artist: anonymous queueing~~ — shipped 2026-06-20
+
+- ✅ Migration `0018_anon_pending_actions.sql` — generic `(anon_id, kind, payload jsonb, created_at, expires_at)` table with composite unique index on `(anon_id, kind, payload)` for dedup + secondary indexes on `anon_id` (drain) and `expires_at` (future cleanup job). Generic shape so future intents (save-to-collection, inquiry-start) plug in by adding a `kind` value, not a new table.
+- ✅ Picked server-side table over cookie storage — anon `X-Anonymous-Id` cookie stays minimal; intents survive cookie-size limits + are queryable for debugging. See "Server-side anon pending actions" decision in `decisions.md`.
+- ✅ TTL: `expires_at` defaults to `now() + interval '7 days'`. Drain query filters on `expires_at > now()`. (Periodic cleanup job to delete expired rows is a follow-up — not blocking.)
+- ✅ Per-anon cap of 50 pending intents enforced at API; over-cap returns a clean `BadRequest` with copy that points the user at signing in to flush.
+- ✅ New endpoint `POST /v1/anon/pending/follows/:artist_id` — auth is the signed `X-Anonymous-Id` header (the `OptionalAnonId` extractor). 400 with no header, 404 for unknown / soft-deleted artist, 204 on success. Idempotent.
+- ✅ Extended `POST /v1/me/merge-anonymous` (T-033) to drain `anon_pending_actions` for the cookie's anon_id. Each `follow_artist` payload replays as a `follows` INSERT (idempotent on `(user_id, artist_id)` PK). All rows for the anon_id are deleted post-replay — recognised + unknown kinds, valid + expired — so a stale intent never fires later when this code learns a new kind name.
+- ✅ `MergeResponse` gains `follows_replayed: u64`; emitted only when > 0 so the existing T-033 callers can ignore the new field cleanly.
+- ✅ Web `<FollowButton>` signed-out branch wraps the redirect in a `startTransition` that first calls `queueAnonFollowAction` (server action → `/v1/anon/pending/follows/:id` with the cookie's anon-id). Best-effort: a queue failure logs to Sentry and proceeds with the redirect anyway.
+- ✅ 8 integration tests in `anon_pending_test.rs`: no-header → 400, unknown artist → 404, insert + idempotent re-insert, merge replays + drains, merge is idempotent when follow already existed, expired rows are drained-but-not-replayed, merge with no anon cookie is a no-op.
+- ✅ Prod-verified: `POST /v1/anon/pending/follows/...` returns 400 without header and 404 for unknown artists.
+
+**Open follow-up (not blocking):** scheduled cleanup of `expires_at < now()` rows. Today the table grows until users sign in or rows age out; cleanup keeps it tidy. Trigger to revive: row count > ~10k or query latency on drain feels slow.
 
 ### ~~`T-053` Shareable collections (public read)~~ — shipped 2026-06-18
 

@@ -1369,3 +1369,25 @@ export async function unsubscribeWithToken(
   }
   return (await res.json()) as UnsubscribeAck;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T-052c — anonymous pending intents
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Queue a "follow this artist when I sign up" intent against the
+ *  anon-id cookie. The merge-anonymous handler drains + replays after
+ *  sign-in. Idempotent. Best-effort — failures are non-fatal (the user
+ *  can re-click after sign-in). */
+export async function queueAnonFollow(
+  artistId: string,
+  init?: RequestInit
+): Promise<void> {
+  const res = await apiFetch(
+    `/v1/anon/pending/follows/${encodeURIComponent(artistId)}`,
+    { method: "POST", ...init }
+  );
+  if (!res.ok && res.status !== 204) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`queue-anon-follow ${res.status}: ${text || res.statusText}`);
+  }
+}

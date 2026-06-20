@@ -3,6 +3,302 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-20 — T-052c: anonymous follow queueing
+
+The "click Follow → bounce to sign-in → lose the click" funnel leak is
+closed. When a signed-out user clicks Follow on an artist page, the
+intent is now recorded against the signed `X-Anonymous-Id` cookie via
+a new `POST /v1/anon/pending/follows/:artist_id` endpoint, before the
+redirect to `/sign-in`. After sign-in, the existing T-033
+`merge-anonymous` handler drains the queue and replays each intent as
+a real `follows` row.
+
+Schema (migration `0018_anon_pending_actions.sql`):
+- `anon_pending_actions (id, anon_id, kind, payload jsonb, created_at,
+  expires_at default now() + interval '7 days')`.
+- Composite unique index on `(anon_id, kind, payload)` for dedup —
+  double-clicking Follow doesn't queue twice.
+- Generic shape (`kind text`) so future intents (save-to-collection,
+  inquiry-start) plug in by adding a `kind` value, not a new table.
+
+Why a server-side table vs cookie storage: see `decisions.md`
+2026-06-20 — generalises beyond Follow, keeps the cookie minimal,
+auditable / debuggable, lets the merge handler drain in the same
+transaction it already uses for `uploads` + `events`.
+
+Endpoint behaviour: 400 with no `X-Anonymous-Id` header (we need a
+key to queue against); 404 on unknown / soft-deleted artist; 204 on
+success; per-anon cap of 50 pending intents (BadRequest above cap
+with copy that points the user at signing in to flush).
+
+`MergeResponse` gains `follows_replayed: u64`. The drain deletes
+*all* rows for the anon_id post-replay — recognised + unknown kinds,
+valid + expired — so a stale intent never fires later when this code
+learns a new kind name.
+
+Web side: `<FollowButton>` signed-out branch wraps the redirect in a
+`startTransition` that first calls `queueAnonFollowAction`
+(server action → API endpoint via the cookie's anon-id).
+Queue failures log to Sentry but never block the redirect; the user
+can always click Follow again after signing in.
+
+8 integration tests in `anon_pending_test.rs`. Prod-verified
+end-to-end.
+
+## 2026-06-20 — T-052b: new-works digest pipeline live
+
+Daily cron-driven email digest of new artworks from artists each user
+follows. EventBridge → SQS → kickoff handler → per-user fan-out →
+batched email. Turns the follow graph (T-052 Phase 1, shipped
+2026-06-18) into the actual retention loop.
+
+Schema (`0017_user_notification_log.sql`): `(user_id, kind, sent_on
+date, sent_at, context jsonb)` with composite PK that includes
+`sent_on` for daily-cadence dedup via `INSERT … ON CONFLICT DO
+NOTHING RETURNING`. Survives SQS at-least-once redeliveries cleanly.
+
+Backfill semantics use `follows.created_at` per-follow + a 24h floor
+(`a.published_at > GREATEST(f.created_at, now() - 24h)`) — no
+`notifications_started_at` column needed. New follow today never
+backfills the artist's archive; existing follow at launch only sees
+future artworks; the floor caps the lookback so one cron can't dump
+a week of works in one go.
+
+`JobEvent::NotifyFollowersDigestKickoff` (cron entry point) +
+`NotifyFollowersDigestUser { user_id }` (fan-out target).
+`EmailClient::send_notification` wraps `send` adding `List-Unsubscribe:
+<url>, <mailto:>` + `List-Unsubscribe-Post: List-Unsubscribe=
+One-Click` headers per RFC 8058 so Gmail/Outlook honour the URL
+for one-click. Sender-reputation boost as a bonus.
+
+Local-dev trigger: `cargo run -p jobs-worker -- --enqueue '<json>'`
+drops any event into the local Postgres jobs table; the worker loop
+picks it up next poll.
+
+11 integration tests covering kickoff (positive, no-new-work,
+already-sent-today, master kill switch, per-kind opt-out, per-follow
+backfill window) and per-user handler (email send, idempotency,
+defensive opt-out re-check, multi-artist subject, empty-payload
+silence).
+
+Prod-verified end-to-end: manual SQS enqueue → kickoff returned
+`candidates: 0, enqueued: 0` (correct empty-state — no follows with
+new artworks in the 24h window yet).
+
+## 2026-06-20 — T-068: notification preferences spine
+
+The infrastructure layer every notification-emitting feature
+(T-052b new-works, T-059 saved-search alerts, T-060 Discover Weekly,
+future artist-side digests) composes on top of. Future kinds just
+add one `NotificationKind` enum variant + one row in the settings UI.
+
+Schema (`0016_notification_preferences.sql`): per-(user, kind)
+override table with composite PK, partial index on enabled rows for
+cron-side "everyone opted into kind X" lookups, and a master
+`users.global_email_notifications_enabled` kill switch. Default-on
+implicit (no row = enabled), so most users will have zero rows.
+
+Three-class taxonomy in `core::notifications::NotificationKind`:
+- Transactional (InquiryVerification, InquiryReply): sent regardless
+  of preferences. `is_transactional()` short-circuits the user_wants
+  check. Required for service operation; CAN-SPAM / CASL / GDPR
+  exempt from opt-in.
+- Notifications (NewWorksDigest, …): user-controllable, default-on.
+- Marketing / product: reserved slot, none today; would need
+  explicit opt-in.
+
+`core::notifications::user_wants(pool, user_id, kind)` is the single
+chokepoint every notification-email-sending handler routes through.
+
+JWT-based unsubscribe tokens (HS256, jsonwebtoken — already a
+dep, no new crates). Signed with the existing `ANON_COOKIE_SECRET`;
+90-day TTL.
+
+API: `GET`/`PATCH /v1/me/notification-preferences` (sparse partial
+updates with kind-name validation) + `POST /v1/notifications/
+unsubscribe` (no-auth, signed token IS the credential) + `POST
+.../oneclick` (returns 204 for RFC 8058 mail-client one-click).
+
+Web: `/me/settings` index (future home for account, privacy, data
+export sections), `/me/settings/notifications` with optimistic
+toggles, `/u/[token]` route handling GET (→ `/u/confirm`
+landing page) + POST (mail-client one-click). UserButton dropdown
+gains a "Settings" link via Clerk's `<UserButton.MenuItems>`.
+
+20 tests in total (7 unit + 13 integration).
+
+## 2026-06-20 — Infra cleanup: KMS spend + Neon connection risk
+
+Two cleanups before more feature work.
+
+**Postgres → Neon pooler endpoint.** `database_url` SSM value updated
+from the direct endpoint to the pooled one (`-pooler` suffix). With
+`max_connections(8)` per Lambda × many warm Lambda instances under
+burst, the direct endpoint risked exhausting Neon's connection limit.
+The pooled endpoint sits in front of the same database but
+multiplexes via PgBouncer-style transaction pooling. No code change.
+
+**Non-secret SSM params → TF-managed Lambda env vars.** Six SSM
+parameters (`clerk_issuer`, `clerk_jwks_url`, `web_base_url`,
+`image_base_url`, `uploads_public_url_prefix`, `resend_from_email`)
+used to live as SecureString in SSM, burning a KMS Decrypt call per
+parameter per cold start for no security benefit (their values are
+either public URLs or our own sender email). Moved them to TF-managed
+env vars on api + jobs Lambdas. `core::config::bootstrap_ssm` still
+loads the remaining 8 real secrets.
+
+  KMS Decrypt per cold start: 14 → 8 (~43% reduction).
+  SSM params: 14 → 8.
+
+Both wins on their own put us comfortably under the 20k/month KMS
+Free Tier ceiling we were tracking toward breaching mid-June.
+
+## 2026-06-19 — Clerk auth fixed at API Gateway
+
+Resolved a multi-day debugging arc: signed-in users hitting
+`wander.gallery/` got `redirect_url is invalid` (HTTP 422) from
+Clerk's frontend API.
+
+Root cause: CloudFront uses `AllViewerExceptHostHeader` origin
+policy (required so API Gateway's SNI matches the cert on the API
+Gateway endpoint). That strips the original viewer Host and sends
+API Gateway's own hostname. The Lambda saw `Host:
+afttdiav9e.execute-api.…amazonaws.com`, Clerk's middleware built
+every absolute URL from that wrong hostname, and Clerk's allowed-
+origins list (correctly) didn't include the API Gateway URL.
+
+Fixed by API Gateway parameter mapping at the integration → Lambda
+boundary: `request_parameters = { "overwrite:header.Host" =
+"wander.gallery" }`. Three lines of Terraform; the Lambda now
+receives Host = canonical hostname natively and Clerk's URL
+generation works. No DNS work, no custom domain, no middleware
+reconstruction. See `decisions.md` 2026-06-19 for the architectural
+rationale + the two paths we tried and abandoned (custom domain
+choreography; middleware request reconstruction that hung the
+Lambda at 10s).
+
+Adjacent fix: middleware now 308-redirects direct hits to the API
+Gateway invoke URL back to `wander.gallery` (URL-healing for stale
+bookmarks + autocomplete entries). Detection via `X-Amz-Cf-Id`
+absence (we can't use Host now that it's rewritten). Full lockdown
+of the API Gateway URL behind a CloudFront shared-secret header is
+tracked as `T-064`.
+
+`<ClerkProvider>` got explicit relative URLs
+(`signInUrl="/sign-in"`, `signInFallbackRedirectUrl="/"`, etc.) as
+belt-and-braces — the underlying bug is fixed but pinning these
+means a future proxy-chain change can't silently reintroduce a
+bad-redirect bug.
+
+## 2026-06-19 — Never render raw `Error.message` to users
+
+Reported bug: the Save-to-collection modal surfaced Next.js's
+internal Server Components verbiage ("An error occurred in the
+Server Components render. The specific message is omitted in
+production builds to avoid leaking sensitive details…") in place of
+friendly copy. Same pattern was in 14 other client catch blocks.
+
+Added `toUserMessage(err, fallback, context)` helper in
+`lib/reportError.ts` — sends the raw error to the reporter
+(CloudWatch, future Sentry) and returns the supplied fallback
+string. Swept every `setError(e instanceof Error ? e.message : ...)`
+site. Users see neutral, actionable copy regardless of what the
+framework produced.
+
+## 2026-06-18 — T-052 Phase 1: follow-an-artist
+
+Single biggest retention hook missing. Visible product surface
+(button + count) of the follow graph; the notification engine that
+turns it into recurring engagement landed as T-052b two days later.
+
+Schema: `follows (user_id, artist_id, created_at)` composite PK +
+reverse `(artist_id, created_at DESC)` index for "who follows this
+artist."
+
+API: `POST`/`DELETE /v1/me/follows/:artist_id` (both idempotent —
+double-clicks and rapid follow/unfollow cycles stay clean); `GET
+/v1/me/follows` (paginated, with slug + display_name + city/country
++ first published thumb). `ArtistDetail` gains `is_following`
+(auth-conditional via `Option<AuthedUser>`) + `follower_count`.
+`GET /v1/studio/me` is now a `StudioMe` wrapper that flattens the
+artist row + `follower_count`; wire-compatible for every existing
+field via `#[serde(flatten)]`.
+
+Web: `<FollowButton>` on `/artists/[slug]` with optimistic flip;
+signed-out branch redirects to sign-in (anon-side queueing landed
+in T-052c two days later); follower-count pill when > 0; same pill
+on the `/studio` dashboard.
+
+9 integration tests.
+
+## 2026-06-18 — T-053: shareable collections (public read)
+
+Schema was already there from migration 0003 (`user_collections.is_
+public` + `share_id`). UI didn't expose them. Added:
+
+- API `GET /v1/collections/share/:share_id` — unauthenticated read.
+  Returns `CollectionDetail` if public; 404 indistinguishably for
+  not-found / private / soft-deleted. Cheap pre-DB guard rejects
+  malformed tokens (length + alphanumeric) before hitting the query.
+- Factored `fetch_collection_artworks` out of the owner-side detail
+  handler so both surfaces share filtering (published + active +
+  approved primary image).
+- Web `/c/[share_id]` public read-only view + per-collection OG card
+  (composes the same 2×2 cover-grid pattern as T-051).
+- `<CollectionShareControl>` on `/collections/[id]`: "Make public"
+  toggle → server action → renders the share URL + Copy button +
+  "Make private" toggle. UI is explicit that going private rotates
+  the link (the existing PATCH handler mints a fresh `share_id`
+  on every false→true transition; old shares stay dead).
+- Privacy page acknowledges that public collections may be indexed
+  by search engines once shared.
+
+5 new integration tests (19 collections total).
+
+## 2026-06-18 — T-051: per-artwork + per-artist OG cards
+
+Every share of `/artworks/<id>` or `/artists/<slug>` (iMessage,
+Slack, WhatsApp, Twitter, etc.) now pulls the actual work into the
+preview, not the generic homepage card. Free distribution.
+
+Both routes use Next.js `ImageResponse` (Satori + Resvg WASM) at
+request time; 1200×630 PNG; revalidate every 24h.
+
+The OpenNext gotcha worth recording: the Next.js-docs pattern
+`fetch(new URL('./font.ttf', import.meta.url))` does NOT work under
+vanilla Node — Vercel's edge runtime supports `fetch('file://…')`
+but Node's undici throws "not implemented... yet..." on the file:
+scheme. Fix is `readFile(fileURLToPath(new URL(…, import.meta.url)))`.
+Turbopack bundles the relative TTFs into `.next/server/assets/`
+either way; only the load path changes. Documented inline in both
+route files so the next person doesn't reach for `fetch` first.
+
+Fonts (Instrument Serif regular + italic) bundled at
+`web/src/app/og-fonts/`. Title size clamps by length so a 60-char
+title doesn't blow the box.
+
+## 2026-06-17 — Roadmap track: post-launch retention + ML
+
+Strategic session promoted 14 new tracks from speculative to "next
+3-month build queue":
+
+- T-050 events writer (foundation for taste vector + analytics)
+- T-051 OG cards · T-052 follow-an-artist · T-053 shareable
+  collections (Tier 1 retention)
+- T-054 inquirer-inbound replies (closes inquiry-reply thread loop)
+- T-055 taste vector + nightly refresh · T-056 personalised search
+  re-rank + "For you" row · T-057 algorithmic neighbourhoods
+  (HDBSCAN + Claude label) (ML core)
+- T-058 series concept for artists · T-059 saved searches · T-060
+  Discover Weekly · T-061 first-session taste calibrator · T-062
+  size/price/medium filters · T-063 inline "more like this" (UX
+  + retention)
+
+Plus four `decisions.md` entries recording the underlying positions:
+no in-platform messaging (inquiries are email-stitched); ML-driven
+discovery (no editorial); algorithmic neighbourhoods as primary
+primitive; Postgres-hot / S3-cold event storage.
+
 ## 2026-06-11 — Web is live: Next.js SSR via OpenNext on Lambda
 
 `https://wander.gallery` now serves the real Next.js app — full SSR,

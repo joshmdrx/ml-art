@@ -93,6 +93,69 @@ pub async fn get_json_authed<T: DeserializeOwned>(
 }
 
 /// Authed status-only variant — useful for write endpoints that return 204.
+/// Send a request as an anonymous user — `X-Anonymous-Id` header but
+/// no `Authorization`. Used by the anon-pending-action endpoints
+/// (T-052c) where the signed anon-id IS the credential.
+pub async fn send_with_anon_id(
+    app: Router,
+    method: &str,
+    uri: &str,
+    anon_id: &str,
+    body: Option<&str>,
+) -> (StatusCode, Vec<u8>) {
+    let mut req = Request::builder()
+        .uri(uri)
+        .method(method)
+        .header("X-Anonymous-Id", anon_id);
+    let body_kind = if let Some(b) = body {
+        req = req.header("Content-Type", "application/json");
+        Body::from(b.to_string())
+    } else {
+        Body::empty()
+    };
+    let resp = app
+        .oneshot(req.body(body_kind).expect("build request"))
+        .await
+        .expect("router oneshot");
+    let status = resp.status();
+    let bytes = to_bytes(resp.into_body(), 4 * 1024 * 1024)
+        .await
+        .expect("read body");
+    (status, bytes.to_vec())
+}
+
+/// Send a request with both a Bearer token AND an X-Anonymous-Id
+/// header — the shape of the post-sign-in `merge-anonymous` call.
+pub async fn send_authed_with_anon_id(
+    app: Router,
+    method: &str,
+    uri: &str,
+    bearer: &str,
+    anon_id: &str,
+    body: Option<&str>,
+) -> (StatusCode, Vec<u8>) {
+    let mut req = Request::builder()
+        .uri(uri)
+        .method(method)
+        .header("Authorization", format!("Bearer {bearer}"))
+        .header("X-Anonymous-Id", anon_id);
+    let body_kind = if let Some(b) = body {
+        req = req.header("Content-Type", "application/json");
+        Body::from(b.to_string())
+    } else {
+        Body::empty()
+    };
+    let resp = app
+        .oneshot(req.body(body_kind).expect("build request"))
+        .await
+        .expect("router oneshot");
+    let status = resp.status();
+    let bytes = to_bytes(resp.into_body(), 4 * 1024 * 1024)
+        .await
+        .expect("read body");
+    (status, bytes.to_vec())
+}
+
 /// No-auth send — for endpoints where the request body or query string
 /// IS the credential (e.g. `/v1/notifications/unsubscribe` carries a
 /// signed token).

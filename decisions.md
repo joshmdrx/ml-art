@@ -17,6 +17,48 @@ Format:
 
 ---
 
+## 2026-06-20 — Server-side `anon_pending_actions` table for queued anon intents (over cookie storage)
+
+**Context:** `T-052c` captures intents from signed-out users (clicking Follow without an account) so the merge-anonymous handler can replay them after sign-in — closing the "lose the highest-intent click in the funnel" leak. Two storage options were live:
+
+- **(a) Extend the anon-id cookie** with a `pending_follows: [uuid, ...]` field. Cookie size cap ~4KB → ~80 entries. No DB table.
+- **(b) Server-side `anon_pending_actions (anon_id, kind, payload, expires_at)` table** with a single endpoint to insert.
+- **(c) Browser localStorage** for client-only capture.
+
+**Decided:** (b). Single endpoint `POST /v1/anon/pending/follows/:artist_id`; the merge handler drains rows keyed on the anon-id cookie post-sign-in.
+
+**Alternatives considered + rejected:**
+- **(a) Cookie storage** — workable but the cookie grows with every queued intent and gets sent on every request thereafter (bandwidth tax). Mutating cookies cleanly from client code requires same-domain JS. Generalising to richer future intents (save-to-collection-X, queue inquiry to Y) means cramming larger payloads into a header on every request.
+- **(c) localStorage** — simplest client-side but doesn't survive private mode or device switch, and can't be replayed by the server-side merge handler — only by client code, which means yet another moving piece in the post-sign-in dance.
+
+**Why (b):** generalises beyond Follow (save-to-collection has exactly the same anon-click-lost problem); keeps the cookie minimal (it stays just the signed UUID); auditable + queryable in psql when debugging; the merge handler already runs in a transaction that touches `uploads` + `events` — adding `anon_pending_actions` to that transaction is a few more SQL statements, no new orchestration. Schema is intentionally generic (`kind text, payload jsonb`) so future intents add a `kind` value + a match arm in the merge handler, not a new table.
+
+**Reversibility:** High. If the table grows uncomfortably big we can add a cleanup cron (`expires_at < now()` delete) or layer a cookie hint as a fast path. If we ever want to switch to cookie storage entirely the API surface stays the same shape — POST to record, the merge handler drains.
+
+---
+
+## 2026-06-19 — Pin Lambda's view of `Host` via API Gateway parameter mapping (not custom domain, not middleware)
+
+**Context:** Clerk's middleware rejected our session-handshake redirects with `redirect_url is invalid` because the Lambda was seeing `Host: <apigw-invoke-url>.execute-api.…amazonaws.com` instead of `wander.gallery`. CloudFront's `AllViewerExceptHostHeader` origin policy strips the original Host for SNI compatibility with API Gateway's cert. Three architecturally distinct fixes were on the table:
+
+- **(a) API Gateway custom domain** for the origin, with DNS shenanigans (CNAMEs, multiple `aws_apigatewayv2_domain_name` rows, dual-cert routing) so the Lambda sees `Host: wander.gallery` natively. Cleanest from a "what the Lambda sees matches reality" angle.
+- **(b) Middleware-layer request reconstruction** (rebuild the `NextRequest` with the right URL + Host before clerkMiddleware sees it). Simplest in TF terms.
+- **(c) API Gateway HTTP API parameter mapping** to rewrite headers at the integration → Lambda boundary: `request_parameters = { "overwrite:header.Host" = "wander.gallery" }`.
+
+**Decided:** (c). Three lines of Terraform, no DNS work, no custom domain, no middleware reconstruction. The Lambda receives a payload-format-2.0 event whose `headers.host` is the rewritten canonical value; OpenNext converts that into a NextRequest whose URL reflects `wander.gallery`. Every downstream consumer — Clerk's middleware, `headers().get('host')`, request-derived URL helpers — sees the right hostname natively.
+
+**Alternatives considered + rejected:**
+- **(a) Custom domain** — the right answer in a textbook setup, but our CloudFront-fronted-API-Gateway topology with `AllViewerExceptHostHeader` for SNI made the cert + DNS choreography surprisingly tangled (CloudFront resolves origin via `origin_domain_name`, SNI is tied to that, can't differ from the Host CF sends without an extra DNS layer + an extra ACM cert). Real work for marginal upside.
+- **(b) Middleware reconstruction** — tried in three forms (streaming body forwarding, ArrayBuffer body buffering, header-only synthesis) and every variant hung the Lambda at the 10s timeout. clerkMiddleware apparently does an outbound call when it sees a "canonical" host that never returned in this environment. A 5-line change that worked locally and bricked prod twice; vetoed by experience.
+
+**Why (c):** smallest-surface fix that solves the actual problem; sits at the natural seam between API Gateway and Lambda; the rewritten `Host` is visible to every downstream layer including the OpenNext bundle without code changes; no DNS, no certs, no extra resources. Documented inline at `infra/modules/web/main.tf` so the next person doesn't re-discover the cert / SNI dance by accident.
+
+**Adjacent fix from the same debugging session:** the middleware now 308-redirects direct hits to the API Gateway invoke URL back to `wander.gallery` (URL-healing for stale bookmarks + autocomplete entries from earlier testing). Detection is via `X-Amz-Cf-Id` absence — we can't use the now-rewritten Host. The full lockdown of the API Gateway URL behind a CloudFront shared-secret header is tracked separately as `T-064`.
+
+**Reversibility:** High. Removing the `request_parameters` line reverts to the broken behaviour; the rest of the stack stays intact.
+
+---
+
 ## 2026-06-17 — Event storage: Postgres hot tier, S3 Parquet cold archive (when volume justifies)
 
 **Context:** `T-050` introduces a write path into the existing `events` table. At realistic mid-term scale (~1k DAU, 10-20 events/session) that's 10-100K events/day → 20-35M rows/year → ~10-15 GB/year on Neon. Storage cost is real ($0.30/GB-month); query latency on analytical aggregations gets painful past ~100M rows in a single non-partitioned table. Question: where do events live in the medium term?
