@@ -386,6 +386,26 @@ additions (`T-058..T-063`).
 - Browser hits via `wander.gallery` continue to work unchanged.
 - Rotate the secret via SSM; deploy script picks it up.
 
+### `T-065` Re-attempt `@sentry/nextjs` on the web tier
+**Where:** `web/next.config.ts`, `web/instrumentation.ts` (new), Sentry init.
+**Why:** We deferred web Sentry in May because `@sentry/nextjs` 10.x injected a page-router `_error` stub during its post-build pass which OpenNext 4.0's `copyTracedFiles` couldn't reconcile. Both have shipped releases since. Today web errors only surface in CloudWatch Logs — Sentry on the Rust API + jobs already works, so we're flying half-blind on the bigger surface.
+**Acceptance:**
+- `pnpm add @sentry/nextjs`, `web/instrumentation.ts` + `web/instrumentation-client.ts` per Sentry's app-router docs.
+- `next build` + `npx open-next build` succeed (the historical breakage point).
+- Lambda env: `SENTRY_DSN_WEB` populated via `deploy-web.sh` SSM fetch (we already have the param).
+- Verify an intentional `throw new Error("sentry-canary")` in a route surfaces in Sentry's wander-web project.
+- Source maps uploaded to Sentry on build (Sentry's Webpack plugin handles it; OpenNext compat-check needed).
+
+### `T-066` Consolidate Lambda config loading
+**Where:** `scripts/deploy-web.sh` (drop the Python SSM-fetch + env-merge hack); web Lambda runtime gets the same in-process SSM fetch as api/jobs (or move to AWS Parameters & Secrets Lambda Extension if cold-start latency feels bad).
+**Why:** Web's SSM-secret injection happens *at deploy time* via a custom shell + Python pipeline that fetches CLERK_SECRET_KEY and ANON_COOKIE_SECRET, then merges them into the Lambda's env via `update-function-configuration`. The Rust Lambdas do this *at runtime* via `core::config::bootstrap_ssm`. Asymmetric: rotating an SSM secret on the Rust side just needs a Lambda recycle (cold-start picks it up); on the web side it needs a redeploy. Picking one pattern reduces hack surface.
+**Note:** the AWS Parameters and Secrets Lambda Extension is a good fit for both *if* cold-start frequency becomes a concern — but it doesn't help at our current scale (we already only fetch SSM once per cold start; the Extension caches across invocations, not across cold starts). Trigger to revive: cold-start latency complaints or sustained > 10 cold starts/min.
+
+### `T-067` Type sharing Rust → TS
+**Where:** generate `web/src/lib/api.ts` types from `api/crates/core/src/models.rs` via `ts-rs` (Rust-side derive) or schemars + `json-schema-to-typescript`.
+**Why:** Today both files are maintained by hand. Drift risk: an API field rename only breaks at runtime. Caught us once with `is_following` (we shipped the Rust side then realised the TS side was stale). Risk grows with surface area.
+**Acceptance:** every `pub struct` in `models.rs` with `#[derive(Serialize)]` round-trips to a TS `export interface` automatically on `cargo build` (or as a separate `make types` target); CI fails if the generated file drifts from what's checked in.
+
 ---
 
 ## Soft maintenance (do when it bites)
