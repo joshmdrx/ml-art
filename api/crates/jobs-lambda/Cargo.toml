@@ -37,3 +37,9 @@ thiserror = { workspace = true }
 # SQS message bodies are JSON-encoded `JobEvent`s; deserialize here.
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+# T-052b — the kickoff handler enqueues per-user digest jobs back to SQS,
+# so this Lambda is also a producer. Build the SQS client + load AWS
+# config at boot.
+aws-config = { workspace = true }
+aws-sdk-sqs = { workspace = true }

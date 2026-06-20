@@ -142,6 +142,14 @@ data "aws_iam_policy_document" "jobs_lambda" {
     resources = [aws_sqs_queue.main.arn]
   }
 
+  # T-052b — the kickoff handler enqueues per-user digest jobs back to
+  # the same queue, so this Lambda is also a producer.
+  statement {
+    sid       = "SqsProduce"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.main.arn]
+  }
+
   # SSM — read the runtime config tree on cold start.
   statement {
     sid     = "SsmRead"
@@ -202,6 +210,10 @@ resource "aws_lambda_function" "jobs" {
       CONFIG_PARAMETER_PATH = var.config_parameter_path
       RUST_LOG              = "info"
       ML_ART_ENV            = "prod"
+      # T-052b — the kickoff handler enqueues per-user digest jobs back
+      # to the same SQS queue this Lambda consumes. So jobs is both
+      # producer + consumer; it needs the queue URL to send.
+      JOBS_QUEUE_URL = aws_sqs_queue.main.url
       # Public/static config — see modules/api/main.tf for the same
       # rationale (was SecureString in SSM, now free in TF env).
       CLERK_ISSUER              = "https://clerk.wander.gallery"
@@ -240,6 +252,57 @@ resource "aws_lambda_event_source_mapping" "sqs_to_jobs" {
   }
 
   function_response_types = ["ReportBatchItemFailures"]
+}
+
+# ─── T-052b: daily new-works digest cron ─────────────────────────────────────
+#
+# EventBridge fires at 11:00 UTC daily, drops a fixed
+# `NotifyFollowersDigestKickoff` JobEvent into the same SQS queue the
+# Lambda already consumes. The kickoff handler in core::jobs scans for
+# users with new work from followed artists and fans out one
+# `NotifyFollowersDigestUser` per qualifying user — same queue, same
+# Lambda, no separate infrastructure for the producer.
+#
+# A separate `aws_sqs_queue_policy` grants events.amazonaws.com the
+# SendMessage permission scoped to this specific event rule's ARN.
+
+resource "aws_cloudwatch_event_rule" "new_works_digest_kickoff" {
+  name                = "${var.name_prefix}-new-works-digest-kickoff"
+  description         = "T-052b — daily kickoff for the new-works digest."
+  schedule_expression = "cron(0 11 * * ? *)" # 11:00 UTC daily
+}
+
+resource "aws_cloudwatch_event_target" "new_works_digest_kickoff_sqs" {
+  rule      = aws_cloudwatch_event_rule.new_works_digest_kickoff.name
+  target_id = "jobs-queue"
+  arn       = aws_sqs_queue.main.arn
+  # Matches the `#[serde(tag = "kind", content = "payload")]` shape on
+  # `JobEvent` — the Lambda's SQS handler deserialises this verbatim.
+  input = jsonencode({
+    kind    = "notify_followers_digest_kickoff"
+    payload = {}
+  })
+}
+
+resource "aws_sqs_queue_policy" "events_send_to_jobs" {
+  queue_url = aws_sqs_queue.main.url
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "AllowEventBridgeKickoff"
+      Effect = "Allow"
+      Principal = {
+        Service = "events.amazonaws.com"
+      }
+      Action   = "sqs:SendMessage"
+      Resource = aws_sqs_queue.main.arn
+      Condition = {
+        ArnEquals = {
+          "aws:SourceArn" = aws_cloudwatch_event_rule.new_works_digest_kickoff.arn
+        }
+      }
+    }]
+  })
 }
 
 # ─── Outputs ─────────────────────────────────────────────────────────────────

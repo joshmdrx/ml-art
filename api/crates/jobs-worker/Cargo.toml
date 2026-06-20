@@ -15,3 +15,5 @@ ml-art-core = { path = "../core" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+# T-052b — parsing the --enqueue payload into a JobEvent.
+serde_json = { workspace = true }

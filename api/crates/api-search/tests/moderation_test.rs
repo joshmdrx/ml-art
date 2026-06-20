@@ -279,6 +279,8 @@ async fn add_image_flips_approved_after_worker_runs(pool: PgPool) {
         emails: ml_art_core::emails::EmailClient::disabled("noreply@test".to_string()),
         moderation: ModerationClient::disabled(),
         web_base_url: "http://localhost:3000".to_string(),
+        anon_cookie_secret: "test-cookie-secret".to_string(),
+        jobs: jobs::JobsBackend::for_tests(),
     };
     jobs::handle(event, &deps).await.unwrap();
     jobs::postgres::mark_done(&pool, claimed.id).await.unwrap();

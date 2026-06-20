@@ -216,6 +216,16 @@ pub fn mint_unsubscribe_token(
     )
 }
 
+/// Construct the public unsubscribe URL a recipient clicks from the
+/// email footer (and that mail clients POST to for RFC 8058 one-click).
+/// Single source of truth for the `/u/<token>` URL shape so every
+/// notification feature uses the same path.
+pub fn unsubscribe_url(web_base_url: &str, token: &str) -> String {
+    // Trim a trailing slash on the base so we don't end up with `//`.
+    let base = web_base_url.trim_end_matches('/');
+    format!("{base}/u/{token}")
+}
+
 /// Verify a token and return the `(user_id, kind)` it points at.
 /// Rejects expired, malformed, or wrong-key tokens. Constant-time
 /// signature comparison is handled by the jsonwebtoken crate.

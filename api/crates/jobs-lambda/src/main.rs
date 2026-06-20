@@ -36,7 +36,7 @@ use ml_art_core::{
     config::Config,
     emails::EmailClient,
     geocoding::GeocodingClient,
-    jobs::{self, JobEvent, JobsDeps},
+    jobs::{self, JobEvent, JobsBackend, JobsDeps},
     moderation::ModerationClient,
 };
 use std::sync::Arc;
@@ -76,12 +76,26 @@ async fn main() -> Result<(), Error> {
     // first Postgres handshake over TLS).
     let cfg = Config::load()?;
     let pool = ml_art_core::db::make_pool(&cfg.database_url).await?;
+
+    // The kickoff handler enqueues per-user digest jobs — give it the
+    // SQS backend so fan-out goes back through the same queue this
+    // Lambda is receiving from. JOBS_QUEUE_URL is the queue we're
+    // attached to; using it for outbound makes the loop self-feeding
+    // and matches the existing api-search pattern.
+    let aws_cfg = aws_config::load_from_env().await;
+    let sqs_client = aws_sdk_sqs::Client::new(&aws_cfg);
+    let queue_url = std::env::var("JOBS_QUEUE_URL")
+        .map_err(|_| anyhow::anyhow!("JOBS_QUEUE_URL not set"))?;
+    let backend = JobsBackend::sqs(sqs_client, queue_url);
+
     let deps = Arc::new(JobsDeps {
         pool,
         geocoder: GeocodingClient::from_env(),
         emails: EmailClient::from_env(),
         moderation: ModerationClient::from_env(),
         web_base_url: cfg.web_base_url.clone(),
+        anon_cookie_secret: cfg.anon_cookie_secret.clone(),
+        jobs: backend,
     });
 
     info!("jobs-lambda init complete; entering handler loop");

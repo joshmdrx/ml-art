@@ -241,19 +241,54 @@ additions (`T-058..T-063`).
 **Phase 1 limits, captured for follow-ups:**
 - Events: `JobEvent::EventLog` writes for `artist_followed` / `artist_unfollowed` are marked `TODO(T-050)` in the handlers — they're the obvious next signal source for the taste vector.
 
-### `T-052b` Follow-an-artist: notification digest
-**Where:** `JobEvent::NotifyFollowersDigestKickoff` + `NotifyFollowersDigestUser` variants + handlers in `core::jobs`; cron trigger via `aws_cloudwatch_event_rule` → SQS; new `core::emails::templates::new_works_digest`; `user_notification_log` table.
+### ~~`T-052b` Follow-an-artist: notification digest~~ — shipped 2026-06-20
+
+- ✅ Migration `0017_user_notification_log.sql` — `(user_id, kind, sent_on)` PK enables daily-cadence dedup via `INSERT … ON CONFLICT DO NOTHING RETURNING id`; secondary `(kind, sent_at DESC)` index for cohort-level reporting.
+- ✅ `JobEvent::NotifyFollowersDigestKickoff` (no payload) + `NotifyFollowersDigestUser { user_id }`. Dispatch wired in `core::jobs::handle`.
+- ✅ EventBridge cron at `cron(0 11 * * ? *)` (11:00 UTC daily) drops the kickoff event onto the existing SQS queue via `aws_cloudwatch_event_target` with constant input matching the JobEvent JSON shape; SQS queue policy scopes `events.amazonaws.com:SendMessage` to that specific rule.
+- ✅ Kickoff handler: SQL scan on `follows` × `artworks` × `artists` filtering on `a.published_at > GREATEST(f.created_at, now() - interval '24 hours')` and `NOT EXISTS` against `user_notification_log` for today; per-candidate `user_wants` check; SQS fan-out to per-user handler.
+- ✅ Per-user handler: claims today's slot via `INSERT … ON CONFLICT DO NOTHING RETURNING`, defensively re-checks `user_wants` (preferences may have flipped between scan + delivery), pulls payload via the same per-follow window query (cap 12 artworks), builds the digest with `templates::new_works_digest`, sends via `EmailClient::send_notification`.
+- ✅ `EmailClient::send_notification` wraps `send` adding `List-Unsubscribe: <url>, <mailto:>` + `List-Unsubscribe-Post: List-Unsubscribe=One-Click` headers (RFC 8058) so Gmail/Outlook honour the URL for one-click. `SentEmail` gains a `headers` field so the test backend can assert on them.
+- ✅ `core::notifications::unsubscribe_url(base, token)` — single source of truth for the `/u/<token>` URL shape. Same kind enum + HMAC machinery as T-068.
+- ✅ Email template `templates::new_works_digest`: subject `"1 new work from {artist}"` (single) or `"N new works from artists you follow"` (multi); body groups artworks under artist headings with thumbnails + titles; footer carries the visible unsubscribe link + the manage-preferences link.
+- ✅ Backfill semantics use `follows.created_at` per-follow + a 24h floor (no `notifications_started_at` column needed) — a new follow today never backfills the artist's archive, an existing follow at launch only sees future artworks.
+- ✅ Local-dev triggerability: `cargo run -p jobs-worker -- --enqueue '<json>'` flag drops any `JobEvent` into the local Postgres jobs table and exits; the worker loop picks it up on next poll.
+- ✅ `JobsDeps` gains `anon_cookie_secret` (for token signing) and `jobs: JobsBackend` (so kickoff can fan out per-user jobs); jobs-lambda + jobs-worker construct both; tests updated.
+- ✅ Jobs Lambda IAM + env: `sqs:SendMessage` on the main queue + `JOBS_QUEUE_URL` env var. The Lambda is now both consumer and producer.
+- ✅ 11 integration tests in `digest_test.rs` covering kickoff (positive, no-new-work, already-sent-today, master-off, per-kind-off, per-follow backfill window) and per-user handler (email send, idempotency, opt-out re-check, multi-artist subject, empty-payload silence).
+- ✅ Prod-verified end-to-end: manual SQS enqueue → kickoff handler logged `"digest kickoff: candidate users scanned",candidates:0` + `"digest kickoff: per-user jobs enqueued",enqueued:0` (correct empty-state behaviour — no users currently have follows with new artworks in the 24h window).
+
+**Deferred from this slice:**
+- "Skip if user viewed any work by this artist in last 24h" — gated on `T-050` events writer. Layer on when T-050 lands.
+- Per-artist mute. Defer to follow-up.
+- Quiet hours per user timezone. Defer until non-US user base appears.
+
+**Original spec (kept for archaeology):**
+**Where:** `JobEvent::NotifyFollowersDigestKickoff` + `NotifyFollowersDigestUser` variants + handlers in `core::jobs`; cron trigger via `aws_cloudwatch_event_rule` → SQS; new `core::emails::templates::new_works_digest`; `user_notification_log` table; `core::emails::EmailClient::send_notification` for List-Unsubscribe header wiring; `core::notifications::unsubscribe_url` utility.
 **Depends on:** `T-068` (preferences spine). Builds on `T-052` follow graph (shipped 2026-06-18).
 **Why:** Phase 1 shipped the graph; this turns it into the actual retention loop — a user signs up, follows 3-5 artists, comes back when one of them publishes new work. Daily-batched (avoids hammering the inbox when an artist seeds 10 works in one session); reuses the per-artwork OG cards from `T-051` for share-friendly previews when followers click through.
+
+**Backfill semantics (no `notifications_started_at` column needed):**
+The digest filter is `artworks.published_at > GREATEST(follows.created_at, now() - 24h)`. That single clause handles every case correctly: a new follow today never backfills the artist's archive; an existing follow at launch only sees future artworks; the 24h floor caps the lookback for old follows so one daily run can't dump a week of works.
+
+**Idempotency under SQS at-least-once:**
+`user_notification_log` PK includes `sent_on date` (date-truncated). Per-user handler does `INSERT ... ON CONFLICT (user_id, kind, sent_on) DO NOTHING RETURNING id` — only the row that *won* the insert proceeds to send. Survives SQS redeliveries without double-emails. Weekly-cadence notifications (T-059, T-060) layer a parallel `sent_week` constraint or a different kind name later.
+
 **Acceptance:**
-- Daily cron at 11:00 UTC (`aws_cloudwatch_event_rule` → SQS) enqueues `JobEvent::NotifyFollowersDigestKickoff`.
-- Kickoff handler scans users with ≥1 follow whose followed artists published anything in the last 24h; checks `core::emails::user_wants(NotificationKind::NewWorksDigest)` (T-068); fans out to one `JobEvent::NotifyFollowersDigestUser { user_id }` per qualifying user.
-- Per-user handler builds the digest (grouped by artist, capped at 12 works total, sorted by most-recently-published), sends via `core::emails`, writes a `user_notification_log` row.
-- Migration: `user_notification_log (user_id, kind, sent_at, context jsonb, PK(user_id, kind, sent_at))` for cross-handler idempotency + audit trail. Kickoff filters `WHERE NOT EXISTS (SELECT 1 FROM user_notification_log WHERE user_id = ? AND kind = 'new_works_digest' AND sent_at > now() - interval '20 hours')`.
-- Backfill protection at launch: `users.notifications_started_at` stamped on first qualifying scan per user; digest only counts artworks published after that timestamp. Prevents the launch-day "everything they ever followed shows up as new."
-- Email subject: "1 new work from {artist_name}" (single artist) or "{N} new works from artists you follow" (multi). Footer carries per-kind unsubscribe link + `List-Unsubscribe` header (both from T-068).
-- Empty-state behaviour: silent (zero new work → no email).
-- Tests: kickoff dedup (rerun within 20h is no-op), per-user digest correctness across multiple artists, opt-out honoured, backfill protection (existing follows pre-launch + zero new post-launch → no email), empty case (follows but no new work → no email).
+- Migration `0017_user_notification_log.sql`: `user_notification_log (user_id uuid, kind text, sent_on date default current_date, sent_at timestamptz default now(), context jsonb, PRIMARY KEY (user_id, kind, sent_on))`. `sent_at` for audit; `sent_on` for the dedup constraint.
+- New JobEvent variants: `NotifyFollowersDigestKickoff` (no payload) and `NotifyFollowersDigestUser { user_id: Uuid }`.
+- Daily cron at 11:00 UTC: `aws_cloudwatch_event_rule` (rate-based; us-east-1 default) → SQS target with constant input `{"NotifyFollowersDigestKickoff":{}}` matching the JobEvent JSON shape. Plus `aws_sqs_queue_policy` allowing `events.amazonaws.com` to `sqs:SendMessage`.
+- Kickoff handler: SQL scans for users with ≥1 follow whose followed artist published an artwork within their per-follow `GREATEST(f.created_at, now() - 24h)` window AND who have no `user_notification_log` row with today's `sent_on`. For each, calls `notifications::user_wants(pool, user_id, NewWorksDigest)`; enqueues `NotifyFollowersDigestUser { user_id }` per qualifying user.
+- Per-user handler:
+  1. `INSERT INTO user_notification_log ... ON CONFLICT DO NOTHING` returns the affected row; if none, the handler returns silently (another worker handled it).
+  2. Build digest payload (per-artist groups, cap 12 artworks total, sort by `published_at DESC`).
+  3. If empty, no-op (defensive — shouldn't get here from the kickoff query).
+  4. Build email via `templates::new_works_digest`. Subject: `"1 new work from {artist}"` (single artist) or `"{N} new works from artists you follow"` (multi).
+  5. Mint unsubscribe token via `mint_unsubscribe_token(user_id, NewWorksDigest, anon_cookie_secret)` from T-068.
+  6. Send via `EmailClient::send_notification(email, unsubscribe_url)` — wraps the existing `send` adding `List-Unsubscribe: <url>, <mailto:>` and `List-Unsubscribe-Post: List-Unsubscribe=One-Click` so Gmail/Outlook honour the URL for one-click.
+- Local-dev triggerability: `cargo run -p jobs-worker -- --enqueue '<json>'` flag inserts a row into the local Postgres `jobs` table; the polling loop picks it up. Plus a `make trigger-digest` shortcut.
+- Empty-state behaviour: silent.
+- Tests: kickoff finds the right users, kickoff excludes already-sent-today users, kickoff respects `user_wants` master + per-kind, per-user handler is idempotent (re-running on same day no-ops), per-follow backfill window correct, multi-artist grouping correct, cap-at-12 preserves most-recent-first, empty payload doesn't send.
 
 **Deferred from this slice:**
 - "Skip if user viewed any work by this artist in last 24h" — gated on `T-050` events writer. Layer on when T-050 lands.

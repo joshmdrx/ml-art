@@ -51,6 +51,11 @@ pub struct SentEmail {
     pub subject: String,
     pub body_html: String,
     pub reply_to: Option<String>,
+    /// Extra headers — `List-Unsubscribe` + `List-Unsubscribe-Post` go
+    /// here for notification kinds. Empty for transactional sends.
+    /// `Vec<(name, value)>` rather than `HashMap` so test assertions
+    /// can match positionally and order is stable.
+    pub headers: Vec<(String, String)>,
 }
 
 impl EmailClient {
@@ -121,12 +126,53 @@ impl EmailClient {
         body_html: &str,
         reply_to: Option<&str>,
     ) -> Result<(), EmailError> {
+        self.send_with_headers(to, subject, body_html, reply_to, &[])
+            .await
+    }
+
+    /// Notification-flavoured send. Wraps `send` with `List-Unsubscribe`
+    /// + `List-Unsubscribe-Post` headers so Gmail/Outlook honour the
+    /// `unsubscribe_url` for one-click (RFC 8058) AND show their
+    /// built-in unsubscribe UI prominently — both improve our sender
+    /// reputation. The URL also belongs in the footer copy of the
+    /// HTML body so a recipient using a non-honouring client still has
+    /// the option.
+    pub async fn send_notification(
+        &self,
+        to: &str,
+        subject: &str,
+        body_html: &str,
+        unsubscribe_url: &str,
+    ) -> Result<(), EmailError> {
+        let headers = vec![
+            (
+                "List-Unsubscribe".to_string(),
+                format!("<{unsubscribe_url}>"),
+            ),
+            (
+                "List-Unsubscribe-Post".to_string(),
+                "List-Unsubscribe=One-Click".to_string(),
+            ),
+        ];
+        self.send_with_headers(to, subject, body_html, None, &headers)
+            .await
+    }
+
+    async fn send_with_headers(
+        &self,
+        to: &str,
+        subject: &str,
+        body_html: &str,
+        reply_to: Option<&str>,
+        headers: &[(String, String)],
+    ) -> Result<(), EmailError> {
         match &*self.inner {
             Inner::Disabled { from } => {
                 tracing::info!(
                     %to,
                     %from,
                     subject,
+                    headers = headers.len(),
                     "email send (disabled — no RESEND_API_KEY)"
                 );
                 Ok(())
@@ -138,6 +184,7 @@ impl EmailClient {
                     subject: subject.to_string(),
                     body_html: body_html.to_string(),
                     reply_to: reply_to.map(str::to_string),
+                    headers: headers.to_vec(),
                 });
                 Ok(())
             }
@@ -145,7 +192,12 @@ impl EmailClient {
                 api_key,
                 from,
                 http,
-            } => send_via_resend(http, api_key, from, to, subject, body_html, reply_to).await,
+            } => {
+                send_via_resend(
+                    http, api_key, from, to, subject, body_html, reply_to, headers,
+                )
+                .await
+            }
         }
     }
 
@@ -166,6 +218,7 @@ async fn send_via_resend(
     subject: &str,
     body_html: &str,
     reply_to: Option<&str>,
+    headers: &[(String, String)],
 ) -> Result<(), EmailError> {
     #[derive(Serialize)]
     struct Body<'a> {
@@ -175,6 +228,8 @@ async fn send_via_resend(
         html: &'a str,
         #[serde(skip_serializing_if = "Option::is_none")]
         reply_to: Option<Vec<&'a str>>,
+        #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        headers: std::collections::BTreeMap<&'a str, &'a str>,
     }
 
     let resp = http
@@ -186,6 +241,10 @@ async fn send_via_resend(
             subject,
             html: body_html,
             reply_to: reply_to.map(|r| vec![r]),
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect(),
         })
         .send()
         .await
@@ -338,6 +397,104 @@ pub mod templates {
             msg = escape_html(message).replace('\n', "<br />"),
         );
         (subject, body)
+    }
+
+    /// T-052b — daily digest of new works from the artists this user
+    /// follows. `groups` is already ordered the way it'll appear in
+    /// the email (most-recently-published artist first, works within
+    /// each artist also recency-first).
+    ///
+    /// `unsubscribe_url` is included in the body as a visible link
+    /// AND fed into `EmailClient::send_notification` for the
+    /// `List-Unsubscribe` headers — the body link is a fallback for
+    /// mail clients that don't honour the header.
+    pub fn new_works_digest(
+        groups: &[DigestArtistGroup<'_>],
+        manage_prefs_url: &str,
+        unsubscribe_url: &str,
+    ) -> (String, String) {
+        let total_works: usize = groups.iter().map(|g| g.works.len()).sum();
+        let subject = if groups.len() == 1 {
+            let g = &groups[0];
+            if g.works.len() == 1 {
+                format!("1 new work from {}", g.artist_display_name)
+            } else {
+                format!("{} new works from {}", g.works.len(), g.artist_display_name)
+            }
+        } else {
+            format!("{total_works} new works from artists you follow")
+        };
+
+        let mut sections = String::new();
+        for g in groups {
+            let artist_label = escape_html(g.artist_display_name);
+            sections.push_str(&format!(
+                r#"<div style="margin: 28px 0 8px;"><a href="{artist_url}" style="font-weight: 600; color: #1A1A1A; text-decoration: none;">{artist}</a></div>"#,
+                artist_url = g.artist_url, // trusted; built server-side
+                artist = artist_label,
+            ));
+            for w in &g.works {
+                let title = escape_html(w.title.unwrap_or("Untitled"));
+                let img_html = match w.image_url {
+                    Some(url) => format!(
+                        r#"<img src="{url}" alt="" width="120" height="120" style="display:block;border:0;outline:none;text-decoration:none;width:120px;height:120px;object-fit:cover;background:#1A1A1A;" />"#,
+                        url = url,
+                    ),
+                    None => String::from(
+                        r#"<div style="width:120px;height:120px;background:#1A1A1A;"></div>"#,
+                    ),
+                };
+                sections.push_str(&format!(
+                    r#"<a href="{url}" style="display:block;margin:10px 0;text-decoration:none;color:#1A1A1A;">
+  <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+    <tr>
+      <td style="padding-right:14px;vertical-align:top;">{img}</td>
+      <td style="vertical-align:top;padding-top:2px;font-family:-apple-system,system-ui,sans-serif;">
+        <div style="font-style:italic;font-size:16px;color:#1A1A1A;">{title}</div>
+      </td>
+    </tr>
+  </table>
+</a>"#,
+                    url = w.url,
+                    img = img_html,
+                    title = title,
+                ));
+            }
+        }
+
+        let body = format!(
+            r#"<div style="font-family: -apple-system, system-ui, sans-serif; max-width: 560px; margin: 0 auto; color: #1A1A1A;">
+  <p style="font-size: 15px; line-height: 1.5;">New work from artists you follow on Wander.</p>
+  {sections}
+  <hr style="border: none; border-top: 1px solid #E5E5E3; margin: 36px 0 20px;" />
+  <p style="font-size: 12px; color: #6B6B6B; line-height: 1.6;">
+    You're getting this because you follow these artists on Wander.
+    <a href="{manage}" style="color: #6B6B6B; text-decoration: underline;">Manage email preferences</a>
+    · <a href="{unsub}" style="color: #6B6B6B; text-decoration: underline;">Unsubscribe from new-work digests</a>
+  </p>
+</div>"#,
+            sections = sections,
+            manage = manage_prefs_url, // trusted
+            unsub = unsubscribe_url,   // trusted (HMAC-signed token)
+        );
+        (subject, body)
+    }
+
+    /// One artist's worth of new artworks for the digest template.
+    /// Lifetime parameter lets handlers pass borrowed strings without
+    /// cloning every row.
+    #[derive(Debug, Clone)]
+    pub struct DigestArtistGroup<'a> {
+        pub artist_display_name: &'a str,
+        pub artist_url: &'a str,
+        pub works: Vec<DigestWork<'a>>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct DigestWork<'a> {
+        pub title: Option<&'a str>,
+        pub url: &'a str,
+        pub image_url: Option<&'a str>,
     }
 }
 

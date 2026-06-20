@@ -128,6 +128,8 @@ async fn full_loop_geocodes_via_handler(pool: PgPool) {
         emails: EmailClient::for_tests(),
         moderation: ml_art_core::moderation::ModerationClient::disabled(),
         web_base_url: "https://test.example.com".to_string(),
+        anon_cookie_secret: "test-cookie-secret".to_string(),
+        jobs: ml_art_core::jobs::JobsBackend::for_tests(),
     };
 
     let job = jobs::postgres::claim_one(&pool).await.unwrap().unwrap();

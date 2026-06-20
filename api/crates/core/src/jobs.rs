@@ -66,6 +66,15 @@ pub enum JobEvent {
     /// Run the moderation client against a freshly-PUT visual-search
     /// upload. Writes back `uploads.moderation_status`. T-008b.
     UploadModerate { upload_id: Uuid },
+    /// T-052b — daily kickoff for the new-works-from-followed digest.
+    /// Fired by EventBridge at 11:00 UTC (prod) or manually via
+    /// `jobs-worker --enqueue` (local). Handler scans for users with
+    /// new work from followed artists and fans out one
+    /// `NotifyFollowersDigestUser` per qualifying user.
+    NotifyFollowersDigestKickoff {},
+    /// T-052b — build + send a single user's digest. Idempotent via
+    /// the `user_notification_log` PK (user_id, kind, sent_on::date).
+    NotifyFollowersDigestUser { user_id: Uuid },
 }
 
 impl JobEvent {
@@ -81,6 +90,8 @@ impl JobEvent {
             JobEvent::InquirySendReply { .. } => "inquiry_send_reply",
             JobEvent::ArtworkImageModerate { .. } => "artwork_image_moderate",
             JobEvent::UploadModerate { .. } => "upload_moderate",
+            JobEvent::NotifyFollowersDigestKickoff {} => "notify_followers_digest_kickoff",
+            JobEvent::NotifyFollowersDigestUser { .. } => "notify_followers_digest_user",
         }
     }
 }
@@ -452,6 +463,16 @@ pub struct JobsDeps {
     /// `WEB_BASE_URL` — passed in so handlers can build email links
     /// without re-reading env or threading the whole `Config`.
     pub web_base_url: String,
+    /// T-068 — HMAC secret for minting unsubscribe tokens. Same value
+    /// as the anon-cookie secret (single secret, multiple uses; see
+    /// `core::notifications` for the rationale). Notification
+    /// handlers pull this out to embed an unsubscribe link in every
+    /// email they send.
+    pub anon_cookie_secret: String,
+    /// SQS / Postgres enqueue handle — needed by the kickoff handler
+    /// to fan out per-user digest jobs. Wrapped in `Arc` for cheap
+    /// clone-into-handlers.
+    pub jobs: JobsBackend,
 }
 
 /// The dispatch fn — same code path runs from the Postgres worker
@@ -491,6 +512,16 @@ pub async fn handle(event: JobEvent, deps: &JobsDeps) -> Result<(), HandlerError
         }
         JobEvent::UploadModerate { upload_id } => {
             crate::moderation::moderate_upload(&deps.moderation, &deps.pool, upload_id)
+                .await
+                .map_err(|e| HandlerError::Domain(e.to_string()))?;
+        }
+        JobEvent::NotifyFollowersDigestKickoff {} => {
+            digest_handlers::kickoff(deps)
+                .await
+                .map_err(|e| HandlerError::Domain(e.to_string()))?;
+        }
+        JobEvent::NotifyFollowersDigestUser { user_id } => {
+            digest_handlers::send_user_digest(deps, user_id)
                 .await
                 .map_err(|e| HandlerError::Domain(e.to_string()))?;
         }
@@ -738,6 +769,289 @@ pub use std::time::Duration as PollDuration;
 // in production builds while keeping the visible re-export.
 #[allow(dead_code)]
 fn _duration_anchor(_: Duration) {}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T-052b — new-works-from-followed-artists digest
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Two-stage fan-out: a daily kickoff (EventBridge in prod, manual
+// `jobs-worker --enqueue` in local) scans for users with new work
+// from their followed artists, then enqueues one
+// `NotifyFollowersDigestUser` per user. Per-user handler builds the
+// payload, sends one email, writes a log row.
+//
+// Idempotency: `user_notification_log` PK includes `sent_on::date`,
+// so even if SQS redelivers the per-user message we'll only write
+// one log row + send one email per user per day. See the migration
+// at db/migrations/0017_user_notification_log.sql for the schema
+// rationale.
+
+mod digest_handlers {
+    use super::{JobEvent, JobsDeps};
+    use crate::emails::templates::{self, DigestArtistGroup, DigestWork};
+    use crate::images::url_for_s3_key;
+    use crate::notifications::{
+        mint_unsubscribe_token, unsubscribe_url, user_wants, NotificationKind,
+    };
+    use sqlx::FromRow;
+    use uuid::Uuid;
+
+    /// Cap per-user. ~12 looks right in a vertical email layout
+    /// (3-4 artists × 3 works avg). Picked by eye; bump if real
+    /// engagement data shows long-tail value.
+    const PER_USER_WORK_CAP: i64 = 12;
+
+    /// Daily kickoff. Scans for users whose followed artists
+    /// published new work since the follow began (capped to the last
+    /// 24h), filters out users who already got a digest today and
+    /// users with opted-out preferences, and enqueues a per-user
+    /// digest job for each remaining user.
+    pub async fn kickoff(deps: &JobsDeps) -> anyhow::Result<()> {
+        let candidates: Vec<(Uuid,)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT f.user_id
+            FROM follows f
+            JOIN artworks a
+              ON a.artist_id = f.artist_id
+             AND a.deleted_at IS NULL
+             AND a.status = 'published'
+             AND a.published_at > GREATEST(f.created_at, now() - interval '24 hours')
+            JOIN artists ar
+              ON ar.id = f.artist_id
+             AND ar.deleted_at IS NULL
+             AND ar.status = 'active'
+            WHERE NOT EXISTS (
+              SELECT 1 FROM user_notification_log unl
+              WHERE unl.user_id = f.user_id
+                AND unl.kind = 'new_works_digest'
+                AND unl.sent_on = current_date
+            )
+            "#,
+        )
+        .fetch_all(&deps.pool)
+        .await?;
+
+        tracing::info!(
+            candidates = candidates.len(),
+            "digest kickoff: candidate users scanned",
+        );
+
+        let mut enqueued = 0usize;
+        for (user_id,) in candidates {
+            // Defensive: kickoff query doesn't check user_wants —
+            // call it per-user before enqueueing so we don't burn
+            // SQS / Lambda invocations on users who'll just have
+            // their per-user handler bail out.
+            match user_wants(&deps.pool, user_id, NotificationKind::NewWorksDigest).await {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(e) => {
+                    tracing::warn!(?e, %user_id, "user_wants failed; skipping");
+                    continue;
+                }
+            }
+
+            deps.jobs
+                .enqueue(
+                    JobEvent::NotifyFollowersDigestUser { user_id },
+                    Default::default(),
+                )
+                .await?;
+            enqueued += 1;
+        }
+
+        tracing::info!(enqueued, "digest kickoff: per-user jobs enqueued");
+        Ok(())
+    }
+
+    /// Per-user digest. Claims today's slot via the
+    /// `user_notification_log` PK (only the first concurrent writer
+    /// proceeds), builds + sends one email, then leaves the log row
+    /// behind for the next cron run to see.
+    pub async fn send_user_digest(deps: &JobsDeps, user_id: Uuid) -> anyhow::Result<()> {
+        // Defensive re-check of preference state in case it changed
+        // between kickoff scan and message delivery (e.g. user
+        // unsubscribed while the message was in flight).
+        if !user_wants(&deps.pool, user_id, NotificationKind::NewWorksDigest).await? {
+            tracing::info!(%user_id, "user opted out between kickoff and send; skip");
+            return Ok(());
+        }
+
+        // Claim today's slot. If a row already exists, another worker
+        // is handling (or has already handled) this user today.
+        let claimed: Option<(Uuid,)> = sqlx::query_as(
+            r#"
+            INSERT INTO user_notification_log (user_id, kind)
+            VALUES ($1, 'new_works_digest')
+            ON CONFLICT (user_id, kind, sent_on) DO NOTHING
+            RETURNING user_id
+            "#,
+        )
+        .bind(user_id)
+        .fetch_optional(&deps.pool)
+        .await?;
+        if claimed.is_none() {
+            tracing::info!(%user_id, "digest already sent today; skip");
+            return Ok(());
+        }
+
+        // Fetch the user's email (needed for the To: field).
+        let user: Option<UserRow> =
+            sqlx::query_as("SELECT email FROM users WHERE id = $1")
+                .bind(user_id)
+                .fetch_optional(&deps.pool)
+                .await?;
+        let Some(user) = user else {
+            // User vanished between claim and fetch — unusual but
+            // harmless. The log row is left behind; nothing to send.
+            tracing::warn!(%user_id, "user not found after claim; skip");
+            return Ok(());
+        };
+
+        // Pull the new artworks per the same per-follow window as
+        // the kickoff query.
+        let rows: Vec<DigestRow> = sqlx::query_as(
+            r#"
+            SELECT
+                a.id            AS artwork_id,
+                a.title,
+                a.published_at,
+                ar.slug         AS artist_slug,
+                ar.display_name AS artist_display_name,
+                ai.s3_key       AS primary_s3_key
+            FROM follows f
+            JOIN artworks a
+              ON a.artist_id = f.artist_id
+             AND a.deleted_at IS NULL
+             AND a.status = 'published'
+             AND a.published_at > GREATEST(f.created_at, now() - interval '24 hours')
+            JOIN artists ar
+              ON ar.id = f.artist_id
+             AND ar.deleted_at IS NULL
+             AND ar.status = 'active'
+            LEFT JOIN artwork_images ai
+              ON ai.artwork_id = a.id
+             AND ai.is_primary
+             AND ai.moderation_status = 'approved'
+            WHERE f.user_id = $1
+            ORDER BY a.published_at DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(PER_USER_WORK_CAP)
+        .fetch_all(&deps.pool)
+        .await?;
+
+        if rows.is_empty() {
+            // Edge case: kickoff said this user had new work but by
+            // the time we look it's gone (deleted between scan + send).
+            // The log row we just claimed will sit there preventing
+            // re-attempts today, which is fine.
+            tracing::info!(%user_id, "digest payload empty after claim; skip send");
+            return Ok(());
+        }
+
+        // Build the per-artist groups (already DESC-sorted by query;
+        // group runs in encounter order which means most-recent-
+        // artist first within each user's digest).
+        let groups = build_groups(&rows, &deps.web_base_url);
+
+        // Mint the unsubscribe token for this kind. Same secret as
+        // the anon-cookie HMAC (see T-068).
+        let token = mint_unsubscribe_token(
+            user_id,
+            NotificationKind::NewWorksDigest,
+            deps.anon_cookie_secret.as_bytes(),
+        )?;
+        let unsub_url = unsubscribe_url(&deps.web_base_url, &token);
+        let manage_url = format!(
+            "{}/me/settings/notifications",
+            deps.web_base_url.trim_end_matches('/'),
+        );
+
+        let (subject, body) =
+            templates::new_works_digest(&groups, &manage_url, &unsub_url);
+
+        deps.emails
+            .send_notification(&user.email, &subject, &body, &unsub_url)
+            .await?;
+
+        tracing::info!(
+            %user_id,
+            works = rows.len(),
+            artists = groups.len(),
+            "digest sent",
+        );
+        Ok(())
+    }
+
+    /// Group the flat rows by artist. Preserves the per-row published-
+    /// at-DESC ordering: the first artist seen is the one with the
+    /// most recently published work.
+    fn build_groups<'a>(
+        rows: &'a [DigestRow],
+        web_base_url: &'a str,
+    ) -> Vec<DigestArtistGroup<'a>> {
+        use std::collections::HashMap;
+        let base = web_base_url.trim_end_matches('/');
+
+        let mut order: Vec<&str> = Vec::new();
+        let mut by_slug: HashMap<&str, Vec<DigestWork<'a>>> = HashMap::new();
+        let mut display: HashMap<&str, &str> = HashMap::new();
+
+        for row in rows {
+            let slug = row.artist_slug.as_str();
+            if !by_slug.contains_key(slug) {
+                order.push(slug);
+                display.insert(slug, &row.artist_display_name);
+            }
+            let url = Box::leak(
+                format!("{base}/artworks/{}", row.artwork_id).into_boxed_str(),
+            );
+            let image_url = row.primary_s3_key.as_deref().map(|k| {
+                let s = url_for_s3_key(k);
+                Box::leak(s.into_boxed_str()) as &str
+            });
+            by_slug.entry(slug).or_default().push(DigestWork {
+                title: row.title.as_deref(),
+                url,
+                image_url,
+            });
+        }
+
+        order
+            .into_iter()
+            .map(|slug| {
+                let artist_display_name = *display.get(slug).expect("slug indexed");
+                let artist_url = Box::leak(
+                    format!("{base}/artists/{slug}").into_boxed_str(),
+                ) as &str;
+                DigestArtistGroup {
+                    artist_display_name,
+                    artist_url,
+                    works: by_slug.remove(slug).expect("slug indexed"),
+                }
+            })
+            .collect()
+    }
+
+    #[derive(FromRow)]
+    struct DigestRow {
+        artwork_id: Uuid,
+        title: Option<String>,
+        #[allow(dead_code)]
+        published_at: chrono::DateTime<chrono::Utc>,
+        artist_slug: String,
+        artist_display_name: String,
+        primary_s3_key: Option<String>,
+    }
+
+    #[derive(FromRow)]
+    struct UserRow {
+        email: String,
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests

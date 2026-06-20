@@ -16,7 +16,7 @@ use ml_art_core::{
     config::Config,
     emails::EmailClient,
     geocoding::GeocodingClient,
-    jobs::{self, JobsDeps},
+    jobs::{self, JobEvent, JobsBackend, JobsDeps},
     moderation::ModerationClient,
 };
 use tracing::{debug, error, info, warn};
@@ -31,12 +31,32 @@ async fn main() -> anyhow::Result<()> {
     let geocoder = GeocodingClient::from_env();
     let emails = EmailClient::from_env();
     let moderation = ModerationClient::from_env();
+    let backend = JobsBackend::postgres(pool.clone());
+
+    // --enqueue '<json>' — drop a JobEvent into the local jobs table
+    // and exit. Lets local dev fire the daily digest kickoff (or any
+    // other event) without waiting for a cron. Example:
+    //   cargo run -p jobs-worker -- --enqueue '{"kind":"notify_followers_digest_kickoff","payload":{}}'
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(idx) = args.iter().position(|a| a == "--enqueue") {
+        let payload = args.get(idx + 1).ok_or_else(|| {
+            anyhow::anyhow!("--enqueue requires a JSON event argument")
+        })?;
+        let evt: JobEvent = serde_json::from_str(payload)
+            .map_err(|e| anyhow::anyhow!("invalid JobEvent JSON: {e}"))?;
+        backend.enqueue(evt.clone(), Default::default()).await?;
+        info!(kind = evt.kind(), "enqueued via --enqueue, exiting");
+        return Ok(());
+    }
+
     let deps = JobsDeps {
         pool: pool.clone(),
         geocoder,
         emails,
         moderation,
         web_base_url: cfg.web_base_url.clone(),
+        anon_cookie_secret: cfg.anon_cookie_secret.clone(),
+        jobs: backend,
     };
 
     info!(
