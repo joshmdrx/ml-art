@@ -130,9 +130,9 @@ export function InquiryModal({
             ) : (
               <div className="py-4">
                 <p className="text-sm">
-                  Check your inbox at <strong>{email}</strong> for a one-click
-                  confirm link. We&apos;ll deliver the message to {artistName}{" "}
-                  after you confirm.
+                  Check your inbox at <strong>{email}</strong>
+                  {" "}for a one-click confirm link. We&apos;ll deliver the
+                  message to {artistName} after you confirm.
                 </p>
                 {state.ack.debug_verification_token && (
                   <p className="mt-4 text-xs text-muted">
