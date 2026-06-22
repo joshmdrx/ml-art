@@ -355,12 +355,37 @@ resource "aws_wafv2_web_acl" "api" {
         name        = "AWSManagedRulesCommonRuleSet"
         vendor_name = "AWS"
 
-        # `/v1/uploads/image` is multipart binary — easily >8KB. Same
-        # reasoning as the web ACL: demote SizeRestrictions_BODY to
-        # COUNT so legitimate uploads aren't blocked. Body-content rules
-        # (XSS / LFI / RFI / SSRF) still BLOCK on the first 8KB.
+        # `/v1/uploads/image` is multipart binary — easily >8KB and
+        # carries the same Adobe XMP / random-binary false-positive
+        # patterns that block image uploads on the web tier. Mirror the
+        # web ACL's override set (see modules/web/main.tf for the full
+        # rationale + the WAF log entry that motivated CrossSiteScripting).
         rule_action_override {
           name = "SizeRestrictions_BODY"
+          action_to_use {
+            count {}
+          }
+        }
+        rule_action_override {
+          name = "CrossSiteScripting_BODY"
+          action_to_use {
+            count {}
+          }
+        }
+        rule_action_override {
+          name = "GenericLFI_BODY"
+          action_to_use {
+            count {}
+          }
+        }
+        rule_action_override {
+          name = "GenericRFI_BODY"
+          action_to_use {
+            count {}
+          }
+        }
+        rule_action_override {
+          name = "EC2MetaDataSSRF_BODY"
           action_to_use {
             count {}
           }

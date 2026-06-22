@@ -354,15 +354,48 @@ resource "aws_wafv2_web_acl" "web" {
         name        = "AWSManagedRulesCommonRuleSet"
         vendor_name = "AWS"
 
-        # SizeRestrictions_BODY blocks POST bodies over 8KB. Server
-        # Actions with multipart uploads (onboarding artwork step, studio
-        # image add) routinely exceed this. Demote to COUNT so the rule
-        # still surfaces in metrics but doesn't block. Other body-content
-        # rules (XSS / LFI / RFI / SSRF) still BLOCK and only inspect the
-        # first 8KB anyway, so this doesn't broaden the attack surface
-        # beyond what AWS already inspects.
+        # All four body-inspection rules below false-positive on
+        # multipart image uploads. Server Actions on /studio + /onboarding
+        # post PNGs/JPEGs whose embedded metadata routinely looks like
+        # an attack pattern to AWS's regex:
+        #   - SizeRestrictions_BODY    — body > 8KB (any real image)
+        #   - CrossSiteScripting_BODY  — Adobe XMP `xmlns:x="adobe:ns:meta/"`
+        #     in PNGs from Photoshop / Lightroom / Affinity etc. — confirmed
+        #     blocking real uploads (WAF log 2026-06-22T12:47Z).
+        #   - GenericLFI_BODY / GenericRFI_BODY / EC2MetaDataSSRF_BODY —
+        #     random binary byte sequences in image data can match these
+        #     pre-emptively; demoted together because the cause is identical.
+        # All four still COUNT (so we can see them in metrics + sampled
+        # requests if abuse patterns emerge); they just don't terminate.
+        # Defence-in-depth: app-layer validates the upload mime, dimensions,
+        # and pixel content via moderation; that's the real guard for a
+        # binary-upload route, not WAF body regex.
         rule_action_override {
           name = "SizeRestrictions_BODY"
+          action_to_use {
+            count {}
+          }
+        }
+        rule_action_override {
+          name = "CrossSiteScripting_BODY"
+          action_to_use {
+            count {}
+          }
+        }
+        rule_action_override {
+          name = "GenericLFI_BODY"
+          action_to_use {
+            count {}
+          }
+        }
+        rule_action_override {
+          name = "GenericRFI_BODY"
+          action_to_use {
+            count {}
+          }
+        }
+        rule_action_override {
+          name = "EC2MetaDataSSRF_BODY"
           action_to_use {
             count {}
           }
