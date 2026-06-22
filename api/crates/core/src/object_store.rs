@@ -80,9 +80,18 @@ impl ObjectStore {
         if let Some(url) = endpoint_url.as_deref() {
             loader = loader.endpoint_url(url);
         }
-        if let (Some(ak), Some(sk)) = (access_key.as_deref(), secret_key.as_deref()) {
-            loader =
-                loader.credentials_provider(Credentials::new(ak, sk, None, None, "ml-art-static"));
+        // Static creds are ONLY for MinIO (dev). In Lambda the runtime
+        // already injects AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY +
+        // AWS_SESSION_TOKEN from the role's STS session — but the
+        // single-line ctor here can't see the session token, so passing
+        // ak/sk without it produces a broken static-cred override that
+        // S3 rejects with AccessDenied (surfaces as "service error").
+        // Gate on `endpoint_url` so prod always uses the default chain.
+        if endpoint_url.is_some() {
+            if let (Some(ak), Some(sk)) = (access_key.as_deref(), secret_key.as_deref()) {
+                loader = loader
+                    .credentials_provider(Credentials::new(ak, sk, None, None, "ml-art-static"));
+            }
         }
 
         let cfg = loader.load().await;
@@ -133,7 +142,11 @@ impl ObjectStore {
                     .body(ByteStream::from(bytes))
                     .send()
                     .await
-                    .map_err(|e| anyhow::anyhow!("s3 put: {e}"))?;
+                    // `Display` on SdkError::ServiceError is just
+                    // "service error"; the underlying code (AccessDenied,
+                    // NoSuchBucket, etc.) lives in the source chain.
+                    // Use `{:?}` so the actual reason reaches CloudWatch.
+                    .map_err(|e| anyhow::anyhow!("s3 put bucket={bucket} key={key}: {e:?}"))?;
                 Ok(key.to_string())
             }
             Inner::Memory { store, .. } => {
