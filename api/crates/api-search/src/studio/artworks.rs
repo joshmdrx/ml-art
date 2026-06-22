@@ -477,6 +477,28 @@ pub async fn add_image(
 
     let display_order = body.display_order.unwrap_or(0);
 
+    // Prefer pixel dimensions from the `uploads` row over anything
+    // the client sent. The api probes bytes on `/v1/uploads/image`
+    // (header-only via the `imagesize` crate), so the upload row is
+    // the trustworthy source — client-supplied dims could be spoofed
+    // and there's no reason to accept them. Falls back to body.width
+    // / body.height when the s3_key isn't from an upload (e.g. seed
+    // imports under `demo/`) or the upload row predates migration
+    // 0020 and has NULL dims.
+    let (width, height) = if s3_key.starts_with("uploads/") {
+        let from_upload: Option<(Option<i32>, Option<i32>)> =
+            sqlx::query_as("SELECT width, height FROM uploads WHERE s3_key = $1")
+                .bind(s3_key)
+                .fetch_optional(&state.pool)
+                .await?;
+        match from_upload {
+            Some((Some(w), Some(h))) => (Some(w), Some(h)),
+            _ => (body.width, body.height),
+        }
+    } else {
+        (body.width, body.height)
+    };
+
     let row: ImageRow = sqlx::query_as(
         r#"
         INSERT INTO artwork_images
@@ -488,8 +510,8 @@ pub async fn add_image(
     )
     .bind(id)
     .bind(s3_key)
-    .bind(body.width)
-    .bind(body.height)
+    .bind(width)
+    .bind(height)
     .bind(is_primary)
     .bind(display_order)
     .fetch_one(&state.pool)

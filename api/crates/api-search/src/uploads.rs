@@ -145,6 +145,12 @@ pub async fn create(
     };
     let s3_key = format!("uploads/{upload_id}.{ext}");
 
+    // Probe pixel dimensions while bytes are in memory. Header-only
+    // read (~50 bytes), no full decode. `None` for corrupt files that
+    // slipped past mime validation — we still persist the upload,
+    // width/height just stay NULL.
+    let dims = ml_art_core::images::probe_image_dimensions(&bytes);
+
     // Embed FIRST, while we still have the bytes in memory. Two wins:
     //
     //   1. Works in dev: Jina's cloud workers can't reach our
@@ -165,11 +171,15 @@ pub async fn create(
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("s3 put: {e}")))?;
 
-    // Insert the upload row with the embedding in one shot.
+    // Insert the upload row with the embedding + dims in one shot.
+    let (width, height) = match dims {
+        Some((w, h)) => (Some(w as i32), Some(h as i32)),
+        None => (None, None),
+    };
     sqlx::query(
         r#"
-        INSERT INTO uploads (id, s3_key, anonymous_id, user_id, embedding)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO uploads (id, s3_key, anonymous_id, user_id, embedding, width, height)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         "#,
     )
     .bind(upload_id)
@@ -177,6 +187,8 @@ pub async fn create(
     .bind(anon_id)
     .bind(user.as_ref().map(|u| u.id))
     .bind(&vector)
+    .bind(width)
+    .bind(height)
     .execute(&state.pool)
     .await?;
 

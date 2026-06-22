@@ -47,6 +47,21 @@ pub fn url_for_s3_key(s3_key: &str) -> String {
     format!("{base}/{s3_key}")
 }
 
+/// Probe an image byte slice for pixel dimensions. Returns `None` if
+/// the format can't be identified (we accept jpeg / png / webp via the
+/// upload validation upstream, but a corrupt file slips through).
+///
+/// Header-only — `imagesize::blob_size` reads the first ~50 bytes and
+/// returns without decoding pixel data, so this is essentially free per
+/// upload. Used to populate `uploads.width`/`height` so the studio
+/// attach can copy them onto `artwork_images` for layout reservation
+/// (CLS prevention on the public artwork page).
+pub fn probe_image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    imagesize::blob_size(bytes)
+        .ok()
+        .and_then(|s| Some((u32::try_from(s.width).ok()?, u32::try_from(s.height).ok()?)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +112,45 @@ mod tests {
             url_for_s3_key("uploads/abc-123.jpg"),
             "https://cdn.example.com/up/uploads/abc-123.jpg"
         );
+    }
+
+    /// Smallest valid PNG — 1×1 pixel. Built inline rather than reading
+    /// from disk so the test stays hermetic. Sourced from the minimal
+    /// PNG specification: signature + IHDR (width=1, height=1, bit
+    /// depth=8, color type=2 RGB) + IDAT (compressed single zero pixel)
+    /// + IEND. Verified bytes by hand against the spec.
+    const ONE_PX_PNG: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // signature
+        0x00, 0x00, 0x00, 0x0D, // IHDR length
+        0x49, 0x48, 0x44, 0x52, // "IHDR"
+        0x00, 0x00, 0x00, 0x01, // width = 1
+        0x00, 0x00, 0x00, 0x01, // height = 1
+        0x08, 0x02, 0x00, 0x00, 0x00, // bit depth, color, ...
+        0x90, 0x77, 0x53, 0xDE, // CRC
+        0x00, 0x00, 0x00, 0x0C, // IDAT length
+        0x49, 0x44, 0x41, 0x54, // "IDAT"
+        0x08, 0x99, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0xCB, 0xD3, 0x07,
+        0x9E, // IDAT CRC
+        0x00, 0x00, 0x00, 0x00, // IEND length
+        0x49, 0x45, 0x4E, 0x44, // "IEND"
+        0xAE, 0x42, 0x60, 0x82, // IEND CRC
+    ];
+
+    #[test]
+    fn probe_dimensions_reads_png_header() {
+        assert_eq!(probe_image_dimensions(ONE_PX_PNG), Some((1, 1)));
+    }
+
+    #[test]
+    fn probe_dimensions_rejects_non_image() {
+        assert_eq!(probe_image_dimensions(b"not an image"), None);
+        assert_eq!(probe_image_dimensions(&[]), None);
+    }
+
+    #[test]
+    fn probe_dimensions_rejects_truncated_png() {
+        // Just the signature, no IHDR — imagesize should bail.
+        let truncated = &ONE_PX_PNG[..8];
+        assert_eq!(probe_image_dimensions(truncated), None);
     }
 }

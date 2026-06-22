@@ -383,6 +383,112 @@ async fn studio_artworks_add_image_first_is_primary_and_embeds(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_artworks_add_image_copies_dims_from_uploads_row(pool: PgPool) {
+    // Pre-seed an `uploads` row with known width/height (as if it came
+    // from /v1/uploads/image, which would have probed the bytes via
+    // imagesize::blob_size). Then add an artwork_image referencing
+    // that s3_key and assert the dims carry over.
+    let app = app_with_auth_and_fixed_vector(pool.clone(), unit_vector_at(99));
+
+    let upload_key = "uploads/dim-copy-test.png";
+    sqlx::query(
+        r#"
+        INSERT INTO uploads (id, s3_key, user_id, width, height)
+        VALUES (gen_random_uuid(), $1,
+                '88888888-8888-8888-8888-888888888888'::uuid,
+                640, 480)
+        "#,
+    )
+    .bind(upload_key)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let created: ArtworkSummary = {
+        let body = json!({"title": "Dim Test"}).to_string();
+        let (_, bytes) = send_authed(
+            app.clone(),
+            "POST",
+            "/v1/studio/artworks",
+            ALICE,
+            Some(&body),
+        )
+        .await;
+        serde_json::from_slice(&bytes).unwrap()
+    };
+
+    // Client omits width/height entirely — the handler should still
+    // pick them up from the uploads row.
+    let add_body = json!({"s3_key": upload_key}).to_string();
+    let (status, _bytes) = send_authed(
+        app,
+        "POST",
+        &format!("/v1/studio/artworks/{}/images", created.id),
+        ALICE,
+        Some(&add_body),
+    )
+    .await;
+    assert_eq!(status, 201);
+
+    let (w, h): (Option<i32>, Option<i32>) = sqlx::query_as(
+        "SELECT width, height FROM artwork_images
+         WHERE artwork_id = $1::uuid AND s3_key = $2",
+    )
+    .bind(&created.id)
+    .bind(upload_key)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(w, Some(640), "width copied from uploads row");
+    assert_eq!(h, Some(480), "height copied from uploads row");
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_artworks_add_image_falls_back_to_body_for_non_upload_keys(pool: PgPool) {
+    // s3_key NOT under `uploads/` (e.g. seed-bucket key) → no uploads
+    // row to copy from; honour whatever the body sent.
+    let app = app_with_auth_and_fixed_vector(pool.clone(), unit_vector_at(100));
+
+    let created: ArtworkSummary = {
+        let body = json!({"title": "Demo Path"}).to_string();
+        let (_, bytes) = send_authed(
+            app.clone(),
+            "POST",
+            "/v1/studio/artworks",
+            ALICE,
+            Some(&body),
+        )
+        .await;
+        serde_json::from_slice(&bytes).unwrap()
+    };
+
+    let add_body = json!({
+        "s3_key": "demo/some-other/key.jpg",
+        "width": 1200,
+        "height": 800,
+    })
+    .to_string();
+    let (status, _) = send_authed(
+        app,
+        "POST",
+        &format!("/v1/studio/artworks/{}/images", created.id),
+        ALICE,
+        Some(&add_body),
+    )
+    .await;
+    assert_eq!(status, 201);
+
+    let (w, h): (Option<i32>, Option<i32>) =
+        sqlx::query_as("SELECT width, height FROM artwork_images WHERE artwork_id = $1::uuid")
+            .bind(&created.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(w, Some(1200));
+    assert_eq!(h, Some(800));
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn studio_artworks_add_image_rejects_second_primary(pool: PgPool) {
     // Blue Morning already has a primary image (from the seed).
     // Adding another with is_primary=true must fail before INSERT.

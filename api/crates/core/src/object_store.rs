@@ -89,8 +89,13 @@ impl ObjectStore {
         // Gate on `endpoint_url` so prod always uses the default chain.
         if endpoint_url.is_some() {
             if let (Some(ak), Some(sk)) = (access_key.as_deref(), secret_key.as_deref()) {
-                loader = loader
-                    .credentials_provider(Credentials::new(ak, sk, None, None, "ml-art-static"));
+                loader = loader.credentials_provider(Credentials::new(
+                    ak,
+                    sk,
+                    None,
+                    None,
+                    "ml-art-static",
+                ));
             }
         }
 

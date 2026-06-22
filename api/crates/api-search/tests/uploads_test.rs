@@ -118,6 +118,74 @@ async fn upload_image_signed_in_writes_row_and_embeds(pool: PgPool) {
     assert!(embedding.is_some(), "embedding should be populated");
 }
 
+/// Minimal valid 1×1 PNG so the upload handler's `imagesize::blob_size`
+/// probe returns Some((1, 1)). The "fake-png-body" used in the other
+/// tests gives None — kept that way so we don't accidentally test the
+/// dim-probe behaviour where it isn't the focus.
+const ONE_PX_PNG: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+    0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08, 0x99, 0x63, 0xF8, 0xCF, 0xC0, 0x00,
+    0x00, 0x00, 0x03, 0x00, 0x01, 0xCB, 0xD3, 0x07, 0x9E, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
+    0x44, 0xAE, 0x42, 0x60, 0x82,
+];
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn upload_image_probes_and_persists_pixel_dimensions(pool: PgPool) {
+    let app = app_with_auth_and_fixed_vector(pool.clone(), unit_vector_at(1));
+    let boundary = "----dimboundary";
+    let body = multipart_body(boundary, "1px.png", "image/png", ONE_PX_PNG);
+
+    let (status, bytes) = upload_image(app, boundary, body, Some(ALICE), None).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    let ack: UploadAck = serde_json::from_slice(&bytes).unwrap();
+
+    let (width, height): (Option<i32>, Option<i32>) =
+        sqlx::query_as("SELECT width, height FROM uploads WHERE id = $1")
+            .bind(uuid::Uuid::parse_str(&ack.upload_id).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(width, Some(1));
+    assert_eq!(height, Some(1));
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn upload_image_unparseable_bytes_leave_dims_null(pool: PgPool) {
+    let app = app_with_auth_and_fixed_vector(pool.clone(), unit_vector_at(2));
+    let boundary = "----nodimboundary";
+    // Valid mime header but garbage body — imagesize can't probe.
+    let body = multipart_body(
+        boundary,
+        "bad.png",
+        "image/png",
+        b"\x89PNG\r\n\x1a\nnot-a-real-png",
+    );
+
+    let (status, bytes) = upload_image(app, boundary, body, Some(ALICE), None).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    let ack: UploadAck = serde_json::from_slice(&bytes).unwrap();
+
+    let (width, height): (Option<i32>, Option<i32>) =
+        sqlx::query_as("SELECT width, height FROM uploads WHERE id = $1")
+            .bind(uuid::Uuid::parse_str(&ack.upload_id).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(width, None);
+    assert_eq!(height, None);
+}
+
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn upload_image_anonymous_uses_anon_id(pool: PgPool) {
     let app = app_with_auth_and_fixed_vector(pool.clone(), unit_vector_at(7));

@@ -56,6 +56,13 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 
+# Image pixel-dimension probe on /v1/uploads/image. Header-only reader
+# — no full decode, no allocations beyond the first ~64 bytes — so it's
+# essentially free per upload. Used to populate uploads.width/height and
+# (downstream) artwork_images so the UI can render aspect-ratio
+# placeholders without layout shift.
+imagesize = "0.13"
+
 # Errors + logging
 thiserror = "2"
 anyhow = "1"
