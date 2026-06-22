@@ -43,6 +43,11 @@ variable "uploads_bucket_arn" {
   type        = string
 }
 
+variable "uploads_bucket_name" {
+  description = "S3 bucket NAME — passed to the lambda as S3_UPLOADS_BUCKET. Mirrors the api module — see modules/api for why this matters."
+  type        = string
+}
+
 variable "artworks_bucket_arn" {
   description = "S3 bucket ARN — needed by Rekognition for content reads."
   type        = string
@@ -226,6 +231,10 @@ resource "aws_lambda_function" "jobs" {
       # here (jobs side); see modules/api for the matching var + the
       # secret-vs-env split rationale.
       REPLY_EMAIL_DOMAIN = "reply.wander.gallery"
+      # Bucket name for the moderation handler — see modules/api for the
+      # same env + the same defaulted-to-"uploads"-and-failed-silently
+      # gotcha.
+      S3_UPLOADS_BUCKET = var.uploads_bucket_name
     }
   }
 

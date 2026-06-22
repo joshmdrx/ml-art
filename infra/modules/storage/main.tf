@@ -279,6 +279,11 @@ output "uploads_bucket_arn" {
   value       = aws_s3_bucket.uploads.arn
 }
 
+output "uploads_bucket_name" {
+  description = "Name of the uploads bucket — set as S3_UPLOADS_BUCKET on api + jobs lambdas. Without this they default to the literal string \"uploads\" and S3 put fails."
+  value       = aws_s3_bucket.uploads.bucket
+}
+
 output "cloudfront_distribution_id" {
   description = "Distribution ID — handy for cache invalidations during cutover."
   value       = aws_cloudfront_distribution.images.id

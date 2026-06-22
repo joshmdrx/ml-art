@@ -66,6 +66,7 @@ module "jobs" {
   queue_visibility_timeout_s = var.jobs_queue_visibility_timeout_s
   max_receive_count          = var.jobs_max_receive_count
   uploads_bucket_arn         = module.storage.uploads_bucket_arn
+  uploads_bucket_name        = module.storage.uploads_bucket_name
   artworks_bucket_arn        = module.storage.artworks_bucket_arn
   config_parameter_path      = module.secrets.parameter_path_prefix
 }
@@ -84,6 +85,7 @@ module "api" {
   jobs_queue_arn          = module.jobs.queue_arn
   jobs_queue_url          = module.jobs.queue_url
   uploads_bucket_arn      = module.storage.uploads_bucket_arn
+  uploads_bucket_name     = module.storage.uploads_bucket_name
   artworks_bucket_arn     = module.storage.artworks_bucket_arn
   config_parameter_path   = module.secrets.parameter_path_prefix
 

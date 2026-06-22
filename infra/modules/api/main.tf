@@ -67,7 +67,12 @@ variable "jobs_queue_url" {
 }
 
 variable "uploads_bucket_arn" {
-  description = "S3 bucket — api lambda PUTs visual-search uploads here."
+  description = "S3 bucket ARN — api lambda PUTs visual-search uploads here. Used for the IAM policy."
+  type        = string
+}
+
+variable "uploads_bucket_name" {
+  description = "S3 bucket NAME — passed to the lambda as S3_UPLOADS_BUCKET. Without it the code defaults to the literal string \"uploads\", which doesn't exist in prod and surfaces as a generic `s3 put: service error` 500."
   type        = string
 }
 
@@ -227,6 +232,10 @@ resource "aws_lambda_function" "api" {
       # Static, non-secret → TF env. INBOUND_EMAIL_SECRET (the webhook
       # auth secret) is a SecureString in SSM, layered on by bootstrap_ssm.
       REPLY_EMAIL_DOMAIN = "reply.wander.gallery"
+      # Bucket name (not ARN) — the AWS SDK's put_object().bucket(name)
+      # needs the name. Without this, Config::load defaults to the
+      # literal string "uploads" which doesn't exist in prod.
+      S3_UPLOADS_BUCKET = var.uploads_bucket_name
     }
   }
 
