@@ -5,7 +5,25 @@
  */
 
 /** The set of pills the FilterBar knows how to render. */
-export type FilterKind = "medium" | "price" | "availability" | "location";
+export type FilterKind = "medium" | "price" | "availability" | "location" | "size";
+
+/**
+ * T-070 — physical-size bands over the longest side of an artwork's
+ * `dimensions` (cm). Bounds mirror the backend's `search::handle`
+ * clause so the active-token round-trip is exact.
+ */
+export interface SizeBand {
+  /** Display label. */
+  label: string;
+  /** URL token. Single letter to keep `/search?size=s` clean. */
+  token: "s" | "m" | "l";
+}
+
+export const SIZE_BANDS: SizeBand[] = [
+  { label: "Small (≤ 40 cm)", token: "s" },
+  { label: "Medium (41–100 cm)", token: "m" },
+  { label: "Large (> 100 cm)", token: "l" },
+];
 
 /** Mapping from a `price` selection to the underlying `price_min`/`price_max`
  * URL params. `min` and `max` are in **cents** to match the API contract. */

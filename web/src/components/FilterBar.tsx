@@ -23,6 +23,7 @@ import {
   MEDIUM_OPTIONS,
   PRICE_BUCKETS,
   priceParamsFromToken,
+  SIZE_BANDS,
   type FilterKind,
 } from "@/lib/filterBar";
 
@@ -56,6 +57,11 @@ export function FilterBar({ availableFilters, basePath }: FilterBarProps) {
   const priceMin = numOrUndef(searchParams.get("price_min"));
   const priceMax = numOrUndef(searchParams.get("price_max"));
   const currentPriceToken = bucketTokenFromPriceParams(priceMin, priceMax);
+  const currentSizeRaw = searchParams.get("size") || undefined;
+  // Tolerant lookup — unknown tokens render as if the filter is unset
+  // (the API does the same). Keeps a bookmarked `?size=xl` from
+  // looking "active" forever after we ever rename a band.
+  const currentSize = SIZE_BANDS.find((b) => b.token === currentSizeRaw);
 
   return (
     <div
@@ -104,6 +110,24 @@ export function FilterBar({ availableFilters, basePath }: FilterBarProps) {
                   price_max: p?.price_max?.toString() ?? null,
                 });
               }}
+              className="px-3 py-1.5 text-sm cursor-pointer hover:bg-background focus:bg-background focus:outline-none"
+            >
+              {b.label}
+            </DropdownMenu.Item>
+          ))}
+        </PillMenu>
+      )}
+
+      {availableFilters.includes("size") && (
+        <PillMenu
+          label={currentSize ? `Size: ${currentSize.label.split(" ")[0]}` : "Size"}
+          active={Boolean(currentSize)}
+          onClear={() => push({ size: null })}
+        >
+          {SIZE_BANDS.map((b) => (
+            <DropdownMenu.Item
+              key={b.token}
+              onSelect={() => push({ size: b.token })}
               className="px-3 py-1.5 text-sm cursor-pointer hover:bg-background focus:bg-background focus:outline-none"
             >
               {b.label}
@@ -162,6 +186,7 @@ export function FilterBar({ availableFilters, basePath }: FilterBarProps) {
               "price_min",
               "price_max",
               "availability",
+              "size",
               ...(availableFilters.includes("location")
                 ? // bbox rides with location — see LocationPill above.
                   ["location", "bbox"]
@@ -346,5 +371,6 @@ function hasAnyFilter(
     return true;
   if (available.includes("availability") && sp.get("availability")) return true;
   if (available.includes("location") && sp.get("location")) return true;
+  if (available.includes("size") && sp.get("size")) return true;
   return false;
 }

@@ -124,6 +124,103 @@ async fn search_price_range_filter(pool: PgPool) {
     assert!(!titles.contains(&"Stone Form II".to_string()));
 }
 
+// ── T-070 size-band filter ───────────────────────────────────────────
+
+/// Set known dimensions on three seed artworks for the size tests.
+/// `s` = Blue Morning (30×30), `m` = Crimson Field (80×60),
+/// `l` = Stone Form I (150×60). Leaves Stone Form II + Linocut Study
+/// undimensioned so we can also verify the silent-exclusion behaviour.
+async fn seed_size_dimensions(pool: &PgPool) {
+    sqlx::query(
+        r#"UPDATE artworks
+           SET dimensions = jsonb_build_object('unit', 'cm', 'width', $1::int, 'height', $2::int)
+           WHERE title = $3"#,
+    )
+    .bind(30_i32)
+    .bind(30_i32)
+    .bind("Blue Morning")
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"UPDATE artworks
+           SET dimensions = jsonb_build_object('unit', 'cm', 'width', $1::int, 'height', $2::int)
+           WHERE title = $3"#,
+    )
+    .bind(80_i32)
+    .bind(60_i32)
+    .bind("Crimson Field")
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"UPDATE artworks
+           SET dimensions = jsonb_build_object('unit', 'cm', 'width', $1::int, 'height', $2::int)
+           WHERE title = $3"#,
+    )
+    .bind(150_i32)
+    .bind(60_i32)
+    .bind("Stone Form I")
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_size_band_small(pool: PgPool) {
+    seed_size_dimensions(&pool).await;
+    let app = app_keyword_only(pool);
+    let (_, page): (_, Page) = get_json(app, "/v1/search?size=s&limit=10").await;
+    let titles: Vec<_> = page.items.iter().filter_map(|i| i.title.clone()).collect();
+    assert_eq!(titles, vec!["Blue Morning".to_string()]);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_size_band_medium(pool: PgPool) {
+    seed_size_dimensions(&pool).await;
+    let app = app_keyword_only(pool);
+    let (_, page): (_, Page) = get_json(app, "/v1/search?size=m&limit=10").await;
+    let titles: Vec<_> = page.items.iter().filter_map(|i| i.title.clone()).collect();
+    assert_eq!(titles, vec!["Crimson Field".to_string()]);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_size_band_large(pool: PgPool) {
+    seed_size_dimensions(&pool).await;
+    let app = app_keyword_only(pool);
+    let (_, page): (_, Page) = get_json(app, "/v1/search?size=l&limit=10").await;
+    let titles: Vec<_> = page.items.iter().filter_map(|i| i.title.clone()).collect();
+    assert_eq!(titles, vec!["Stone Form I".to_string()]);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_size_excludes_undimensioned_works(pool: PgPool) {
+    // Don't seed any dimensions; the filter should return zero rows
+    // rather than silently fall back to "everything".
+    let app = app_keyword_only(pool);
+    let (_, page): (_, Page) = get_json(app, "/v1/search?size=m&limit=10").await;
+    assert!(
+        page.items.is_empty(),
+        "non-dimensioned works should not pass any size band; got {:?}",
+        page.items
+            .iter()
+            .filter_map(|i| i.title.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_size_unknown_band_falls_through(pool: PgPool) {
+    seed_size_dimensions(&pool).await;
+    let app = app_keyword_only(pool);
+    let (_, with_bogus): (_, Page) = get_json(app.clone(), "/v1/search?size=xl&limit=20").await;
+    let (_, no_filter): (_, Page) = get_json(app, "/v1/search?limit=20").await;
+    // `size=xl` is not a band we recognise — clause is skipped, so the
+    // result set matches a no-filter query. Defensive: bookmarked URLs
+    // shouldn't 400 if we ever rename bands.
+    assert_eq!(with_bogus.items.len(), no_filter.items.len());
+}
+
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn search_availability_filter(pool: PgPool) {
     let app = app_keyword_only(pool);

@@ -187,6 +187,119 @@ async fn studio_artworks_create_rejects_bad_availability(pool: PgPool) {
     assert_eq!(status, 400);
 }
 
+// ── T-070 dimensions validation ────────────────────────────────
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_artworks_create_persists_validated_dimensions(pool: PgPool) {
+    let app = app_with_test_auth(pool.clone());
+    let body = json!({
+        "title": "T-070 Test",
+        "dimensions": {"width": 80, "height": 60, "depth": 4},
+    })
+    .to_string();
+    let (status, bytes) = send_authed(app, "POST", "/v1/studio/artworks", ALICE, Some(&body)).await;
+    assert_eq!(status, 201, "body: {}", String::from_utf8_lossy(&bytes));
+    let created: ArtworkSummary = serde_json::from_slice(&bytes).unwrap();
+
+    let dims: serde_json::Value =
+        sqlx::query_scalar("SELECT dimensions FROM artworks WHERE id = $1::uuid")
+            .bind(&created.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    // Validator normalises: unit defaulted, fields sorted, depth kept.
+    assert_eq!(dims["unit"], "cm");
+    assert_eq!(dims["width"], 80);
+    assert_eq!(dims["height"], 60);
+    assert_eq!(dims["depth"], 4);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_artworks_create_rejects_malformed_dimensions(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+    let body = json!({
+        "title": "T-070 Test Bad",
+        "dimensions": {"width": 80},   // missing height
+    })
+    .to_string();
+    let (status, bytes) = send_authed(app, "POST", "/v1/studio/artworks", ALICE, Some(&body)).await;
+    assert_eq!(status, 400);
+    let msg = String::from_utf8_lossy(&bytes);
+    assert!(msg.contains("height"), "{msg}");
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_artworks_create_rejects_oversize_dimensions(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+    let body = json!({
+        "title": "T-070 Test Huge",
+        "dimensions": {"width": 50000, "height": 60},
+    })
+    .to_string();
+    let (status, bytes) = send_authed(app, "POST", "/v1/studio/artworks", ALICE, Some(&body)).await;
+    assert_eq!(status, 400);
+    assert!(String::from_utf8_lossy(&bytes).contains("5000"));
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_artworks_patch_dimensions_normalises(pool: PgPool) {
+    let app = app_with_test_auth(pool.clone());
+    let body = json!({"dimensions": {"width": 90, "height": 70}}).to_string();
+    let (status, _) = send_authed(
+        app,
+        "PATCH",
+        &format!("/v1/studio/artworks/{ARTWORK_BLUE_MORNING}"),
+        ALICE,
+        Some(&body),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let dims: serde_json::Value =
+        sqlx::query_scalar("SELECT dimensions FROM artworks WHERE id = $1::uuid")
+            .bind(ARTWORK_BLUE_MORNING)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(dims["unit"], "cm");
+    assert_eq!(dims["width"], 90);
+    assert_eq!(dims["height"], 70);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_artworks_patch_dimensions_omitted_preserves(pool: PgPool) {
+    // Pre-seed dimensions; a PATCH that doesn't mention `dimensions` must not touch the column.
+    let app = app_with_test_auth(pool.clone());
+    sqlx::query(
+        r#"UPDATE artworks
+           SET dimensions = jsonb_build_object('unit','cm','width',50,'height',50)
+           WHERE id = $1::uuid"#,
+    )
+    .bind(ARTWORK_BLUE_MORNING)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let body = json!({"title": "Re-titled"}).to_string();
+    let (status, _) = send_authed(
+        app,
+        "PATCH",
+        &format!("/v1/studio/artworks/{ARTWORK_BLUE_MORNING}"),
+        ALICE,
+        Some(&body),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let dims: serde_json::Value =
+        sqlx::query_scalar("SELECT dimensions FROM artworks WHERE id = $1::uuid")
+            .bind(ARTWORK_BLUE_MORNING)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(dims["width"], 50);
+}
+
+// ── /v1/studio/artworks misc ───────────────────────────────────
+
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn studio_artworks_create_404s_for_non_artist(pool: PgPool) {
     let app = app_with_test_auth(pool);

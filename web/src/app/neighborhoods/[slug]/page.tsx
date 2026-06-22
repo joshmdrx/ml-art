@@ -96,7 +96,7 @@ export default async function NeighborhoodPage({
 
         <section>
           <FilterBar
-            availableFilters={["medium", "price", "availability"]}
+            availableFilters={["medium", "price", "size", "availability"]}
             basePath={`/neighborhoods/${slug}`}
           />
           {artworks.items.length === 0 ? (

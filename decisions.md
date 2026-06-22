@@ -17,6 +17,77 @@ Format:
 
 ---
 
+## 2026-06-22 — T-070: dimensions stay optional at every status, cm-only input, 3 size bands, single band per query
+
+**Context:** The platform schema already has `artworks.dimensions jsonb`,
+but nothing in the studio UI exposes it — most published works land
+without dimensions, and the planned T-062 size filter has no data to
+filter on. Three sub-decisions needed.
+
+**Decided:**
+
+1. **Dimensions are optional at every artwork status.** Drafts can be
+   half-filled; publish doesn't gate. A NULL-dimensioned work simply
+   never appears in a size-filtered query — silent exclusion.
+   - A non-blocking soft-confirm fires on the studio-side
+     transition to `published` when dimensions are missing: "You
+     haven't added dimensions. Buyers won't be able to filter your
+     work by size. Publish anyway?" Two buttons, ship-able from a
+     `window.confirm()` in v1.
+
+2. **cm-only input + storage.** No inches toggle. The stored shape
+   stays `{"unit": "cm", "width": …, "height": …, "depth"?: …}` —
+   `unit` is normalised onto the output even when the input omits it,
+   so a future inches-input mode can write `unit: "cm"` after
+   conversion without a schema change.
+
+3. **Filter: 3 size bands, single band per query, longest side.**
+   - Bands: **S** ≤ 40cm, **M** 41–100cm, **L** > 100cm (longest of
+     width + height, depth excluded).
+   - URL: `?size=s|m|l`. Unknown values fall through with no clause
+     (tolerant — bookmarked `?size=xl` survives a future rename).
+   - Multi-select (`size=s,m`) + custom range deferred.
+
+**Alternatives considered:**
+
+- **Require dimensions at publish.** Rejected: would block legitimate
+  use cases (digital-only works, conceptual / performance, artists
+  testing the studio without the info to hand). Discovery platform
+  framing — not inventory enforcement.
+- **5 bands (XS / S / M / L / XL).** Rejected for v1: finer
+  granularity is meaningless at 2000 seeded rows and pre-real-artist
+  scale. Easy to expand later.
+- **Multi-select bands in a single query.** Rejected for v1 — same
+  shape change we'd want to make to `medium=` and `availability=` at
+  the same time, so bundle later.
+- **Server-required width AND height when dimensions is set.**
+  Accepted (this IS the validator's rule). Half-filled rows would
+  silently fall out of every size-filtered query — confusing for the
+  artist who entered partial data, and harder to debug.
+- **Inches input toggle now.** Deferred — adds a validation surface
+  and a conversion bug, and most non-US contemporary art uses cm
+  natively. Revisit when an artist asks.
+
+**Why:** The friction calculus changed when I (the operator) hit it
+myself during the first real-artist test of the studio. An artist who
+hasn't measured their work shouldn't be blocked from publishing — but
+buyers do want a size filter that works, which the soft nudge nudges
+toward. Three bands is the smallest set that's meaningfully useful.
+cm-only keeps the input + storage + filter all in one unit so we
+don't accumulate conversion bugs.
+
+**Reversibility:**
+
+- Optional-at-publish: **High.** Add a publish-gate check in the patch
+  handler (matches existing status check pattern).
+- cm-only: **High.** Adding inches input is a UI-only change with
+  conversion at write-time; storage shape already accommodates it.
+- 3 bands → 5 bands: **High.** Add two more `SizeBand` entries
+  client-side + two more match arms server-side; existing data and
+  URL tokens carry through.
+
+---
+
 ## 2026-06-22 — Demote 5 WAF body-content sub-rules to COUNT for binary-upload + JSON-webhook paths
 
 **Context:** AWS WAF Managed Rule `AWSManagedRulesCommonRuleSet` ships

@@ -304,7 +304,7 @@ export default async function SearchPage({
         )}
 
         <FilterBar
-          availableFilters={["medium", "price", "availability", "location"]}
+          availableFilters={["medium", "price", "size", "availability", "location"]}
           basePath="/search"
         />
 

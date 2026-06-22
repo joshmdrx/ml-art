@@ -203,6 +203,15 @@ pub async fn create(
     }
     let currency = body.currency.as_deref().unwrap_or("USD");
 
+    // T-070 — validate + normalise dimensions JSONB. Absent / null pass
+    // through as None; a present object goes through the shape check
+    // and lands as the normalised form (unit defaulted to "cm",
+    // unknown keys rejected). See core::validation::dimensions_v1.
+    let dimensions: Option<serde_json::Value> = match body.dimensions.as_ref() {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(ml_art_core::validation::dimensions_v1(v).map_err(ApiError::BadRequest)?),
+    };
+
     let row: ArtworkRow = sqlx::query_as(
         r#"
         INSERT INTO artworks (
@@ -222,7 +231,7 @@ pub async fn create(
     .bind(description)
     .bind(body.year_created)
     .bind(body.medium.as_deref())
-    .bind(&body.dimensions)
+    .bind(&dimensions)
     .bind(body.price_cents)
     .bind(currency)
     .bind(availability)
@@ -324,6 +333,21 @@ pub async fn patch(
         }
     }
 
+    // T-070 — validate dimensions when the patch carries them. Patch
+    // semantics here mirror every other Option<Option<...>> field on
+    // this struct: a present object updates the column, an omitted key
+    // leaves it alone. `null` deserializes to `None` under the default
+    // serde rules so explicit-null-to-clear isn't supported (same
+    // limitation across the rest of the patch surface — not in scope
+    // for this ticket).
+    let dimensions_present = matches!(body.dimensions, Some(Some(_)));
+    let dimensions_value: Option<serde_json::Value> = match body.dimensions {
+        Some(Some(ref v)) => {
+            Some(ml_art_core::validation::dimensions_v1(v).map_err(ApiError::BadRequest)?)
+        }
+        _ => None,
+    };
+
     // Bool-flag-per-Option<Option<_>> pattern lets the caller explicitly
     // set a field to NULL by passing JSON `null`, vs not touching it by
     // omitting the key. Same shape as `me/collections::patch`.
@@ -366,8 +390,8 @@ pub async fn patch(
     .bind(body.year_created.flatten())
     .bind(body.medium.is_some())
     .bind(body.medium.flatten())
-    .bind(body.dimensions.is_some())
-    .bind(body.dimensions.flatten())
+    .bind(dimensions_present)
+    .bind(dimensions_value)
     .bind(body.price_cents.is_some())
     .bind(body.price_cents.flatten())
     .bind(body.currency.as_deref())

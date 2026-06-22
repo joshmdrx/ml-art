@@ -37,6 +37,11 @@ use uuid::Uuid;
 
 const RRF_K: i64 = 60;
 const CANDIDATE_POOL: i64 = 200;
+/// Upper bound on `size=l` band — mirrors the validator's
+/// `MAX_DIMENSION_CM` so an artwork created at the ceiling is still
+/// filterable. Kept local to avoid pulling the core::validation
+/// constant in (different concern: storage vs query).
+const MAX_SIZE_CM: i32 = 5000;
 
 #[derive(Debug, Deserialize)]
 pub struct SearchParams {
@@ -85,6 +90,12 @@ pub struct SearchParams {
     pub near_lng: Option<f64>,
     #[serde(default)]
     pub near_radius_km: Option<f64>,
+    /// T-070 — size band over the longest side of the artwork in cm.
+    /// `s` ≤ 40, `m` 41..=100, `l` > 100. Single band per query in v1;
+    /// non-dimensioned works are silently excluded from any size filter.
+    /// Unknown values are ignored (tolerant — the URL stays user-typeable).
+    #[serde(default)]
+    pub size: Option<String>,
 
     // Sort + pagination
     #[serde(default)]
@@ -485,6 +496,29 @@ fn build_filters(
     if let Some(av) = p.availability.as_deref().filter(|s| !s.is_empty()) {
         let idx = next.bind(args, av.to_string())?;
         clauses.push(format!("AND a.availability = ${idx}"));
+    }
+
+    // T-070 — size band over `dimensions->>'width' | 'height'`. Works
+    // without dimensions are silently excluded (`IS NOT NULL` on both
+    // keys). Unknown band values fall through with no clause — keeps
+    // bookmarked URLs from 400'ing if we ever rename the bands.
+    if let Some(band) = p.size.as_deref() {
+        let bounds: Option<(i32, i32)> = match band.to_ascii_lowercase().as_str() {
+            "s" => Some((1, 40)),
+            "m" => Some((41, 100)),
+            "l" => Some((101, MAX_SIZE_CM)),
+            _ => None,
+        };
+        if let Some((lo, hi)) = bounds {
+            let lo_idx = next.bind(args, lo)?;
+            let hi_idx = next.bind(args, hi)?;
+            clauses.push(format!(
+                "AND (a.dimensions->>'width') IS NOT NULL \
+                 AND (a.dimensions->>'height') IS NOT NULL \
+                 AND GREATEST((a.dimensions->>'width')::int, (a.dimensions->>'height')::int) \
+                     BETWEEN ${lo_idx} AND ${hi_idx}"
+            ));
+        }
     }
 
     if let Some(loc) = p.location.as_deref().and_then(LocationTerms::from_query) {

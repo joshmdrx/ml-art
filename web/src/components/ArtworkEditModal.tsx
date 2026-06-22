@@ -258,15 +258,83 @@ function ArtworkForm({
   const [externalUrl, setExternalUrl] = useState(detail?.external_url ?? "");
   const [status, setStatus] = useState<string>(detail?.status ?? "draft");
 
+  // T-070 — physical artwork dimensions in cm. All three optional;
+  // see buildDimensions() for the all-or-nothing-on-width+height rule.
+  const [widthCm, setWidthCm] = useState(
+    detail?.dimensions?.width != null ? String(detail.dimensions.width) : "",
+  );
+  const [heightCm, setHeightCm] = useState(
+    detail?.dimensions?.height != null ? String(detail.dimensions.height) : "",
+  );
+  const [depthCm, setDepthCm] = useState(
+    detail?.dimensions?.depth != null ? String(detail.dimensions.depth) : "",
+  );
+  const [dimsError, setDimsError] = useState<string | null>(null);
+
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
+  /**
+   * Build the validated dimensions value, mirroring the server-side
+   * `core::validation::dimensions_v1` checks. Three outcomes:
+   *
+   *   - all blank → `{ value: undefined, error: null }` — caller
+   *     omits the field; server leaves the column alone.
+   *   - any field invalid → `{ value: undefined, error: <msg> }` —
+   *     caller surfaces inline; we don't submit.
+   *   - valid → `{ value: { unit: "cm", width, height, depth? } }`.
+   *
+   * Width + height are all-or-nothing: setting one without the other
+   * is a usability footgun (the "S/M/L" filter would silently skip
+   * the row). Depth is optional.
+   */
+  function buildDimensions(): {
+    value: import("@/lib/api").Dimensions | undefined;
+    error: string | null;
+  } {
+    const w = widthCm.trim();
+    const h = heightCm.trim();
+    const d = depthCm.trim();
+    if (w === "" && h === "" && d === "") return { value: undefined, error: null };
+    if (w === "" || h === "") {
+      return {
+        value: undefined,
+        error: "Width and height are both required when entering dimensions.",
+      };
+    }
+    function parseDim(raw: string, label: string): number | string {
+      const n = Number(raw);
+      if (!Number.isFinite(n) || !Number.isInteger(n))
+        return `${label} must be a whole number in cm.`;
+      if (n < 1) return `${label} must be at least 1 cm.`;
+      if (n > 5000) return `${label} must be 5000 cm or less.`;
+      return n;
+    }
+    const wn = parseDim(w, "Width");
+    if (typeof wn !== "number") return { value: undefined, error: wn };
+    const hn = parseDim(h, "Height");
+    if (typeof hn !== "number") return { value: undefined, error: hn };
+    const dims: import("@/lib/api").Dimensions = {
+      unit: "cm",
+      width: wn,
+      height: hn,
+    };
+    if (d !== "") {
+      const dn = parseDim(d, "Depth");
+      if (typeof dn !== "number") return { value: undefined, error: dn };
+      dims.depth = dn;
+    }
+    return { value: dims, error: null };
+  }
+
   function buildBody(parsedPrice: { amount_minor: number; currency: string } | null) {
+    const dims = buildDimensions();
     return {
       title: title.trim() || null,
       description: description.trim() || null,
       medium: medium.trim() || null,
       year_created: yearCreated ? Number(yearCreated) : null,
+      dimensions: dims.value ?? undefined,
       price_cents: parsedPrice?.amount_minor ?? null,
       currency: parsedPrice?.currency ?? (currency.trim() || "USD"),
       availability: availability as
@@ -283,12 +351,38 @@ function ArtworkForm({
     e.preventDefault();
     if (isPending) return;
     setError(null);
+    setDimsError(null);
 
     const parsedPrice = tryParsePrice();
     if (parsedPrice === undefined) {
       // tryParsePrice already set priceError + this is a synchronous
       // bail. Don't fire the network call.
       return;
+    }
+
+    // T-070 — validate dimensions client-side. Server also validates
+    // (single source of truth) but a synchronous bail saves a
+    // round-trip and gives the artist a field-anchored error.
+    const dims = buildDimensions();
+    if (dims.error) {
+      setDimsError(dims.error);
+      return;
+    }
+
+    // T-070 — soft nudge when publishing a work that still has no
+    // dimensions. Buyers can't filter by size for works with NULL
+    // dimensions, so we ask before letting the artist publish without
+    // — but don't gate. Decision recorded in `decisions.md` 2026-06-22.
+    const isTransitionToPublished =
+      status === "published" && detail?.status !== "published";
+    if (
+      (isCreate ? false : isTransitionToPublished) &&
+      dims.value === undefined
+    ) {
+      const proceed = window.confirm(
+        "You haven't added dimensions. Buyers won't be able to filter your work by size. Publish anyway?",
+      );
+      if (!proceed) return;
     }
 
     startTransition(async () => {
@@ -299,6 +393,7 @@ function ArtworkForm({
             description: description.trim() || undefined,
             medium: medium.trim() || undefined,
             year_created: yearCreated ? Number(yearCreated) : undefined,
+            dimensions: dims.value,
             price_cents: parsedPrice?.amount_minor ?? undefined,
             currency: parsedPrice?.currency ?? (currency.trim() || undefined),
             availability: availability as
@@ -315,7 +410,7 @@ function ArtworkForm({
             ...created,
             description: description.trim() || null,
             year_created: yearCreated ? Number(yearCreated) : null,
-            dimensions: null,
+            dimensions: dims.value ?? null,
             external_url: normalizeWebsiteUrl(externalUrl),
             images: [],
           });
@@ -445,6 +540,64 @@ function ArtworkForm({
           )}
         </Field>
       </div>
+
+      <Field
+        label="Dimensions"
+        hint="Physical size in cm. Width and height are both required if you fill any. Depth is optional — leave blank for flat work."
+      >
+        <div className="grid grid-cols-3 gap-2">
+          <input
+            type="number"
+            inputMode="numeric"
+            value={widthCm}
+            onChange={(e) => {
+              setWidthCm(e.target.value);
+              if (dimsError) setDimsError(null);
+            }}
+            min={1}
+            max={5000}
+            step={1}
+            placeholder="Width"
+            aria-label="Width in cm"
+            className="bg-background border border-border px-3 py-2 text-sm focus:outline-none focus:border-foreground"
+          />
+          <input
+            type="number"
+            inputMode="numeric"
+            value={heightCm}
+            onChange={(e) => {
+              setHeightCm(e.target.value);
+              if (dimsError) setDimsError(null);
+            }}
+            min={1}
+            max={5000}
+            step={1}
+            placeholder="Height"
+            aria-label="Height in cm"
+            className="bg-background border border-border px-3 py-2 text-sm focus:outline-none focus:border-foreground"
+          />
+          <input
+            type="number"
+            inputMode="numeric"
+            value={depthCm}
+            onChange={(e) => {
+              setDepthCm(e.target.value);
+              if (dimsError) setDimsError(null);
+            }}
+            min={1}
+            max={5000}
+            step={1}
+            placeholder="Depth (optional)"
+            aria-label="Depth in cm, optional"
+            className="bg-background border border-border px-3 py-2 text-sm focus:outline-none focus:border-foreground"
+          />
+        </div>
+        {dimsError && (
+          <p role="alert" className="mt-1 text-xs text-red-600">
+            {dimsError}
+          </p>
+        )}
+      </Field>
 
       <div>
         <Field label="Availability">
