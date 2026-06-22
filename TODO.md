@@ -483,15 +483,21 @@ T-057 / T-061 will need a stable medium taxonomy anyway for taste-vector groupin
 **Why:** Today both files are maintained by hand. Drift risk: an API field rename only breaks at runtime. Caught us once with `is_following` (we shipped the Rust side then realised the TS side was stale). Risk grows with surface area.
 **Acceptance:** every `pub struct` in `models.rs` with `#[derive(Serialize)]` round-trips to a TS `export interface` automatically on `cargo build` (or as a separate `make types` target); CI fails if the generated file drifts from what's checked in.
 
-### `T-070` Studio: artwork-dimensions input + filterable physical size
-**Where:** `web/src/components/studio/ArtworkEditModal.tsx` adds cm-based width / height / depth inputs; the API already has `artworks.dimensions` (jsonb) + `formatDimensions` helper but no editor exposes it.
-**Why:** An artist can publish today with no physical dimensions, and a buyer can't filter "small / medium / large" because most works have NULL dims. Schema + render are ready; the missing piece is studio input + a search filter.
-**Acceptance:**
-- Studio: width / height / depth-cm fields on the artwork form. Persist into `artworks.dimensions` jsonb. Optional depth (most flat work doesn't need it). Server-side validation: positive integers ≤ 9999.
-- Mirror existing T-039 price-input UX patterns (text + on-blur reformat).
-- API: `/v1/search` accepts a `size=` query param — either band (`s|m|l`) or `min_cm..max_cm`. Band thresholds documented in `core::sizes` (S < 40cm longest side, M 40–100, L > 100).
-- Web: T-062's dimension band wires to this filter.
-- Demo seed: `seed.py` already produces deterministic dimensions — keep.
+### ~~`T-070` Studio: artwork-dimensions input + filterable physical size~~ — shipped 2026-06-22
+
+- ✅ `core::validation::dimensions_v1` — closed-schema validator (19 unit tests).
+- ✅ `studio::artworks::{create,patch}` call the validator before binding; invalid shapes 400 with field-level error.
+- ✅ Dimensions stay **optional at every status** — drafts AND published can have NULL dims. Soft confirm fires on draft→published when missing (non-blocking).
+- ✅ `/v1/search?size=s|m|l` filter clause over `GREATEST(width, height)`; non-dimensioned works silently excluded; unknown bands tolerant. 5 new integration tests.
+- ✅ Studio modal: 3-input row (width / height / depth-cm) with inline validation + mirrored client-side rule.
+- ✅ `FilterBar` size pill on `/search` + `/neighborhoods/[slug]`.
+- ✅ Decisions captured at `decisions.md` 2026-06-22 (cm-only, 3 bands, single band per query, longest-side determinant — with rejected alternatives).
+
+**Deferred follow-ups (logged inline in `T-062`'s open-gap note):**
+- Inches input toggle (cm-only ships v1).
+- Multi-select bands (`size=s,m`) — bundle with the same shape change to `medium=` + `availability=`.
+- Custom `min_cm..max_cm` range — when band granularity bites.
+- Aspect-ratio filter (portrait / landscape / square) — independent feature.
 
 ### `T-069` E2E coverage for the retention loop
 **Where:** `e2e/tests/` — new Playwright specs covering Follow, anon-follow-queueing, public collections, OG cards, notification preferences, unsubscribe.

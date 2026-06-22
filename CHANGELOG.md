@@ -3,6 +3,45 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-22 — T-070: Studio artwork-dimensions editor + search size-band filter
+
+Artists couldn't enter physical artwork dimensions from the studio,
+which meant most works had NULL `artworks.dimensions` and the planned
+size filter on `/search` had no data to filter on. Surfaced during my
+own real-artist test of the onboarding + studio flow.
+
+Backend:
+- `core::validation::dimensions_v1` — closed-schema validator for
+  `{"unit":"cm","width","height","depth"?}`. Width + height required
+  when the object is present (all-or-nothing); 1 ≤ n ≤ 5000cm; unit
+  defaults to "cm" on output; unknown keys rejected. 19 unit tests.
+- `studio::artworks::{create,patch}` call the validator before
+  binding to SQL — invalid shapes 400 with a field-level message,
+  absent dimensions pass through unchanged.
+- `/v1/search?size=s|m|l` — bands over `GREATEST((dimensions->>'width')::int, (dimensions->>'height')::int)`:
+  S ≤ 40, M 41–100, L > 100. Non-dimensioned works silently
+  excluded; unknown band values fall through with no clause
+  (tolerant of future renames in bookmarked URLs).
+- 8 new integration tests cover band selection, exclusion of
+  undimensioned works, unknown-band tolerance, and the validator's
+  persist + normalise + reject paths.
+
+Web:
+- `ArtworkEditModal` gains a 3-input row (width / height / depth-cm)
+  with mirrored client-side validation + inline error rendering.
+- Soft `window.confirm` fires on the draft→published transition
+  when dimensions are missing — "buyers won't be able to filter by
+  size; publish anyway?". Non-blocking — just a nudge.
+- `FilterBar` gains a `size` pill alongside medium / price /
+  availability / location. `SIZE_BANDS` constant in `lib/filterBar.ts`
+  drives both the pill and any future surfaces (e.g. neighborhoods,
+  for-you).
+
+Decisions: `decisions.md` 2026-06-22 captures the cm-only call, the
+3-bands-vs-5 trade, single-band-per-query, longest-side determinant,
+and dimensions-stay-optional-at-every-status (with the alternatives
+considered + reversibility ratings).
+
 ## 2026-06-22 — Image pixel-dimension probe on upload
 
 Every `/v1/uploads/image` PUT was leaving `uploads.width` + `.height`
