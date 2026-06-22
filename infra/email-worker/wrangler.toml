@@ -13,6 +13,12 @@ name = "ml-art-inbound-email"
 main = "src/index.ts"
 compatibility_date = "2026-06-01"
 
+# This Worker is triggered by Email Routing (a routing rule with action
+# "Send to a Worker"), not by HTTP. Disabling workers.dev keeps the
+# *.workers.dev subdomain off the table — we don't want a public HTTP
+# endpoint for what should be an inbound-mail-only entrypoint.
+workers_dev = false
+
 # Plain (non-secret) config. The webhook origin. INBOUND_SECRET is NOT
 # here — it's a Worker secret set with `wrangler secret put INBOUND_SECRET`
 # so it never lands in version control. It must match the value in the
