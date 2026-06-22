@@ -416,6 +416,22 @@ resource "aws_wafv2_web_acl" "api" {
   }
 }
 
+# ─── WAF logging ─────────────────────────────────────────────────────────────
+# Mirror of modules/web/main.tf — see that file for the full rationale.
+# Required for diagnosing CRS false positives (e.g. NoUserAgent_HEADER
+# on the inbound-email webhook, 2026-06-22).
+resource "aws_cloudwatch_log_group" "waf_api" {
+  provider          = aws.us_east_1
+  name              = "aws-waf-logs-${var.name_prefix}-api"
+  retention_in_days = 3
+}
+
+resource "aws_wafv2_web_acl_logging_configuration" "api" {
+  provider                = aws.us_east_1
+  resource_arn            = aws_wafv2_web_acl.api.arn
+  log_destination_configs = [aws_cloudwatch_log_group.waf_api.arn]
+}
+
 # ─── CloudFront ──────────────────────────────────────────────────────────────
 # Fronts the API Gateway HTTP API so:
 #   - Custom domain (api.<domain>) works.

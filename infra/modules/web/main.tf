@@ -417,6 +417,28 @@ resource "aws_wafv2_web_acl" "web" {
   }
 }
 
+# ─── WAF logging ─────────────────────────────────────────────────────────────
+# Captures the full per-request decision (terminating rule, matched
+# fields, header values) — invaluable for diagnosing CRS false positives
+# that `wafv2 get-sampled-requests` doesn't surface enough detail for.
+# Flipped on out-of-band during the 2026-06-22 inquiry-upload debug
+# session; adopted into TF here so a fresh apply keeps it. The
+# `aws-waf-logs-` prefix on the log-group name is REQUIRED by WAF.
+#
+# Retention is 3 days — these logs are for incident triage, not audit.
+# Bump if you start using them for analytics.
+resource "aws_cloudwatch_log_group" "waf_web" {
+  provider          = aws.us_east_1
+  name              = "aws-waf-logs-${var.name_prefix}-web"
+  retention_in_days = 3
+}
+
+resource "aws_wafv2_web_acl_logging_configuration" "web" {
+  provider                = aws.us_east_1
+  resource_arn            = aws_wafv2_web_acl.web.arn
+  log_destination_configs = [aws_cloudwatch_log_group.waf_web.arn]
+}
+
 resource "aws_cloudfront_distribution" "web" {
   enabled         = true
   is_ipv6_enabled = true
