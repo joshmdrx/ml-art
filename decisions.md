@@ -17,6 +17,72 @@ Format:
 
 ---
 
+## 2026-06-22 — Demote 5 WAF body-content sub-rules to COUNT for binary-upload + JSON-webhook paths
+
+**Context:** AWS WAF Managed Rule `AWSManagedRulesCommonRuleSet` ships
+with five sub-rules that inspect the first 8KB of every POST body:
+
+- `SizeRestrictions_BODY` — blocks any body over 8KB (any real image)
+- `CrossSiteScripting_BODY` — XSS heuristics
+- `GenericLFI_BODY` / `GenericRFI_BODY` — local / remote file-inclusion patterns
+- `EC2MetaDataSSRF_BODY` — 169.254.169.254-like patterns
+
+Two prod traffic shapes hit all five as false positives:
+
+1. **Image uploads.** Adobe XMP metadata in PNG/JPEG from Photoshop /
+   Lightroom / Affinity reads as `<x:xmpmeta xmlns:x="adobe:ns:meta/">`
+   — the XSS regex matches `xmlns:x` + `adobe:ns:meta/` immediately.
+   Random binary bytes in image data occasionally trip LFI/RFI/SSRF
+   patterns too. Confirmed via WAF log capture during the 2026-06-22
+   cutover of T-054.
+2. **JSON webhook bodies.** Cloudflare Email Worker → api webhook
+   POSTs are tiny (~250 bytes) but still POSTs — `NoUserAgent_HEADER`
+   was the actual blocker here, not body-content, but the body rules
+   would also fire on multipart payloads from any future webhook.
+
+**Decided:** Add `rule_action_override` entries in both web + api WAF
+ACL configs that demote all five sub-rules to `count {}`. They still
+match (visible in metrics + sampled requests + WAF logs); they just
+don't terminate.
+
+**Alternatives considered:**
+
+- **Scope-down statements** restricting the managed rule group to
+  specific paths (everywhere EXCEPT `/studio*`, `/onboarding*`,
+  `/v1/uploads/image`, `/v1/webhooks/*`). Rejected: path-list grows
+  with every form, and the WAF still sees the bodies it can't
+  protect anyway.
+- **Raise the body-inspection size limit** (`AssociationConfig.RequestBody.CLOUDFRONT.DefaultSizeInspectionLimit`)
+  to 32KB/64KB. Rejected: only addresses size, not content false
+  positives; costs extra per CF request.
+- **Disable the whole Common Rule Set.** Rejected: header / URI / cookie
+  sub-rules in CRS still catch real attacks (request smuggling,
+  oversized cookies, restricted file extensions) and have zero false
+  positives on our traffic.
+
+**Why:** Image-upload routes can't be meaningfully protected by WAF
+body inspection — binary data inherently contains patterns that match
+any text-oriented heuristic. The real guards for upload routes live at
+the app layer (mime sniff, dimensions, Rekognition moderation T-008,
+size limits). WAF body inspection is a strong second line of defence
+for *form*-shaped POSTs (login, comment, etc) but the wrong tool for
+binary uploads. Surfacing the rule as COUNT keeps observability without
+breaking the user-visible flow.
+
+**Reversibility:** **High.** Each override is a 5-line Terraform block
+in `modules/{web,api}/main.tf`. Removing them re-enables BLOCK on the
+next apply. The override list is per-rule, so we can re-enable any
+single rule individually if its false-positive rate drops (e.g. if a
+future Adobe-XMP-aware WAF update lands).
+
+**Knock-on:** WAF logging now flows to `aws-waf-logs-ml-art-prod-{web,api}`
+log groups (also adopted into TF in this commit). 3-day retention,
+triage-only. Watch the COUNT metric in CloudWatch; if a real attacker
+trips one of these and gets through, we'll see the count without the
+404 telemetry being silent.
+
+---
+
 ## 2026-06-20 — Server-side `anon_pending_actions` table for queued anon intents (over cookie storage)
 
 **Context:** `T-052c` captures intents from signed-out users (clicking Follow without an account) so the merge-anonymous handler can replay them after sign-in — closing the "lose the highest-intent click in the funnel" leak. Two storage options were live:

@@ -3,6 +3,156 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-22 — Image pixel-dimension probe on upload
+
+Every `/v1/uploads/image` PUT was leaving `uploads.width` + `.height`
+NULL because nothing was probing the bytes. Downstream `artwork_images`
+inherited that — public artwork pages and OG cards had no aspect-ratio
+reservation, so each image load caused layout shift.
+
+Wired a single trustworthy probe at the api boundary:
+
+- Migration `0020_uploads_image_dimensions.sql` — adds nullable
+  `width` / `height` to `uploads` (legacy rows stay valid; NULL means
+  "we don't know" and downstream falls back gracefully).
+- `core::images::probe_image_dimensions(&[u8]) -> Option<(u32, u32)>`
+  — header-only read via the `imagesize` crate (~50 bytes per call,
+  no full decode). Three unit tests covering PNG header, truncated,
+  garbage.
+- `/v1/uploads/image` probes between embed and S3 PUT, stamps the
+  upload row.
+- `POST /v1/studio/artworks/:id/images` prefers the dims from the
+  `uploads` row when the s3_key starts with `uploads/` — single
+  source of truth, client can't spoof. Falls back to body for
+  non-upload s3_keys (e.g. seed-bucket `demo/` paths).
+- Two new integration tests cover both branches of the attach handler.
+
+Wires the data side of `T-062`'s eventual size filter, but the
+artist-facing **physical**-dimensions editor is still missing — logged
+as `T-070`.
+
+## 2026-06-22 — T-054 productionisation: WAF tuning, Worker UA, S3 + STS fixes
+
+T-054 shipped the night before but the first real prod cutover surfaced
+five separate blockers, each in different infra/runtime layers. Each
+fix is small; the rollup matters.
+
+- **AWS WAF body-content rules vs image uploads + JSON webhooks.**
+  AWSManagedRulesCommonRuleSet's body inspection (8KB cap +
+  XSS/LFI/RFI/SSRF heuristics) blocked legitimate traffic on both
+  CloudFront distributions. Adobe XMP in PNG metadata reads as XSS;
+  random image bytes match LFI/RFI; multipart bodies exceed 8KB.
+  Demoted 5 sub-rules to COUNT on both web + api ACLs
+  (`SizeRestrictions_BODY`, `CrossSiteScripting_BODY`,
+  `GenericLFI_BODY`, `GenericRFI_BODY`, `EC2MetaDataSSRF_BODY`).
+  Rationale in `decisions.md` 2026-06-22.
+
+- **WAF logging into Terraform.** Flipped on out-of-band via CLI
+  during debug; adopted both `aws-waf-logs-ml-art-prod-{web,api}`
+  log groups + `aws_wafv2_web_acl_logging_configuration` resources
+  into TF state via `terraform import` so a clean apply still has
+  them. 3-day retention (triage-only).
+
+- **`NoUserAgent_HEADER` blocked the Worker → webhook POST.**
+  Cloudflare Workers' `fetch()` doesn't add a default `User-Agent`,
+  so AWS WAF (still on the Common Rule Set, this sub-rule still
+  enforced) was 403'ing every inbound-email Worker call to the api
+  before it reached the Lambda. Added a `User-Agent` to the Worker
+  fetch; left the WAF rule enforced (most no-UA traffic IS bot
+  scanning — fix belongs on the legit caller). Worker also gained
+  structured try/catch + console.log/error so future failures
+  surface in `wrangler tail` without needing a debug-echo round-trip.
+
+- **`S3_UPLOADS_BUCKET` env var missing on api + jobs Lambdas.** The
+  Rust config defaults to the literal string `"uploads"` when the var
+  is unset — no such bucket in prod, so every PUT 500'd. Threaded the
+  bucket NAME (not ARN) through `modules/storage` → `main.tf` →
+  `modules/{api,jobs}` and set the env in both Lambda config blocks.
+
+- **STS-credentials override in `core::object_store`.** Static-cred
+  override fired unconditionally when `AWS_ACCESS_KEY_ID` +
+  `AWS_SECRET_ACCESS_KEY` env vars were present. Lambda runtime
+  auto-injects those AND `AWS_SESSION_TOKEN` from the role's STS
+  session — by passing the first two through `Credentials::new(ak,
+  sk, None /*token*/, ...)`, we created a broken static-cred override
+  S3 rejected as AccessDenied (collapsed to "service error" by the
+  SDK's `Display` impl). Gated the override on `endpoint_url.is_some()`
+  — MinIO-only. Also switched the error formatter to `{e:?}` so the
+  full SDK error chain reaches CloudWatch next time.
+
+Net: studio image uploads + inquirer-inbound replies both now work end
+-to-end against the live stack. Cosmetic spacing fix on the inquiry-
+modal ack copy rode along.
+
+## 2026-06-21 — T-054: Inquirer-inbound replies (email-stitched threads)
+
+Closes the inquiry conversation loop. Previously: anonymous user
+inquires → verifies email → artist replies from studio → email
+delivered to inquirer. The inquirer hitting Reply went into a black
+hole because the Reply-To was the platform's `info@wander.gallery`.
+
+Now: artist-reply email's Reply-To is `r-<inquiry_id>-<hmac>@reply.wander.gallery`
+— a tokenised per-inquiry address. When the inquirer hits Reply, mail
+routes through Cloudflare Email Routing MX → an Email Worker that
+parses with `postal-mime` and strips quoted history → POSTs the
+extracted text + token to `/v1/webhooks/email/inbound` on the api. The
+webhook verifies the HMAC, persists a new `inquiry_replies` row with
+`from_role='inquirer'`, and enqueues a forward-to-artist email.
+
+Schema (migration `0019_inquiry_inbound_replies.sql`):
+- `inquiry_replies.from_role text NOT NULL DEFAULT 'artist'` so the
+  existing studio-reply INSERT keeps working unchanged.
+- `inquiry_replies.artist_id` becomes nullable — inquirer-authored
+  rows have no artist author.
+- `inquiry_replies.inbound_message_id text` + partial unique index —
+  the replay-dedup key, populated by the webhook from Gmail's
+  `Message-ID` header.
+
+Code:
+- New `core::reply_address` — mint + constant-time verify of the
+  55-char local part (under RFC 5321's 64-char limit; truncated
+  HMAC-SHA256 over the inquiry UUID with the same `anon_cookie_secret`
+  reused across the app's HMAC needs). Seven unit tests pin shape,
+  domain separation, tamper-rejection.
+- New `api-search::webhooks::inbound_email` — closed-by-default auth
+  (constant-time secret compare), HMAC verify, idempotent INSERT
+  (`ON CONFLICT (inbound_message_id) DO NOTHING RETURNING id`), forward
+  enqueue with idempotency key.
+- New `JobEvent::InquirySendReplyForward` + handler that emails the
+  artist with the inquirer's address as Reply-To so the artist can
+  respond (currently via email only — capturing artist-side
+  email-replies into the thread is deferred).
+- `studio/inquiries.rs::list` returns `from_role` per reply so
+  `<InquiryInbox>` can render with role-aware labels + accent border.
+
+Infra:
+- `modules/dns/email_routing.tf` — Cloudflare MX (route1/2/3) + SPF
+  for `reply.wander.gallery`. Priorities are zone-assigned;
+  `allow_overwrite = true` lets TF adopt whatever Cloudflare generated
+  on enable.
+- `infra/email-worker/` — Cloudflare Worker with `postal-mime` for
+  MIME parsing, quoted-history trimmer (Gmail / Apple Mail / Outlook
+  attribution patterns), `workers_dev = false` (Email Routing is the
+  ONLY entrypoint).
+- `INBOUND_EMAIL_SECRET` added to SSM SecureString placeholders;
+  `Config::load` bails in prod if unset; same value also lives as a
+  Cloudflare Worker secret.
+
+Tests:
+- 4 integration tests on the webhook (happy path threads + enqueues;
+  tampered token rejected; missing/wrong secret 401; replay-same-id
+  idempotent).
+- 2 jobs-handler tests on the email path (artist reply uses tokenised
+  Reply-To; forward emails the artist with inquirer's address as
+  Reply-To).
+- 7 unit tests on `core::reply_address`.
+
+Post-deploy steps (POST_DEPLOY.md step 7) — set
+`inbound_email_secret`, enable Email Routing on the subdomain via the
+Cloudflare dashboard (not Terraformable), `wrangler secret put
+INBOUND_SECRET`, `wrangler deploy`, bind the catch-all routing rule →
+Worker, smoke-test.
+
 ## 2026-06-20 — T-052c: anonymous follow queueing
 
 The "click Follow → bounce to sign-in → lose the click" funnel leak is

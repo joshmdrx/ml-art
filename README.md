@@ -41,6 +41,7 @@ minimal").
 | Public collection link | `/c/[share_id]` (anyone) | `/v1/collections/share/:share_id` — owner toggles via the "Sharing" panel on `/collections/[id]`; per-collection OG card (T-053) |
 | Inquire about an artwork | modal on artwork detail | `/v1/artworks/:id/inquiries` (anonymous → verify email link → delivered via Resend) |
 | Verify anonymous inquiry | `/inquiries/verify/[token]` | `/v1/inquiries/verify/:token` |
+| Inquirer → artist reply (email) | reply to the artist-reply email from any inbox | `r-<inquiry_id>-<hmac>@reply.wander.gallery` → Cloudflare Email Routing → Worker (`infra/email-worker/`) → `POST /v1/webhooks/email/inbound` → threads on the inquiry + forwards to artist (T-054) |
 | Email notification settings | `/me/settings/notifications` | `/v1/me/notification-preferences` — per-kind toggles + master kill switch (T-068) |
 | Unsubscribe from a kind | `/u/[token]` (from email footer; GET or RFC 8058 POST) | `/v1/notifications/unsubscribe[/oneclick]` (T-068) |
 | Daily new-works digest | email (daily 11:00 UTC) | EventBridge cron → SQS → `JobEvent::NotifyFollowersDigestKickoff` → per-user fan-out → Resend with `List-Unsubscribe` headers (T-052b) |
@@ -140,8 +141,9 @@ repo root. Each has a specific role:
 - **Embeddings:** `jinaai/jina-clip-v2` — local PyTorch for seed/spike, Jina HTTP API at request time
 - **Auth:** Clerk
 - **Geocoding + maps:** Mapbox v6 forward-geocoding + Mapbox GL JS (T-038)
-- **Background jobs (planned):** Inngest — currently a `tokio::spawn` stub for the geocoding worker; the real runtime unblocks `T-032` (inquiry email), `T-008` (image moderation), and `T-012 Phase 2` (LLM-assisted onboarding)
-- **Infra (planned):** Terraform, OpenNext for Next on AWS
+- **Background jobs:** Postgres-backed `jobs` table in dev (T-044) → SQS + a `jobs-lambda` consumer in prod. EventBridge cron triggers the daily digest; per-handler idempotency keys dedup retries. Inquiry email, image moderation, geocoding, follow digest, and the inquirer-reply forward all run through it.
+- **Inbound email (T-054):** Cloudflare Email Routing MX on `reply.wander.gallery` → a Cloudflare Worker (`infra/email-worker/`) parses MIME + strips quoted history → POSTs the extracted reply text to `/v1/webhooks/email/inbound`. Tokenised Reply-To addresses keep the artist's real email off the wire.
+- **Infra:** Terraform (with state in S3), OpenNext for Next on AWS Lambda; AWS WAF on both web + api CloudFront distributions with logging in CloudWatch.
 
 See [`04-stack-and-infra.md`](04-stack-and-infra.md) for the full picture
 including the topology diagram and cost projection.

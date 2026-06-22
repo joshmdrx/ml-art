@@ -344,16 +344,16 @@ The digest filter is `artworks.published_at > GREATEST(follows.created_at, now()
 
 **Architectural note recorded inline:** the public-read handler currently lives in `me/collections.rs` despite not being a "me" route, to share the row types. If `api-search::collections` grows much more public surface area (T-058 series, T-057 neighbourhoods evolution), worth refactoring to a top-level `collections` module with `pub(crate)` row types.
 
-### `T-054` Inquirer-inbound replies (email-stitched threads)
-**Where:** Migration extending `inquiry_replies` with `from_role text` + nullable `artist_id`; Cloudflare Email Routing → Email Worker → inbound-webhook handler; tokenised Reply-To.
-**Why:** Phase 4b shipped artist → inquirer reply; inquirer-back is missing. Real inquiries are conversations. Closes the loop with zero in-platform-messaging cost — see `decisions.md` 2026-06-17.
-**Acceptance:**
-- Migration: `ALTER TABLE inquiry_replies ADD COLUMN from_role text NOT NULL DEFAULT 'artist'`; `ALTER COLUMN artist_id DROP NOT NULL`.
-- Reply-To on outbound emails is `r-<inquiry_id>-<hmac_token>@reply.wander.gallery`.
-- New endpoint `POST /v1/webhooks/email/inbound`. Authenticated by a shared-secret header presented by the Cloudflare Email Worker (no Resend/Svix signature); verifies the HMAC in the To address against `(inquiry_id, secret)`. Persists a new `inquiry_replies` row with `from_role='inquirer'`, deduped on the inbound `Message-ID`. Enqueues `JobEvent::InquirySendReplyForward` to forward to the artist.
-- DNS: Cloudflare Email Routing MX + SPF for `reply.wander.gallery` via the Cloudflare DNS module; an Email Worker (`infra/email-worker/`) parses inbound mail and POSTs the webhook.
-- Studio inbox renders the thread chronologically with role chips.
-- Integration tests: token round-trip, wrong-token rejection, replay-protection.
+### ~~`T-054` Inquirer-inbound replies (email-stitched threads)~~ — shipped 2026-06-22
+
+- ✅ Migration `0019_inquiry_inbound_replies.sql` adds `from_role` (default 'artist'), drops NOT NULL on `artist_id`, adds nullable `inbound_message_id` with a partial unique index for replay-dedup.
+- ✅ `core::reply_address` mints + verifies `r-<simple_uuid>-<hmac10>@reply.wander.gallery` (55-char local part, under RFC 5321's 64). Shared `anon_cookie_secret` reused via domain separation.
+- ✅ `POST /v1/webhooks/email/inbound` — shared-secret auth (`X-Inbound-Secret`), HMAC verify, persist with `from_role='inquirer'`, enqueue `JobEvent::InquirySendReplyForward`. Returns `accepted` / `duplicate`.
+- ✅ Studio inbox renders the thread with role-aware label + accent border on inquirer rows ([`InquiryInbox.tsx`](web/src/components/studio/InquiryInbox.tsx)).
+- ✅ Cloudflare Email Routing MX + SPF for `reply.wander.gallery` via TF (`modules/dns/email_routing.tf`); priorities reconciled per zone-assigned values.
+- ✅ Cloudflare Email Worker (`infra/email-worker/`, `postal-mime` parse + strip quoted history + POST to webhook with a `User-Agent` so AWS WAF's `NoUserAgent_HEADER` doesn't block it).
+- ✅ 4 integration tests covering the chain; 7 unit tests on the token shape.
+- **Productionisation fixes during 2026-06-22 cutover:** demoted 5 AWS WAF body-content sub-rules to COUNT (false positives on image-upload + JSON-webhook traffic — see `decisions.md` 2026-06-22); flipped on WAF logging in TF; wired `S3_UPLOADS_BUCKET` env on api+jobs Lambdas; fixed STS-cred override in `core::object_store` (was AccessDenied'ing on every S3 PUT under role-based creds).
 
 ### `T-055` User taste vector + nightly refresh
 **Where:** New `core::user_profile` module; `JobEvent::UserProfileRefresh` variant + handler; cron trigger (CloudWatch Events → SQS in prod / Postgres job-poller cron in dev).
