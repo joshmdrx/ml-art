@@ -1,0 +1,19 @@
+{
+  "name": "ml-art-inbound-email",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Email Worker that stitches inquirer email replies back into the platform (T-054).",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "postal-mime": "^2.2.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240605.0",
+    "typescript": "^5.4.0",
+    "wrangler": "^3.60.0"
+  }
+}

@@ -146,7 +146,9 @@ function InquiryCard({
         </div>
       </div>
 
-      {hasReplies && <ReplyList replies={inquiry.replies} />}
+      {hasReplies && (
+        <ReplyList replies={inquiry.replies} fromName={inquiry.from_name} />
+      )}
 
       <div className="mt-3 pt-3 border-t border-border">
         {!formOpen ? (
@@ -172,18 +174,39 @@ function InquiryCard({
   );
 }
 
-function ReplyList({ replies }: { replies: StudioInquiryReply[] }) {
+function ReplyList({
+  replies,
+  fromName,
+}: {
+  replies: StudioInquiryReply[];
+  fromName: string;
+}) {
   return (
     <ul className="mt-3 pt-3 border-t border-border flex flex-col gap-2">
-      {replies.map((r) => (
-        <li key={r.id} className="text-sm bg-background px-3 py-2">
-          <p className="text-xs text-muted mb-1">
-            You replied {formatRelative(new Date(r.created_at))}
-            {r.sent_at === null ? " · sending…" : ""}
-          </p>
-          <p className="whitespace-pre-line">{r.message}</p>
-        </li>
-      ))}
+      {replies.map((r) => {
+        // Inquirer replies are stitched back in from inbound email
+        // (T-054); give them a left accent so the thread reads as a
+        // back-and-forth rather than a list of the artist's own sends.
+        const isArtist = r.from_role === "artist";
+        return (
+          <li
+            key={r.id}
+            className={clsx(
+              "text-sm px-3 py-2",
+              isArtist
+                ? "bg-background"
+                : "bg-surface border-l-2 border-foreground",
+            )}
+          >
+            <p className="text-xs text-muted mb-1">
+              {isArtist ? "You replied" : `${fromName} replied`}{" "}
+              {formatRelative(new Date(r.created_at))}
+              {isArtist && r.sent_at === null ? " · sending…" : ""}
+            </p>
+            <p className="whitespace-pre-line">{r.message}</p>
+          </li>
+        );
+      })}
     </ul>
   );
 }

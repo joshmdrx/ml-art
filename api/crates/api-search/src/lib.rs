@@ -15,6 +15,7 @@ pub mod search;
 pub mod search_map;
 pub mod studio;
 pub mod uploads;
+pub mod webhooks;
 
 use axum::{
     extract::State,
@@ -156,6 +157,11 @@ pub fn build_app(state: Arc<AppState>) -> Router {
             post(inquiries::create).layer(from_fn_with_state(limiters.clone(), inquiry_limit)),
         )
         .route("/v1/inquiries/verify/:token", get(inquiries::verify))
+        // T-054 — inbound-email webhook for email-stitched inquiry
+        // threads. Unauthenticated (no user session); the Cloudflare
+        // Email Worker authenticates with a shared-secret header. See
+        // `webhooks::inbound_email`.
+        .route("/v1/webhooks/email/inbound", post(webhooks::inbound_email))
         // ── Onboarding (T-012 Phase 1). Mints + publishes an artist
         // row for the calling user. Subsequent edits go through the
         // existing /v1/studio/* surfaces.

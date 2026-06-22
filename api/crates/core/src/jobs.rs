@@ -60,6 +60,11 @@ pub enum JobEvent {
     /// persisted. Idempotent on `reply_id` so duplicates don't
     /// double-send. T-011 Phase 4b.
     InquirySendReply { reply_id: Uuid },
+    /// Forward an inquirer's inbound reply on to the artist. Fired by
+    /// the inbound-email webhook after persisting an
+    /// `inquiry_replies` row with `from_role='inquirer'`. Idempotent
+    /// on `inquiry_replies.sent_at`. T-054.
+    InquirySendReplyForward { reply_id: Uuid },
     /// Run the moderation client against a freshly-added artwork
     /// image. Writes back `artwork_images.moderation_status`. T-008.
     ArtworkImageModerate { artwork_image_id: Uuid },
@@ -88,6 +93,7 @@ impl JobEvent {
             JobEvent::InquirySendVerification { .. } => "inquiry_send_verification",
             JobEvent::InquiryDeliverToArtist { .. } => "inquiry_deliver_to_artist",
             JobEvent::InquirySendReply { .. } => "inquiry_send_reply",
+            JobEvent::InquirySendReplyForward { .. } => "inquiry_send_reply_forward",
             JobEvent::ArtworkImageModerate { .. } => "artwork_image_moderate",
             JobEvent::UploadModerate { .. } => "upload_moderate",
             JobEvent::NotifyFollowersDigestKickoff {} => "notify_followers_digest_kickoff",
@@ -469,6 +475,11 @@ pub struct JobsDeps {
     /// handlers pull this out to embed an unsubscribe link in every
     /// email they send.
     pub anon_cookie_secret: String,
+    /// T-054 — domain for the tokenised inquiry reply-to addresses
+    /// (`r-<inquiry_id>-<hmac>@<reply_email_domain>`). The artist-reply
+    /// handler mints this address so the inquirer's reply routes back
+    /// through the inbound-email webhook. Mirrors `Config::reply_email_domain`.
+    pub reply_email_domain: String,
     /// SQS / Postgres enqueue handle — needed by the kickoff handler
     /// to fan out per-user digest jobs. Wrapped in `Arc` for cheap
     /// clone-into-handlers.
@@ -498,6 +509,11 @@ pub async fn handle(event: JobEvent, deps: &JobsDeps) -> Result<(), HandlerError
         }
         JobEvent::InquirySendReply { reply_id } => {
             inquiry_handlers::send_reply(deps, reply_id)
+                .await
+                .map_err(|e| HandlerError::Domain(e.to_string()))?;
+        }
+        JobEvent::InquirySendReplyForward { reply_id } => {
+            inquiry_handlers::send_reply_forward(deps, reply_id)
                 .await
                 .map_err(|e| HandlerError::Domain(e.to_string()))?;
         }
@@ -663,24 +679,16 @@ mod inquiry_handlers {
             tracing::info!(%reply_id, "skip send_reply — already sent");
             return Ok(());
         }
-        // Resolve the artist's email for the reply-to header so any
-        // bounce-back from the inquirer lands in the artist's inbox.
-        // Without it the inquirer's reply would go to the platform's
-        // from-address, where it dead-ends. We don't gate the send
-        // on the artist having an email (the inquirer is the
-        // *recipient*); we just leave reply_to as None in that case.
-        let artist_email: Option<String> = sqlx::query_scalar(
-            r#"
-            SELECT u.email
-            FROM inquiry_replies r
-            JOIN artists ar ON ar.id = r.artist_id
-            LEFT JOIN users u ON u.id = ar.user_id
-            WHERE r.id = $1
-            "#,
-        )
-        .bind(reply_id)
-        .fetch_one(&deps.pool)
-        .await?;
+        // T-054 — the reply-to is a tokenised per-inquiry address rather
+        // than the artist's real email. When the inquirer hits reply it
+        // routes through the inbound-email webhook, which verifies the
+        // HMAC and threads the reply back onto this inquiry. The HMAC
+        // secret is the same `anon_cookie_secret` reused app-wide.
+        let reply_to = crate::reply_address::mint(
+            row.inquiry_id,
+            &deps.reply_email_domain,
+            deps.anon_cookie_secret.as_bytes(),
+        );
         let artwork_url = format!(
             "{base}/artworks/{id}",
             base = deps.web_base_url.trim_end_matches('/'),
@@ -694,7 +702,7 @@ mod inquiry_handlers {
             &row.message,
         );
         deps.emails
-            .send(&row.from_email, &subject, &body, artist_email.as_deref())
+            .send(&row.from_email, &subject, &body, Some(&reply_to))
             .await?;
         sqlx::query("UPDATE inquiry_replies SET sent_at = now() WHERE id = $1")
             .bind(reply_id)
@@ -705,6 +713,89 @@ mod inquiry_handlers {
             inquiry_id = %row.inquiry_id,
             to = %row.from_email,
             "artist reply delivered"
+        );
+        Ok(())
+    }
+
+    /// T-054 — forward an inquirer's inbound reply to the artist. The
+    /// reply row was written by the inbound-email webhook with
+    /// `from_role='inquirer'` and a NULL `artist_id`, so the artist is
+    /// resolved through the inquiry, not the reply. Idempotent on
+    /// `inquiry_replies.sent_at` — a second run sees it set and bails.
+    pub async fn send_reply_forward(deps: &JobsDeps, reply_id: Uuid) -> anyhow::Result<()> {
+        #[derive(Debug, FromRow)]
+        struct ForwardRow {
+            message: String,
+            sent_at: Option<chrono::DateTime<chrono::Utc>>,
+            inquiry_id: Uuid,
+            from_name: String,
+            from_email: String,
+            artwork_id: Uuid,
+            artwork_title: Option<String>,
+            artist_email: Option<String>,
+        }
+        let row: ForwardRow = sqlx::query_as(
+            r#"
+            SELECT
+                r.message,
+                r.sent_at,
+                i.id            AS inquiry_id,
+                i.from_name,
+                i.from_email,
+                a.id            AS artwork_id,
+                a.title         AS artwork_title,
+                u.email         AS artist_email
+            FROM inquiry_replies r
+            JOIN inquiries i  ON i.id = r.inquiry_id
+            JOIN artworks  a  ON a.id = i.artwork_id
+            JOIN artists   ar ON ar.id = i.artist_id
+            LEFT JOIN users u ON u.id = ar.user_id
+            WHERE r.id = $1
+            "#,
+        )
+        .bind(reply_id)
+        .fetch_one(&deps.pool)
+        .await?;
+        if row.sent_at.is_some() {
+            tracing::info!(%reply_id, "skip send_reply_forward — already sent");
+            return Ok(());
+        }
+        let Some(artist_email) = row.artist_email.as_deref() else {
+            // Seeded demo artist with no linked user/email — nothing to
+            // forward to. Log + succeed (no retry will help).
+            tracing::warn!(
+                %reply_id,
+                inquiry_id = %row.inquiry_id,
+                "skip forward — artist has no user email"
+            );
+            return Ok(());
+        };
+        let artwork_url = format!(
+            "{base}/artworks/{id}",
+            base = deps.web_base_url.trim_end_matches('/'),
+            id = row.artwork_id,
+        );
+        let (subject, body) = templates::inquirer_reply_forward(
+            &artwork_url,
+            row.artwork_title.as_deref(),
+            &row.from_name,
+            &row.message,
+        );
+        // Reply-To = the inquirer's real email so the artist can respond
+        // directly (or from the studio inbox). Capturing the artist's
+        // *email* reply back into the thread is a deferred follow-up.
+        deps.emails
+            .send(artist_email, &subject, &body, Some(&row.from_email))
+            .await?;
+        sqlx::query("UPDATE inquiry_replies SET sent_at = now() WHERE id = $1")
+            .bind(reply_id)
+            .execute(&deps.pool)
+            .await?;
+        tracing::info!(
+            %reply_id,
+            inquiry_id = %row.inquiry_id,
+            to = %artist_email,
+            "inquirer reply forwarded to artist"
         );
         Ok(())
     }
@@ -896,11 +987,10 @@ mod digest_handlers {
         }
 
         // Fetch the user's email (needed for the To: field).
-        let user: Option<UserRow> =
-            sqlx::query_as("SELECT email FROM users WHERE id = $1")
-                .bind(user_id)
-                .fetch_optional(&deps.pool)
-                .await?;
+        let user: Option<UserRow> = sqlx::query_as("SELECT email FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(&deps.pool)
+            .await?;
         let Some(user) = user else {
             // User vanished between claim and fetch — unusual but
             // harmless. The log row is left behind; nothing to send.
@@ -970,8 +1060,7 @@ mod digest_handlers {
             deps.web_base_url.trim_end_matches('/'),
         );
 
-        let (subject, body) =
-            templates::new_works_digest(&groups, &manage_url, &unsub_url);
+        let (subject, body) = templates::new_works_digest(&groups, &manage_url, &unsub_url);
 
         deps.emails
             .send_notification(&user.email, &subject, &body, &unsub_url)
@@ -1006,9 +1095,7 @@ mod digest_handlers {
                 order.push(slug);
                 display.insert(slug, &row.artist_display_name);
             }
-            let url = Box::leak(
-                format!("{base}/artworks/{}", row.artwork_id).into_boxed_str(),
-            );
+            let url = Box::leak(format!("{base}/artworks/{}", row.artwork_id).into_boxed_str());
             let image_url = row.primary_s3_key.as_deref().map(|k| {
                 let s = url_for_s3_key(k);
                 Box::leak(s.into_boxed_str()) as &str
@@ -1024,9 +1111,8 @@ mod digest_handlers {
             .into_iter()
             .map(|slug| {
                 let artist_display_name = *display.get(slug).expect("slug indexed");
-                let artist_url = Box::leak(
-                    format!("{base}/artists/{slug}").into_boxed_str(),
-                ) as &str;
+                let artist_url =
+                    Box::leak(format!("{base}/artists/{slug}").into_boxed_str()) as &str;
                 DigestArtistGroup {
                     artist_display_name,
                     artist_url,

@@ -62,6 +62,17 @@ pub struct Config {
     /// dev — driven by the `jobs-worker` polling binary). The api
     /// Lambda receives this via env var from `infra/modules/api/`.
     pub jobs_queue_url: Option<String>,
+    /// T-054 — domain the tokenised inquiry reply-to addresses live
+    /// under (`r-<inquiry_id>-<hmac>@<reply_email_domain>`). Prod:
+    /// `reply.wander.gallery`. Used by the jobs handler that emails the
+    /// inquirer an artist reply; the matching inbound webhook verifies
+    /// the token against `anon_cookie_secret`.
+    pub reply_email_domain: String,
+    /// T-054 — shared secret the Cloudflare Email Worker presents (as
+    /// the `X-Inbound-Secret` header) when POSTing parsed inbound mail
+    /// to `/v1/webhooks/email/inbound`. The webhook is closed unless
+    /// this is set AND the header matches. Required in prod.
+    pub inbound_email_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +151,9 @@ impl Config {
             web_base_url: env::var("WEB_BASE_URL")
                 .unwrap_or_else(|_| "http://localhost:3000".to_string()),
             jobs_queue_url: env::var("JOBS_QUEUE_URL").ok(),
+            reply_email_domain: env::var("REPLY_EMAIL_DOMAIN")
+                .unwrap_or_else(|_| "reply.localhost".to_string()),
+            inbound_email_secret: env::var("INBOUND_EMAIL_SECRET").ok(),
         };
 
         // Production sanity checks. Prevent footguns from a missing secret in prod.
@@ -149,6 +163,9 @@ impl Config {
             }
             if cfg.clerk_issuer.is_none() || cfg.clerk_jwks_url.is_none() {
                 anyhow::bail!("CLERK_ISSUER and CLERK_JWKS_URL required in prod");
+            }
+            if cfg.inbound_email_secret.is_none() {
+                anyhow::bail!("INBOUND_EMAIL_SECRET required in prod (inbound-reply webhook auth)");
             }
         }
 
@@ -183,6 +200,8 @@ impl Config {
             uploads_public_url_prefix: "https://test.example.com/uploads".to_string(),
             web_base_url: "https://test.example.com".to_string(),
             jobs_queue_url: None,
+            reply_email_domain: "reply.test.example.com".to_string(),
+            inbound_email_secret: Some("test-inbound-secret".to_string()),
         }
     }
 }
@@ -212,9 +231,10 @@ pub async fn bootstrap_ssm(prefix: &str) -> anyhow::Result<()> {
     let mut next_token: Option<String> = None;
     let mut total = 0usize;
 
-    // SSM caps GetParametersByPath at 10 results per page. Paginate
-    // (we have 9 today so this is one round-trip, but the loop
-    // future-proofs against config growth).
+    // SSM caps GetParametersByPath at 10 results per page. Paginate —
+    // we're at ~10 keys today (right at the one-page boundary; T-054's
+    // inbound_email_secret pushed us here), so the loop now genuinely
+    // earns its keep rather than just future-proofing.
     loop {
         let resp = client
             .get_parameters_by_path()

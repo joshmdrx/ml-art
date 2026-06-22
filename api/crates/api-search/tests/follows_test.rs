@@ -86,8 +86,7 @@ async fn follow_create_204_then_listed(pool: PgPool) {
     .await;
     assert_eq!(status, 204);
 
-    let (status, list): (_, FollowsList) =
-        get_json_authed(app, "/v1/me/follows", BOB).await;
+    let (status, list): (_, FollowsList) = get_json_authed(app, "/v1/me/follows", BOB).await;
     assert_eq!(status, 200);
     assert_eq!(list.items.len(), 1);
     assert_eq!(list.items[0].slug, "alice-test");
@@ -110,8 +109,7 @@ async fn follow_create_is_idempotent(pool: PgPool) {
         assert_eq!(status, 204);
     }
 
-    let (_, list): (_, FollowsList) =
-        get_json_authed(app, "/v1/me/follows", BOB).await;
+    let (_, list): (_, FollowsList) = get_json_authed(app, "/v1/me/follows", BOB).await;
     assert_eq!(list.items.len(), 1, "double-clicks must not duplicate rows");
 }
 
@@ -143,8 +141,7 @@ async fn follow_delete_round_trip(pool: PgPool) {
         None,
     )
     .await;
-    let (_, list): (_, FollowsList) =
-        get_json_authed(app.clone(), "/v1/me/follows", BOB).await;
+    let (_, list): (_, FollowsList) = get_json_authed(app.clone(), "/v1/me/follows", BOB).await;
     assert_eq!(list.items.len(), 1);
 
     // Unfollow → list shows 0
@@ -157,8 +154,7 @@ async fn follow_delete_round_trip(pool: PgPool) {
     )
     .await;
     assert_eq!(status, 204);
-    let (_, list): (_, FollowsList) =
-        get_json_authed(app.clone(), "/v1/me/follows", BOB).await;
+    let (_, list): (_, FollowsList) = get_json_authed(app.clone(), "/v1/me/follows", BOB).await;
     assert_eq!(list.items.len(), 0);
 
     // Second unfollow is still 204 (idempotent)
@@ -197,8 +193,7 @@ async fn follow_list_is_per_user_isolated(pool: PgPool) {
 
     let (_, alice_list): (_, FollowsList) =
         get_json_authed(app.clone(), "/v1/me/follows", ALICE).await;
-    let (_, bob_list): (_, FollowsList) =
-        get_json_authed(app, "/v1/me/follows", BOB).await;
+    let (_, bob_list): (_, FollowsList) = get_json_authed(app, "/v1/me/follows", BOB).await;
 
     assert_eq!(alice_list.items.len(), 1);
     assert_eq!(alice_list.items[0].slug, "bruno-test");

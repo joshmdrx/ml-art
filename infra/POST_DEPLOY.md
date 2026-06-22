@@ -52,10 +52,11 @@ of the cost surface). Free tier is fine for v1 (0.5 GB, autosuspend).
 
 ## 2. Populate SSM secrets
 
-The TF apply creates 9 SecureString parameters with placeholder values.
-Each Lambda reads them on cold start; setting them is the gate between
-"infra is up" and "real responses." `lifecycle.ignore_changes` on
-each parameter means subsequent TF applies *won't* revert your values.
+The TF apply creates a SecureString parameter per key in
+`modules/secrets/main.tf` with placeholder values. Each Lambda reads
+them on cold start; setting them is the gate between "infra is up" and
+"real responses." `lifecycle.ignore_changes` on each parameter means
+subsequent TF applies *won't* revert your values.
 
 Tip: keep a private 1Password / Bitwarden entry titled `ml-art prod
 SSM` mirroring this list. Rotation = update both places.
@@ -75,6 +76,10 @@ P resend_api_key    're_xxxxxxxxxx'                     # https://resend.com
 P resend_from_email 'inquiries@wander.gallery'          # must be verified domain in Resend
 P mapbox_token      'pk.xxxxxxxxxx'                     # https://account.mapbox.com
 P web_base_url      'https://wander.gallery'            # apex; used in email links
+# T-054 — shared secret for the inbound-reply webhook. MUST match the
+# Cloudflare Worker's INBOUND_SECRET (step 7). Both api + jobs Config
+# require it in prod, so set it before redeploying the lambdas.
+P inbound_email_secret "$(openssl rand -hex 32)"        # then copy the value into step 7
 ```
 
 Verify:
@@ -210,6 +215,64 @@ aws --profile ml-art logs tail /aws/lambda/ml-art-prod-jobs --since 1m --follow
 # 4. Web app (after step 4 above)
 open https://wander.gallery
 ```
+
+## 7. Enable Cloudflare Email Routing + deploy the inbound Worker (T-054)
+
+Closes the inquiry loop: when an inquirer replies to an artist-reply
+email, mail lands at `r-<inquiry_id>-<hmac>@reply.wander.gallery`,
+routes through Cloudflare Email Routing → the Email Worker → the
+api-search inbound webhook. The webhook auth + the Worker secret are two
+halves of the same shared secret (`inbound_email_secret` in step 2).
+
+**Prereq:** step 2's `inbound_email_secret` is set, and the api + jobs
+lambdas have been redeployed (step 3) so their warm containers hold it —
+without it, `Config::load` in prod *bails*, so a stale deploy won't boot.
+
+1. **DNS.** `terraform apply` writes the Email Routing MX + SPF for the
+   `reply` subdomain (`modules/dns/email_routing.tf`). Cloudflare assigns
+   MX *priorities* per-zone, so after enabling Email Routing (next step)
+   confirm the three `route{1,2,3}.mx.cloudflare.net` priorities the
+   dashboard shows match what TF applied; reconcile the `local`
+   `email_routing_mx` map if they differ (the records use
+   `allow_overwrite`, so re-apply is safe).
+
+2. **Enable Email Routing for the subdomain.** In the Cloudflare
+   dashboard → **Email → Email Routing**, enable routing and add
+   `reply.wander.gallery` as a custom subdomain (or via the API). This is
+   what makes Cloudflare accept inbound mail for the subdomain at all —
+   it can't be expressed in our Terraform.
+
+3. **Deploy the Worker + set its secret.**
+   ```sh
+   cd infra/email-worker
+   npm install
+   npx wrangler secret put INBOUND_SECRET
+   #   → paste the SAME value you set for SSM inbound_email_secret in step 2
+   npm run deploy
+   ```
+
+4. **Bind the address → Worker.** In **Email Routing → Routing rules**,
+   add a **catch-all** (or a rule matching `r-*@reply.wander.gallery`)
+   with the action **Send to a Worker → `ml-art-inbound-email`**. This is
+   the wiring that hands inbound mail to the Worker.
+
+5. **Verify end-to-end.**
+   ```sh
+   # Simulate the Worker without sending real mail — mint a tokenised
+   # address for a real inquiry id and curl the webhook directly:
+   curl -sS https://api.wander.gallery/v1/webhooks/email/inbound \
+     -H "x-inbound-secret: <the secret>" -H 'content-type: application/json' \
+     -d '{"to":"r-<uuid>-<hmac>@reply.wander.gallery","from":"buyer@example.com",
+          "message":"Still interested!","message_id":"<verify-1@mail>"}'
+   #   → {"status":"accepted"}  (a repeat with the same message_id → "duplicate")
+   ```
+   Then send a real reply from a mailbox and watch the api log:
+   ```sh
+   aws --profile ml-art logs tail /aws/lambda/ml-art-prod-api --since 5m --follow
+   #   → "inbound reply threaded + forward enqueued"
+   ```
+   Confirm a `from_role='inquirer'` row appears in the studio inbox
+   thread and the forward mail reaches the artist.
 
 ## Rotation hygiene
 

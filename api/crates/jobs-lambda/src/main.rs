@@ -84,8 +84,8 @@ async fn main() -> Result<(), Error> {
     // and matches the existing api-search pattern.
     let aws_cfg = aws_config::load_from_env().await;
     let sqs_client = aws_sdk_sqs::Client::new(&aws_cfg);
-    let queue_url = std::env::var("JOBS_QUEUE_URL")
-        .map_err(|_| anyhow::anyhow!("JOBS_QUEUE_URL not set"))?;
+    let queue_url =
+        std::env::var("JOBS_QUEUE_URL").map_err(|_| anyhow::anyhow!("JOBS_QUEUE_URL not set"))?;
     let backend = JobsBackend::sqs(sqs_client, queue_url);
 
     let deps = Arc::new(JobsDeps {
@@ -95,6 +95,7 @@ async fn main() -> Result<(), Error> {
         moderation: ModerationClient::from_env(),
         web_base_url: cfg.web_base_url.clone(),
         anon_cookie_secret: cfg.anon_cookie_secret.clone(),
+        reply_email_domain: cfg.reply_email_domain.clone(),
         jobs: backend,
     });
 

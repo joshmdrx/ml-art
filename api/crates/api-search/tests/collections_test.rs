@@ -545,7 +545,10 @@ async fn make_public_collection(app: axum::Router) -> (String, String) {
     )
     .await;
     let created: Summary = serde_json::from_slice(&bytes).unwrap();
-    let share_id = created.share_id.clone().expect("share_id minted on public create");
+    let share_id = created
+        .share_id
+        .clone()
+        .expect("share_id minted on public create");
 
     let add_body = json!({"artwork_id": ARTWORK_BLUE_MORNING}).to_string();
     let (status, _) = send_authed(
@@ -592,8 +595,7 @@ async fn public_share_private_collection_returns_404(pool: PgPool) {
     )
     .await;
 
-    let (status, _) =
-        common::get_status(app, "/v1/collections/share/aaaaaaaaaaaa").await;
+    let (status, _) = common::get_status(app, "/v1/collections/share/aaaaaaaaaaaa").await;
     assert_eq!(status, 404);
 }
 
@@ -601,8 +603,7 @@ async fn public_share_private_collection_returns_404(pool: PgPool) {
 async fn public_share_unknown_token_returns_404(pool: PgPool) {
     let app = app_with_test_auth(pool);
     // No collections created — any token must 404.
-    let (status, _) =
-        common::get_status(app, "/v1/collections/share/zzzz9999yyyy").await;
+    let (status, _) = common::get_status(app, "/v1/collections/share/zzzz9999yyyy").await;
     assert_eq!(status, 404);
 }
 
@@ -612,11 +613,8 @@ async fn public_share_malformed_token_returns_404(pool: PgPool) {
     // Special chars, too short, too long — all 404 (the API rejects
     // obviously-malformed tokens before hitting the DB).
     for bad in ["short", "a", "../../etc/passwd", "tokenWith!Special"] {
-        let (status, _) = common::get_status(
-            app.clone(),
-            &format!("/v1/collections/share/{bad}"),
-        )
-        .await;
+        let (status, _) =
+            common::get_status(app.clone(), &format!("/v1/collections/share/{bad}")).await;
         assert_eq!(status, 404, "expected 404 for token {bad:?}");
     }
 }
@@ -627,11 +625,7 @@ async fn public_share_id_rotates_on_toggle_old_link_dies(pool: PgPool) {
 
     // Step 1: create + go public → s1
     let (s1, collection_id) = make_public_collection(app.clone()).await;
-    let (status, _) = common::get_status(
-        app.clone(),
-        &format!("/v1/collections/share/{s1}"),
-    )
-    .await;
+    let (status, _) = common::get_status(app.clone(), &format!("/v1/collections/share/{s1}")).await;
     assert_eq!(status, 200, "s1 should work while public");
 
     // Step 2: go private → s1 dies
@@ -645,11 +639,7 @@ async fn public_share_id_rotates_on_toggle_old_link_dies(pool: PgPool) {
     )
     .await;
     assert_eq!(status, 200);
-    let (status, _) = common::get_status(
-        app.clone(),
-        &format!("/v1/collections/share/{s1}"),
-    )
-    .await;
+    let (status, _) = common::get_status(app.clone(), &format!("/v1/collections/share/{s1}")).await;
     assert_eq!(status, 404, "s1 should 404 once collection is private");
 
     // Step 3: go public again → new share_id (s2) ≠ s1
@@ -667,16 +657,12 @@ async fn public_share_id_rotates_on_toggle_old_link_dies(pool: PgPool) {
     assert_ne!(s1, s2, "share_id rotates across the private toggle");
 
     // s1 still 404; s2 works.
-    let (status, _) = common::get_status(
-        app.clone(),
-        &format!("/v1/collections/share/{s1}"),
-    )
-    .await;
-    assert_eq!(status, 404, "old s1 must stay dead even after re-publishing");
-    let (status, _detail): (_, DetailBody) = common::get_json(
-        app,
-        &format!("/v1/collections/share/{s2}"),
-    )
-    .await;
+    let (status, _) = common::get_status(app.clone(), &format!("/v1/collections/share/{s1}")).await;
+    assert_eq!(
+        status, 404,
+        "old s1 must stay dead even after re-publishing"
+    );
+    let (status, _detail): (_, DetailBody) =
+        common::get_json(app, &format!("/v1/collections/share/{s2}")).await;
     assert_eq!(status, 200, "new s2 works");
 }

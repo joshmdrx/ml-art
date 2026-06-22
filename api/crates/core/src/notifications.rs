@@ -142,12 +142,11 @@ pub async fn user_wants(
         return Ok(true);
     }
 
-    let global: Option<bool> = sqlx::query_scalar(
-        "SELECT global_email_notifications_enabled FROM users WHERE id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await?;
+    let global: Option<bool> =
+        sqlx::query_scalar("SELECT global_email_notifications_enabled FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?;
     // Unknown user → don't send. Caller is the one with a bad id.
     let Some(global) = global else {
         return Ok(false);
@@ -272,8 +271,8 @@ mod tests {
     #[test]
     fn token_roundtrip_returns_user_id_and_kind() {
         let user_id = Uuid::new_v4();
-        let token = mint_unsubscribe_token(user_id, NotificationKind::NewWorksDigest, SECRET)
-            .unwrap();
+        let token =
+            mint_unsubscribe_token(user_id, NotificationKind::NewWorksDigest, SECRET).unwrap();
         let (got_id, got_kind) = verify_unsubscribe_token(&token, SECRET).unwrap();
         assert_eq!(got_id, user_id);
         assert_eq!(got_kind, NotificationKind::NewWorksDigest);
@@ -282,8 +281,8 @@ mod tests {
     #[test]
     fn token_rejected_when_signed_with_different_secret() {
         let user_id = Uuid::new_v4();
-        let token = mint_unsubscribe_token(user_id, NotificationKind::NewWorksDigest, SECRET)
-            .unwrap();
+        let token =
+            mint_unsubscribe_token(user_id, NotificationKind::NewWorksDigest, SECRET).unwrap();
         let err = verify_unsubscribe_token(&token, b"different-secret").unwrap_err();
         assert!(matches!(err, UnsubscribeError::Invalid));
     }
@@ -291,8 +290,8 @@ mod tests {
     #[test]
     fn token_rejected_when_tampered() {
         let user_id = Uuid::new_v4();
-        let token = mint_unsubscribe_token(user_id, NotificationKind::NewWorksDigest, SECRET)
-            .unwrap();
+        let token =
+            mint_unsubscribe_token(user_id, NotificationKind::NewWorksDigest, SECRET).unwrap();
         // Flip a byte in the middle of the (base64) payload.
         let mut bytes: Vec<u8> = token.into_bytes();
         let mid = bytes.len() / 2;

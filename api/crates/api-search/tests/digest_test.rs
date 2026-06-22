@@ -42,6 +42,7 @@ fn make_deps(pool: PgPool) -> JobsDeps {
         moderation: ModerationClient::disabled(),
         web_base_url: "https://wander.gallery".to_string(),
         anon_cookie_secret: "test-cookie-secret".to_string(),
+        reply_email_domain: "reply.test.example.com".to_string(),
         // In-memory backend captures enqueued events from the kickoff
         // handler so we can assert on what got fanned out.
         jobs: JobsBackend::for_tests(),
@@ -50,11 +51,7 @@ fn make_deps(pool: PgPool) -> JobsDeps {
 
 /// Seed a follow + a freshly-published artwork in the window the digest
 /// looks at. Returns the artwork id for assertions.
-async fn make_follow_and_new_work(
-    pool: &PgPool,
-    user_id: Uuid,
-    artist_id: Uuid,
-) -> Uuid {
+async fn make_follow_and_new_work(pool: &PgPool, user_id: Uuid, artist_id: Uuid) -> Uuid {
     sqlx::query(
         "INSERT INTO follows (user_id, artist_id, created_at) VALUES ($1, $2, now() - interval '2 hours')",
     )
@@ -350,7 +347,9 @@ async fn per_user_handler_multi_artist_subject(pool: PgPool) {
     let sent = deps.emails.captured();
     assert_eq!(sent.len(), 1);
     assert!(
-        sent[0].subject.contains("new works from artists you follow"),
+        sent[0]
+            .subject
+            .contains("new works from artists you follow"),
         "expected multi-artist subject, got {:?}",
         sent[0].subject
     );

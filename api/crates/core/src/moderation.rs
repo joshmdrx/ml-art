@@ -167,12 +167,11 @@ pub async fn moderate_artwork_image(
     pool: &crate::db::Pool,
     artwork_image_id: uuid::Uuid,
 ) -> Result<(), ModerationError> {
-    let row: Option<(String,)> = sqlx::query_as(
-        r#"SELECT s3_key FROM artwork_images WHERE id = $1"#,
-    )
-    .bind(artwork_image_id)
-    .fetch_optional(pool)
-    .await?;
+    let row: Option<(String,)> =
+        sqlx::query_as(r#"SELECT s3_key FROM artwork_images WHERE id = $1"#)
+            .bind(artwork_image_id)
+            .fetch_optional(pool)
+            .await?;
 
     let Some((s3_key,)) = row else {
         tracing::debug!(%artwork_image_id, "artwork_image row gone before moderation ran");
@@ -229,11 +228,10 @@ pub async fn moderate_upload(
     pool: &crate::db::Pool,
     upload_id: uuid::Uuid,
 ) -> Result<(), ModerationError> {
-    let row: Option<(String,)> =
-        sqlx::query_as(r#"SELECT s3_key FROM uploads WHERE id = $1"#)
-            .bind(upload_id)
-            .fetch_optional(pool)
-            .await?;
+    let row: Option<(String,)> = sqlx::query_as(r#"SELECT s3_key FROM uploads WHERE id = $1"#)
+        .bind(upload_id)
+        .fetch_optional(pool)
+        .await?;
 
     let Some((s3_key,)) = row else {
         tracing::debug!(%upload_id, "upload row gone before moderation ran");

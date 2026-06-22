@@ -177,7 +177,11 @@ pub async fn handle(
     // "based in" on the artist, OR exact match on the venue's ISO
     // country code (with synonym expansion: "uk" → "GB"). Catches
     // the common user cases that the old city-only path missed.
-    if let Some(loc) = params.location.as_deref().and_then(LocationTerms::from_query) {
+    if let Some(loc) = params
+        .location
+        .as_deref()
+        .and_then(LocationTerms::from_query)
+    {
         sql.push_str(" AND (");
         // City substring (on the artist_locations row).
         sql.push_str("lower(al.city) LIKE");

@@ -256,15 +256,22 @@ pub async fn handle(
     }
 
     let has_text = params.q.as_deref().is_some_and(|q| !q.trim().is_empty());
-    let has_visual_anchor =
-        params.image_upload_id.is_some() || params.seed_artwork_id.is_some();
+    let has_visual_anchor = params.image_upload_id.is_some() || params.seed_artwork_id.is_some();
 
     // Fetch limit+1 so we can detect whether a next page exists
     // without a separate COUNT query. If we got back limit+1 rows,
     // drop the sentinel and issue a cursor pointing to the next
     // page's start. T-037.
     let mut items = if has_text || has_visual_anchor {
-        run_hybrid(&state, &params, semantic_anchor.as_ref(), sort, limit, offset).await?
+        run_hybrid(
+            &state,
+            &params,
+            semantic_anchor.as_ref(),
+            sort,
+            limit,
+            offset,
+        )
+        .await?
     } else {
         run_no_query(&state, &params, sort, limit, offset).await?
     };
@@ -273,8 +280,7 @@ pub async fn handle(
     if has_next {
         items.truncate(limit as usize);
     }
-    let next_cursor = has_next
-        .then(|| PageCursor::from_offset(offset + limit).encode());
+    let next_cursor = has_next.then(|| PageCursor::from_offset(offset + limit).encode());
 
     Ok(Json(Paginated { items, next_cursor }))
 }

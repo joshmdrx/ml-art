@@ -59,6 +59,11 @@ locals {
     # safe to expose; they're write-only).
     "sentry_dsn_web",
     "sentry_dsn_api",
+    # T-054 — shared secret the Cloudflare Email Worker presents in the
+    # X-Inbound-Secret header on the inbound-reply webhook. The api
+    # Lambda compares against it (constant-time); both api + jobs
+    # Config::load require it in prod. Generate with `openssl rand -hex 32`.
+    "inbound_email_secret",
   ]
 }
 

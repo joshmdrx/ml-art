@@ -153,8 +153,7 @@ async fn q_with_no_matches_returns_empty(pool: PgPool) {
 async fn medium_filter_restricts_cities(pool: PgPool) {
     // Sculpture → only bruno (Berlin).
     let app = app_keyword_only(pool);
-    let (_, cities): (_, Vec<City>) =
-        get_json(app, "/v1/search/map/cities?medium=Sculpture").await;
+    let (_, cities): (_, Vec<City>) = get_json(app, "/v1/search/map/cities?medium=Sculpture").await;
     assert_eq!(cities.len(), 1);
     assert_eq!(cities[0].city, "Berlin");
 }
@@ -166,7 +165,10 @@ async fn q_and_medium_compose(pool: PgPool) {
     let app = app_keyword_only(pool);
     let (_, cities): (_, Vec<City>) =
         get_json(app, "/v1/search/map/cities?q=blue&medium=Sculpture").await;
-    assert!(cities.is_empty(), "q + medium intersect, no city matches both");
+    assert!(
+        cities.is_empty(),
+        "q + medium intersect, no city matches both"
+    );
 }
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
@@ -175,8 +177,7 @@ async fn artist_ids_restricts_cities_to_those_artists(pool: PgPool) {
     // Alice → only London. Order matters: passing a subset of
     // artist_ids must shrink the result, not widen it.
     let app = app_keyword_only(pool);
-    let url =
-        "/v1/search/map/cities?artist_ids=aaa11111-1111-1111-1111-111111111111";
+    let url = "/v1/search/map/cities?artist_ids=aaa11111-1111-1111-1111-111111111111";
     let (_, cities): (_, Vec<City>) = get_json(app, url).await;
     let names: Vec<&str> = cities.iter().map(|c| c.city.as_str()).collect();
     assert_eq!(names, vec!["London"]);
@@ -187,8 +188,7 @@ async fn artist_ids_empty_after_dedup_is_treated_as_no_filter(pool: PgPool) {
     // Two empty tokens + whitespace → parser yields None → behaves
     // like the no-filter case.
     let app = app_keyword_only(pool);
-    let (_, cities): (_, Vec<City>) =
-        get_json(app, "/v1/search/map/cities?artist_ids=,%20,").await;
+    let (_, cities): (_, Vec<City>) = get_json(app, "/v1/search/map/cities?artist_ids=,%20,").await;
     // Same as the no-filter test: both seeded cities show.
     assert!(cities.iter().any(|c| c.city == "London"));
     assert!(cities.iter().any(|c| c.city == "Berlin"));
@@ -198,7 +198,6 @@ async fn artist_ids_empty_after_dedup_is_treated_as_no_filter(pool: PgPool) {
 async fn artist_ids_invalid_uuid_returns_400(pool: PgPool) {
     use common::get_status;
     let app = app_keyword_only(pool);
-    let (status, _) =
-        get_status(app, "/v1/search/map/cities?artist_ids=not-a-uuid").await;
+    let (status, _) = get_status(app, "/v1/search/map/cities?artist_ids=not-a-uuid").await;
     assert_eq!(status, 400);
 }

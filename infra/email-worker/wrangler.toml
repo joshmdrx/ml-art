@@ -1,0 +1,21 @@
+# Cloudflare Email Worker — inbound inquiry replies (T-054).
+#
+# Receives mail routed by Cloudflare Email Routing for the
+# reply.wander.gallery subdomain (see infra/modules/dns/email_routing.tf),
+# extracts the latest reply text, and POSTs it to the api-search inbound
+# webhook authenticated with a shared secret.
+#
+# Binding the address → this Worker is an Email Routing rule, configured
+# out-of-band (dashboard/API) — wrangler.toml defines the Worker but not
+# the inbound route. See infra/POST_DEPLOY.md.
+
+name = "ml-art-inbound-email"
+main = "src/index.ts"
+compatibility_date = "2026-06-01"
+
+# Plain (non-secret) config. The webhook origin. INBOUND_SECRET is NOT
+# here — it's a Worker secret set with `wrangler secret put INBOUND_SECRET`
+# so it never lands in version control. It must match the value in the
+# SSM parameter /ml-art-prod/inbound_email_secret that the api Lambda reads.
+[vars]
+REPLY_WEBHOOK_URL = "https://api.wander.gallery/v1/webhooks/email/inbound"

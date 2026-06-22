@@ -53,12 +53,11 @@ pub async fn queue_follow(
     };
 
     // 404 on unknown / soft-deleted artist before consuming a row.
-    let exists: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM artists WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(artist_id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let exists: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM artists WHERE id = $1 AND deleted_at IS NULL")
+            .bind(artist_id)
+            .fetch_optional(&state.pool)
+            .await?;
     if exists.is_none() {
         return Err(ApiError::NotFound);
     }

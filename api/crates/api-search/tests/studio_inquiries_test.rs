@@ -170,7 +170,10 @@ async fn inbox_lists_alices_inquiries_newest_first(pool: PgPool) {
     assert_eq!(page.items[0].from_name, "Sam Collector");
     assert_eq!(page.items[0].status, "delivered");
     assert!(page.items[0].artwork_primary_image_url.is_some());
-    assert_eq!(page.items[0].artwork_title.as_deref(), Some("Crimson Field"));
+    assert_eq!(
+        page.items[0].artwork_title.as_deref(),
+        Some("Crimson Field")
+    );
 
     assert_eq!(page.items[1].from_name, "Anon Curious");
     assert_eq!(page.items[1].status, "pending_verification");
@@ -352,8 +355,7 @@ async fn budget_range_string_round_trips(pool: PgPool) {
     .unwrap();
 
     let app = app_with_test_auth(pool);
-    let (_, page): (_, Page<Inquiry>) =
-        get_json_authed(app, "/v1/studio/inquiries", ALICE).await;
+    let (_, page): (_, Page<Inquiry>) = get_json_authed(app, "/v1/studio/inquiries", ALICE).await;
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].budget_range.as_deref(), Some("£500-1k"));
 }
@@ -474,15 +476,14 @@ async fn reply_to_other_artists_inquiry_is_404(pool: PgPool) {
         1,
     )
     .await;
-    let id: String =
-        sqlx::query_scalar::<_, sqlx::types::Uuid>(
-            "SELECT id FROM inquiries WHERE artist_id = $1::uuid LIMIT 1",
-        )
-        .bind(ARTIST_BRUNO)
-        .fetch_one(&pool)
-        .await
-        .unwrap()
-        .to_string();
+    let id: String = sqlx::query_scalar::<_, sqlx::types::Uuid>(
+        "SELECT id FROM inquiries WHERE artist_id = $1::uuid LIMIT 1",
+    )
+    .bind(ARTIST_BRUNO)
+    .fetch_one(&pool)
+    .await
+    .unwrap()
+    .to_string();
     let app = app_with_test_auth(pool);
     let (status, _) = post_json_authed(
         app,
@@ -556,14 +557,13 @@ async fn mark_read_flips_only_owned_unread(pool: PgPool) {
         5,
     )
     .await;
-    let ids: Vec<String> =
-        sqlx::query_scalar::<_, sqlx::types::Uuid>("SELECT id FROM inquiries")
-            .fetch_all(&pool)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|u| u.to_string())
-            .collect();
+    let ids: Vec<String> = sqlx::query_scalar::<_, sqlx::types::Uuid>("SELECT id FROM inquiries")
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|u| u.to_string())
+        .collect();
     let app = app_with_test_auth(pool.clone());
 
     let (status, bytes) = post_json_authed(

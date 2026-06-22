@@ -193,9 +193,7 @@ async fn search_anchor_status(app: Router, upload_id: Uuid) -> StatusCode {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!(
-                    "/v1/search?image_upload_id={upload_id}&limit=1"
-                ))
+                .uri(format!("/v1/search?image_upload_id={upload_id}&limit=1"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -252,11 +250,10 @@ async fn double_enqueue_dedups(pool: PgPool) {
         .await
         .unwrap();
 
-    let (n,): (i64,) =
-        sqlx::query_as("SELECT count(*) FROM jobs WHERE idempotency_key = $1")
-            .bind(&key)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM jobs WHERE idempotency_key = $1")
+        .bind(&key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(n, 1, "second enqueue with same key is a no-op");
 }

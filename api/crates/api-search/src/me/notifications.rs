@@ -10,10 +10,7 @@
 //! that callers use to gate sends.
 
 use axum::{extract::State, http::StatusCode, Json};
-use ml_art_core::{
-    error::ApiError,
-    notifications::NotificationKind,
-};
+use ml_art_core::{error::ApiError, notifications::NotificationKind};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 
@@ -74,13 +71,11 @@ pub async fn patch(
     let mut tx = state.pool.begin().await?;
 
     if let Some(global) = body.global_enabled {
-        sqlx::query(
-            "UPDATE users SET global_email_notifications_enabled = $1 WHERE id = $2",
-        )
-        .bind(global)
-        .bind(user.id)
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("UPDATE users SET global_email_notifications_enabled = $1 WHERE id = $2")
+            .bind(global)
+            .bind(user.id)
+            .execute(&mut *tx)
+            .await?;
     }
 
     if let Some(kinds) = body.kinds {
@@ -111,19 +106,17 @@ async fn load_preferences(
     pool: &sqlx::PgPool,
     user_id: uuid::Uuid,
 ) -> Result<PreferencesResponse, ApiError> {
-    let global: bool = sqlx::query_scalar(
-        "SELECT global_email_notifications_enabled FROM users WHERE id = $1",
-    )
-    .bind(user_id)
-    .fetch_one(pool)
-    .await?;
+    let global: bool =
+        sqlx::query_scalar("SELECT global_email_notifications_enabled FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await?;
 
-    let rows: Vec<(String, bool)> = sqlx::query_as(
-        "SELECT kind, enabled FROM notification_preferences WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<(String, bool)> =
+        sqlx::query_as("SELECT kind, enabled FROM notification_preferences WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_all(pool)
+            .await?;
     let overrides: HashMap<String, bool> = rows.into_iter().collect();
 
     // Always return every user-facing kind. Default-on if no override

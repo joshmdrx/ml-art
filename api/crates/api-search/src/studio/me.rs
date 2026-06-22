@@ -69,13 +69,12 @@ pub async fn current_artist(
     .await?
     .ok_or(ApiError::NotFound)?;
 
-    let follower_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM follows WHERE artist_id = $1",
-    )
-    .bind(artist.id)
-    .fetch_one(&state.pool)
-    .await
-    .unwrap_or(0);
+    let follower_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM follows WHERE artist_id = $1")
+            .bind(artist.id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0);
 
     Ok(Json(StudioMe {
         artist,

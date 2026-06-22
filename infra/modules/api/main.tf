@@ -221,6 +221,12 @@ resource "aws_lambda_function" "api" {
       IMAGE_BASE_URL            = "https://images.wander.gallery"
       UPLOADS_PUBLIC_URL_PREFIX = "https://images.wander.gallery"
       RESEND_FROM_EMAIL         = "info@wander.gallery"
+      # T-054 — subdomain the tokenised inquiry Reply-To addresses live
+      # under (`r-<id>-<hmac>@reply.wander.gallery`). Cloudflare Email
+      # Routing MX for this subdomain forwards to the inbound Worker.
+      # Static, non-secret → TF env. INBOUND_EMAIL_SECRET (the webhook
+      # auth secret) is a SecureString in SSM, layered on by bootstrap_ssm.
+      REPLY_EMAIL_DOMAIN = "reply.wander.gallery"
     }
   }
 

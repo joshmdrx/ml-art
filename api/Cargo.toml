@@ -49,6 +49,13 @@ base64 = "0.22"
 # Auth
 jsonwebtoken = "9"
 
+# HMAC for tokenised inquiry reply-to addresses (T-054). A full JWT is
+# too long for an email local-part (RFC 5321 caps it at 64 chars), so the
+# reply address embeds a truncated HMAC-SHA256, hex-encoded.
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
 # Errors + logging
 thiserror = "2"
 anyhow = "1"

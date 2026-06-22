@@ -59,12 +59,11 @@ pub async fn create(
     // the worst case is following an artist who's just been
     // soft-deleted — handle that with a public-surface filter (we
     // already do).
-    let exists: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM artists WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(artist_id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let exists: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM artists WHERE id = $1 AND deleted_at IS NULL")
+            .bind(artist_id)
+            .fetch_optional(&state.pool)
+            .await?;
     if exists.is_none() {
         return Err(ApiError::NotFound);
     }

@@ -140,13 +140,12 @@ pub async fn handle(
     //    is_following flag. Two queries because the count is unconditional
     //    and the flag is per-caller; combining them would mean coalescing
     //    a NULL for signed-out requests for marginal gain.
-    let follower_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM follows WHERE artist_id = $1",
-    )
-    .bind(artist.id)
-    .fetch_one(&state.pool)
-    .await
-    .unwrap_or(0);
+    let follower_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM follows WHERE artist_id = $1")
+            .bind(artist.id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0);
 
     let is_following = match &auth {
         Some(AuthedUser(user)) => sqlx::query_scalar::<_, bool>(

@@ -54,7 +54,11 @@ async fn prefs_get_returns_defaults_for_clean_user(pool: PgPool) {
     assert!(prefs.global_enabled, "global default should be on");
     // Every user-facing kind should be present, default-on.
     let nwd = prefs.kinds.get("new_works_digest").copied();
-    assert_eq!(nwd, Some(true), "kinds map should include new_works_digest=true by default");
+    assert_eq!(
+        nwd,
+        Some(true),
+        "kinds map should include new_works_digest=true by default"
+    );
     // Transactional kinds are NOT in the map (no toggle for them).
     assert!(!prefs.kinds.contains_key("inquiry_verification"));
     assert!(!prefs.kinds.contains_key("inquiry_reply"));
@@ -203,8 +207,8 @@ async fn unsubscribe_flips_preference(pool: PgPool) {
     let app = app_with_test_auth(pool);
 
     let user_id = Uuid::parse_str(ALICE_USER_ID).unwrap();
-    let token = mint_unsubscribe_token(user_id, NotificationKind::NewWorksDigest, TEST_SECRET)
-        .unwrap();
+    let token =
+        mint_unsubscribe_token(user_id, NotificationKind::NewWorksDigest, TEST_SECRET).unwrap();
     let body = json!({"token": token}).to_string();
 
     let (status, ack): (_, UnsubscribeAck) = {
@@ -230,8 +234,8 @@ async fn unsubscribe_flips_preference(pool: PgPool) {
 async fn unsubscribe_is_idempotent(pool: PgPool) {
     let app = app_with_test_auth(pool);
     let user_id = Uuid::parse_str(ALICE_USER_ID).unwrap();
-    let token = mint_unsubscribe_token(user_id, NotificationKind::NewWorksDigest, TEST_SECRET)
-        .unwrap();
+    let token =
+        mint_unsubscribe_token(user_id, NotificationKind::NewWorksDigest, TEST_SECRET).unwrap();
     let body = json!({"token": token}).to_string();
 
     for _ in 0..3 {
@@ -250,8 +254,8 @@ async fn unsubscribe_is_idempotent(pool: PgPool) {
 async fn unsubscribe_oneclick_returns_204(pool: PgPool) {
     let app = app_with_test_auth(pool);
     let user_id = Uuid::parse_str(ALICE_USER_ID).unwrap();
-    let token = mint_unsubscribe_token(user_id, NotificationKind::NewWorksDigest, TEST_SECRET)
-        .unwrap();
+    let token =
+        mint_unsubscribe_token(user_id, NotificationKind::NewWorksDigest, TEST_SECRET).unwrap();
     let body = json!({"token": token}).to_string();
 
     let (status, _) = common::send_json(
@@ -279,8 +283,7 @@ async fn unsubscribe_rejects_token_signed_with_different_secret(pool: PgPool) {
     let user_id = Uuid::parse_str(ALICE_USER_ID).unwrap();
     // Token signed with the WRONG secret — the API won't accept it.
     let token =
-        mint_unsubscribe_token(user_id, NotificationKind::NewWorksDigest, b"wrong-secret")
-            .unwrap();
+        mint_unsubscribe_token(user_id, NotificationKind::NewWorksDigest, b"wrong-secret").unwrap();
     let body = json!({"token": token}).to_string();
     let (status, _) =
         common::send_json(app, "POST", "/v1/notifications/unsubscribe", Some(&body)).await;

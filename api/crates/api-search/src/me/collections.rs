@@ -325,9 +325,7 @@ pub async fn public_by_share(
     // random paths.
     if share_id.len() < 8
         || share_id.len() > 64
-        || !share_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric())
+        || !share_id.chars().all(|c| c.is_ascii_alphanumeric())
     {
         return Err(ApiError::NotFound);
     }

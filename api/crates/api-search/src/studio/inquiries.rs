@@ -78,6 +78,10 @@ pub struct StudioInquiry {
 #[derive(Debug, Serialize)]
 pub struct InquiryReply {
     pub id: Uuid,
+    /// `"artist"` for a studio-inbox reply, `"inquirer"` for a reply
+    /// stitched back in from the inbound-email webhook (T-054). Drives
+    /// the sender chip + alignment in the inbox thread.
+    pub from_role: String,
     pub message: String,
     pub created_at: DateTime<Utc>,
     /// Set once the email handler completes the Resend send.
@@ -114,6 +118,7 @@ struct InquiryRow {
 struct ReplyRow {
     id: Uuid,
     inquiry_id: Uuid,
+    from_role: String,
     message: String,
     created_at: DateTime<Utc>,
     sent_at: Option<DateTime<Utc>>,
@@ -215,7 +220,7 @@ pub async fn list(
     } else {
         sqlx::query_as(
             r#"
-            SELECT r.id, r.inquiry_id, r.message, r.created_at, r.sent_at
+            SELECT r.id, r.inquiry_id, r.from_role, r.message, r.created_at, r.sent_at
             FROM inquiry_replies r
             JOIN inquiries i ON i.id = r.inquiry_id
             WHERE i.artist_id = $1
@@ -239,6 +244,7 @@ pub async fn list(
             .or_default()
             .push(InquiryReply {
                 id: r.id,
+                from_role: r.from_role,
                 message: r.message,
                 created_at: r.created_at,
                 sent_at: r.sent_at,
@@ -323,6 +329,7 @@ pub async fn reply(
 
     Ok(Json(InquiryReply {
         id: reply_id,
+        from_role: "artist".into(),
         message: message.to_string(),
         created_at,
         sent_at: None,

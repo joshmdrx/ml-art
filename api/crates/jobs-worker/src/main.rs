@@ -39,9 +39,9 @@ async fn main() -> anyhow::Result<()> {
     //   cargo run -p jobs-worker -- --enqueue '{"kind":"notify_followers_digest_kickoff","payload":{}}'
     let args: Vec<String> = std::env::args().collect();
     if let Some(idx) = args.iter().position(|a| a == "--enqueue") {
-        let payload = args.get(idx + 1).ok_or_else(|| {
-            anyhow::anyhow!("--enqueue requires a JSON event argument")
-        })?;
+        let payload = args
+            .get(idx + 1)
+            .ok_or_else(|| anyhow::anyhow!("--enqueue requires a JSON event argument"))?;
         let evt: JobEvent = serde_json::from_str(payload)
             .map_err(|e| anyhow::anyhow!("invalid JobEvent JSON: {e}"))?;
         backend.enqueue(evt.clone(), Default::default()).await?;
@@ -56,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
         moderation,
         web_base_url: cfg.web_base_url.clone(),
         anon_cookie_secret: cfg.anon_cookie_secret.clone(),
+        reply_email_domain: cfg.reply_email_domain.clone(),
         jobs: backend,
     };
 

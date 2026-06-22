@@ -129,6 +129,7 @@ async fn full_loop_geocodes_via_handler(pool: PgPool) {
         moderation: ml_art_core::moderation::ModerationClient::disabled(),
         web_base_url: "https://test.example.com".to_string(),
         anon_cookie_secret: "test-cookie-secret".to_string(),
+        reply_email_domain: "reply.test.example.com".to_string(),
         jobs: ml_art_core::jobs::JobsBackend::for_tests(),
     };
 
@@ -249,4 +250,127 @@ async fn studio_create_enqueues_the_geocode(pool: PgPool) {
             .await
             .unwrap();
     assert_eq!(count.0, 1);
+}
+
+// ── T-054 — inquiry-reply email handlers ─────────────────────────────────────
+
+const ALICE_ARTIST: &str = "aaa11111-1111-1111-1111-111111111111";
+const BLUE_MORNING: &str = "bbb11111-1111-1111-1111-111111111111";
+
+/// Build `JobsDeps` whose `EmailClient` is the supplied capture handle.
+/// Geocoder/moderation are inert — these tests only exercise the email
+/// path. Secret + domain match `Config::for_tests` so a minted Reply-To
+/// round-trips under the same secret.
+fn email_deps(pool: PgPool, emails: EmailClient) -> JobsDeps {
+    JobsDeps {
+        pool,
+        geocoder: GeocodingClient::for_tests(vec![]),
+        emails,
+        moderation: ml_art_core::moderation::ModerationClient::disabled(),
+        web_base_url: "https://test.example.com".to_string(),
+        anon_cookie_secret: "test-cookie-secret".to_string(),
+        reply_email_domain: "reply.test.example.com".to_string(),
+        jobs: JobsBackend::for_tests(),
+    }
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn send_reply_uses_tokenised_reply_to(pool: PgPool) {
+    let alice = Uuid::parse_str(ALICE_ARTIST).unwrap();
+    let blue = Uuid::parse_str(BLUE_MORNING).unwrap();
+
+    let inquiry_id: Uuid = sqlx::query_scalar(
+        r#"INSERT INTO inquiries (artwork_id, artist_id, from_email, from_name, message)
+           VALUES ($1, $2, 'buyer@example.com', 'Buyer', 'Is this available?')
+           RETURNING id"#,
+    )
+    .bind(blue)
+    .bind(alice)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // Alice's outgoing studio reply (from_role defaults to 'artist').
+    let reply_id: Uuid = sqlx::query_scalar(
+        r#"INSERT INTO inquiry_replies (inquiry_id, artist_id, message)
+           VALUES ($1, $2, 'Yes, it is!')
+           RETURNING id"#,
+    )
+    .bind(inquiry_id)
+    .bind(alice)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let emails = EmailClient::for_tests();
+    let deps = email_deps(pool.clone(), emails.clone());
+    jobs::handle(JobEvent::InquirySendReply { reply_id }, &deps)
+        .await
+        .unwrap();
+
+    let sent = emails.captured();
+    assert_eq!(sent.len(), 1);
+    let email = &sent[0];
+    // Goes to the inquirer; Reply-To is the tokenised per-inquiry address.
+    assert_eq!(email.to, "buyer@example.com");
+    let reply_to = email.reply_to.as_deref().expect("reply_to set");
+    assert!(reply_to.starts_with("r-"), "got {reply_to}");
+    assert!(
+        reply_to.ends_with("@reply.test.example.com"),
+        "got {reply_to}"
+    );
+    // …and it round-trips back to THIS inquiry under the shared secret.
+    let resolved = ml_art_core::reply_address::verify(reply_to, b"test-cookie-secret");
+    assert_eq!(resolved, Some(inquiry_id));
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn send_reply_forward_emails_artist_with_inquirer_reply_to(pool: PgPool) {
+    let alice = Uuid::parse_str(ALICE_ARTIST).unwrap();
+    let blue = Uuid::parse_str(BLUE_MORNING).unwrap();
+
+    let inquiry_id: Uuid = sqlx::query_scalar(
+        r#"INSERT INTO inquiries (artwork_id, artist_id, from_email, from_name, message)
+           VALUES ($1, $2, 'buyer@example.com', 'Buyer', 'Is this available?')
+           RETURNING id"#,
+    )
+    .bind(blue)
+    .bind(alice)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // An inquirer-inbound reply row, exactly as the webhook writes it:
+    // NULL artist_id, from_role='inquirer'.
+    let reply_id: Uuid = sqlx::query_scalar(
+        r#"INSERT INTO inquiry_replies (inquiry_id, from_role, message, inbound_message_id)
+           VALUES ($1, 'inquirer', 'Yes, still very interested!', '<m-1@mail>')
+           RETURNING id"#,
+    )
+    .bind(inquiry_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let emails = EmailClient::for_tests();
+    let deps = email_deps(pool.clone(), emails.clone());
+    jobs::handle(JobEvent::InquirySendReplyForward { reply_id }, &deps)
+        .await
+        .unwrap();
+
+    let sent = emails.captured();
+    assert_eq!(sent.len(), 1);
+    let email = &sent[0];
+    // Forwarded to Alice's user email; Reply-To = the inquirer's address.
+    assert_eq!(email.to, "alice@example.com");
+    assert_eq!(email.reply_to.as_deref(), Some("buyer@example.com"));
+
+    // sent_at is now set — the idempotency guard a retry would hit.
+    let sent_flag: bool =
+        sqlx::query_scalar("SELECT sent_at IS NOT NULL FROM inquiry_replies WHERE id = $1")
+            .bind(reply_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(sent_flag, "forward should stamp sent_at");
 }

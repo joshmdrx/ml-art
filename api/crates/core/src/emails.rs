@@ -130,8 +130,8 @@ impl EmailClient {
             .await
     }
 
-    /// Notification-flavoured send. Wraps `send` with `List-Unsubscribe`
-    /// + `List-Unsubscribe-Post` headers so Gmail/Outlook honour the
+    /// Notification-flavoured send. Wraps `send` with `List-Unsubscribe` +
+    /// `List-Unsubscribe-Post` headers so Gmail/Outlook honour the
     /// `unsubscribe_url` for one-click (RFC 8058) AND show their
     /// built-in unsubscribe UI prominently — both improve our sender
     /// reputation. The URL also belongs in the footer copy of the
@@ -210,6 +210,7 @@ impl EmailClient {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_via_resend(
     http: &reqwest::Client,
     api_key: &str,
@@ -393,6 +394,37 @@ pub mod templates {
             url = artwork_url,
             title = escape_html(title),
             artist = escape_html(artist_display_name),
+            name = escape_html(inquirer_name),
+            msg = escape_html(message).replace('\n', "<br />"),
+        );
+        (subject, body)
+    }
+
+    /// T-054 — email sent to the artist when the *inquirer* replies to a
+    /// thread (their reply arrived via the inbound-email webhook). The
+    /// mirror of `artist_reply`: same look, message flowing inquirer →
+    /// artist. `reply_to` is set by the handler to the inquirer's real
+    /// address so the artist can respond from the studio inbox or by
+    /// hitting reply. Returns `(subject, body_html)`.
+    pub fn inquirer_reply_forward(
+        artwork_url: &str,
+        artwork_title: Option<&str>,
+        inquirer_name: &str,
+        message: &str,
+    ) -> (String, String) {
+        let title = artwork_title.unwrap_or("your artwork");
+        let subject = format!("New reply from {inquirer_name} about {title}");
+        let body = format!(
+            r#"<div style="font-family: -apple-system, system-ui, sans-serif; max-width: 560px; margin: 0 auto;">
+  <p style="font-size: 14px; color: #444; margin: 0 0 4px;">
+    <strong>{name}</strong> replied to their inquiry about
+    <a href="{url}" style="color: #111;">{title}</a>:
+  </p>
+  <blockquote style="border-left: 3px solid #ddd; padding-left: 12px; color: #333; margin: 16px 0;">{msg}</blockquote>
+  <p style="font-size: 13px; color: #666;">Reply from your studio inbox, or hit reply to respond to {name} directly.</p>
+</div>"#,
+            url = artwork_url,
+            title = escape_html(title),
             name = escape_html(inquirer_name),
             msg = escape_html(message).replace('\n', "<br />"),
         );

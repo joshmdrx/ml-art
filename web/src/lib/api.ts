@@ -334,10 +334,13 @@ export interface StudioInquiry {
   replies: StudioInquiryReply[];
 }
 
-/** One artist reply on a `StudioInquiry`. `sent_at` is set by the email
- * handler once Resend confirms the send; null while in-flight. */
+/** One reply on a `StudioInquiry`. `sent_at` is set by the email
+ * handler once Resend confirms the send; null while in-flight.
+ * `from_role` distinguishes the artist's studio replies from the
+ * inquirer's email-stitched replies (T-054). */
 export interface StudioInquiryReply {
   id: string;
+  from_role: "artist" | "inquirer";
   message: string;
   created_at: string;
   sent_at: string | null;

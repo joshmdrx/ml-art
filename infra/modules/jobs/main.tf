@@ -222,6 +222,10 @@ resource "aws_lambda_function" "jobs" {
       IMAGE_BASE_URL            = "https://images.wander.gallery"
       UPLOADS_PUBLIC_URL_PREFIX = "https://images.wander.gallery"
       RESEND_FROM_EMAIL         = "info@wander.gallery"
+      # T-054 — the artist-reply email's tokenised Reply-To is minted
+      # here (jobs side); see modules/api for the matching var + the
+      # secret-vs-env split rationale.
+      REPLY_EMAIL_DOMAIN = "reply.wander.gallery"
     }
   }
 

@@ -44,14 +44,9 @@ async fn post_merge(
     if let Some(a) = anon {
         req = req.header("X-Anonymous-Id", a);
     }
-    let resp = app
-        .oneshot(req.body(Body::empty()).unwrap())
-        .await
-        .unwrap();
+    let resp = app.oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
     let status = resp.status();
-    let bytes = to_bytes(resp.into_body(), 4 * 1024 * 1024)
-        .await
-        .unwrap();
+    let bytes = to_bytes(resp.into_body(), 4 * 1024 * 1024).await.unwrap();
     (status, bytes.to_vec())
 }
 
@@ -86,22 +81,20 @@ async fn insert_anon_event(pool: &PgPool, name: &str, anon: Uuid) -> Uuid {
 }
 
 async fn upload_user_id(pool: &PgPool, id: Uuid) -> Option<Uuid> {
-    let (uid,): (Option<Uuid>,) =
-        sqlx::query_as("SELECT user_id FROM uploads WHERE id = $1")
-            .bind(id)
-            .fetch_one(pool)
-            .await
-            .unwrap();
+    let (uid,): (Option<Uuid>,) = sqlx::query_as("SELECT user_id FROM uploads WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
     uid
 }
 
 async fn event_user_id(pool: &PgPool, id: Uuid) -> Option<Uuid> {
-    let (uid,): (Option<Uuid>,) =
-        sqlx::query_as("SELECT user_id FROM events WHERE id = $1")
-            .bind(id)
-            .fetch_one(pool)
-            .await
-            .unwrap();
+    let (uid,): (Option<Uuid>,) = sqlx::query_as("SELECT user_id FROM events WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
     uid
 }
 
@@ -116,8 +109,7 @@ async fn merge_stamps_user_id_on_anon_rows(pool: PgPool) {
     let event_id = insert_anon_event(&pool, "search", anon).await;
 
     let app = app_with_test_auth(pool.clone());
-    let (status, bytes) =
-        post_merge(app, Some(ALICE), Some(&anon.to_string())).await;
+    let (status, bytes) = post_merge(app, Some(ALICE), Some(&anon.to_string())).await;
     assert_eq!(status, 200, "body: {}", String::from_utf8_lossy(&bytes));
     let resp: MergeResp = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(resp.uploads_merged, 1);
@@ -164,8 +156,7 @@ async fn merge_with_anon_having_no_rows_returns_zero(pool: PgPool) {
     // Fresh anon id with nothing keyed off it — should be a clean zero.
     let anon = Uuid::new_v4();
     let app = app_with_test_auth(pool);
-    let (status, bytes) =
-        post_merge(app, Some(ALICE), Some(&anon.to_string())).await;
+    let (status, bytes) = post_merge(app, Some(ALICE), Some(&anon.to_string())).await;
     assert_eq!(status, 200);
     let resp: MergeResp = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(resp.uploads_merged, 0);
@@ -183,14 +174,12 @@ async fn second_merge_is_zero_op(pool: PgPool) {
     insert_anon_upload(&pool, "uploads/dup-2.jpg", anon).await;
 
     let app = app_with_test_auth(pool.clone());
-    let (_, bytes1) =
-        post_merge(app.clone(), Some(ALICE), Some(&anon.to_string())).await;
+    let (_, bytes1) = post_merge(app.clone(), Some(ALICE), Some(&anon.to_string())).await;
     let r1: MergeResp = serde_json::from_slice(&bytes1).unwrap();
     assert_eq!(r1.uploads_merged, 2);
 
     // Second call should find no `user_id IS NULL` rows.
-    let (_, bytes2) =
-        post_merge(app, Some(ALICE), Some(&anon.to_string())).await;
+    let (_, bytes2) = post_merge(app, Some(ALICE), Some(&anon.to_string())).await;
     let r2: MergeResp = serde_json::from_slice(&bytes2).unwrap();
     assert_eq!(r2.uploads_merged, 0, "second merge is a no-op");
 }
@@ -217,8 +206,7 @@ async fn merge_never_overwrites_existing_user_id(pool: PgPool) {
     .unwrap();
 
     let app = app_with_test_auth(pool.clone());
-    let (status, bytes) =
-        post_merge(app, Some(ALICE), Some(&anon.to_string())).await;
+    let (status, bytes) = post_merge(app, Some(ALICE), Some(&anon.to_string())).await;
     assert_eq!(status, 200);
     let resp: MergeResp = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(resp.uploads_merged, 0, "row already owned — not migrated");
@@ -240,8 +228,7 @@ async fn merge_only_picks_up_calling_users_anon(pool: PgPool) {
     let bob_upload = insert_anon_upload(&pool, "uploads/bob.jpg", bob_anon).await;
 
     let app = app_with_test_auth(pool.clone());
-    let (status, bytes) =
-        post_merge(app, Some(ALICE), Some(&alice_anon.to_string())).await;
+    let (status, bytes) = post_merge(app, Some(ALICE), Some(&alice_anon.to_string())).await;
     assert_eq!(status, 200);
     let resp: MergeResp = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(resp.uploads_merged, 1);

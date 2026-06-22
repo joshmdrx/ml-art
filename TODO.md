@@ -345,13 +345,13 @@ The digest filter is `artworks.published_at > GREATEST(follows.created_at, now()
 **Architectural note recorded inline:** the public-read handler currently lives in `me/collections.rs` despite not being a "me" route, to share the row types. If `api-search::collections` grows much more public surface area (T-058 series, T-057 neighbourhoods evolution), worth refactoring to a top-level `collections` module with `pub(crate)` row types.
 
 ### `T-054` Inquirer-inbound replies (email-stitched threads)
-**Where:** Migration extending `inquiry_replies` with `from_role text` + nullable `artist_id`; Resend inbound-webhook handler; tokenised Reply-To.
+**Where:** Migration extending `inquiry_replies` with `from_role text` + nullable `artist_id`; Cloudflare Email Routing → Email Worker → inbound-webhook handler; tokenised Reply-To.
 **Why:** Phase 4b shipped artist → inquirer reply; inquirer-back is missing. Real inquiries are conversations. Closes the loop with zero in-platform-messaging cost — see `decisions.md` 2026-06-17.
 **Acceptance:**
 - Migration: `ALTER TABLE inquiry_replies ADD COLUMN from_role text NOT NULL DEFAULT 'artist'`; `ALTER COLUMN artist_id DROP NOT NULL`.
 - Reply-To on outbound emails is `r-<inquiry_id>-<hmac_token>@reply.wander.gallery`.
-- New endpoint `POST /v1/webhooks/resend/inbound`. Verifies the Resend signature; verifies the HMAC in the To address against `(inquiry_id, secret)`. Persists a new `inquiry_replies` row with `from_role='inquirer'`. Enqueues `JobEvent::InquirySendReplyForward` to forward to the artist.
-- DNS: MX records for `reply.wander.gallery` via the Cloudflare module.
+- New endpoint `POST /v1/webhooks/email/inbound`. Authenticated by a shared-secret header presented by the Cloudflare Email Worker (no Resend/Svix signature); verifies the HMAC in the To address against `(inquiry_id, secret)`. Persists a new `inquiry_replies` row with `from_role='inquirer'`, deduped on the inbound `Message-ID`. Enqueues `JobEvent::InquirySendReplyForward` to forward to the artist.
+- DNS: Cloudflare Email Routing MX + SPF for `reply.wander.gallery` via the Cloudflare DNS module; an Email Worker (`infra/email-worker/`) parses inbound mail and POSTs the webhook.
 - Studio inbox renders the thread chronologically with role chips.
 - Integration tests: token round-trip, wrong-token rejection, replay-protection.
 
@@ -477,9 +477,19 @@ The digest filter is `artworks.published_at > GREATEST(follows.created_at, now()
 **Why:** Today both files are maintained by hand. Drift risk: an API field rename only breaks at runtime. Caught us once with `is_following` (we shipped the Rust side then realised the TS side was stale). Risk grows with surface area.
 **Acceptance:** every `pub struct` in `models.rs` with `#[derive(Serialize)]` round-trips to a TS `export interface` automatically on `cargo build` (or as a separate `make types` target); CI fails if the generated file drifts from what's checked in.
 
----
-
-## Soft maintenance (do when it bites)
+### `T-069` E2E coverage for the retention loop
+**Where:** `e2e/tests/` — new Playwright specs covering Follow, anon-follow-queueing, public collections, OG cards, notification preferences, unsubscribe.
+**Why:** T-051 / T-052 / T-052b / T-052c / T-053 / T-068 all shipped end-to-end with strong integration-test coverage on the API + DB sides, but the cross-tier flows (anon click → sign-up → merge replays → follow exists; user toggles preference → cron skips them; click unsubscribe link → preference flips off) are only manually-verified today. The retention loop is the highest-value surface we have; lack of E2E regression coverage means a future refactor can silently break it.
+**Acceptance:**
+- `follow-flow.spec.ts` — signed-in user follows + unfollows an artist; follower count updates; `/studio` reflects.
+- `anon-follow-queue.spec.ts` — fresh incognito context clicks Follow → bounces to sign-up → signs up → lands on artist page already following. Verifies the merge-anonymous bridge fired and the pending row was drained.
+- `public-collection.spec.ts` — owner creates a collection → toggles public → captures share URL → second context (unauthenticated) opens URL + sees the collection. Owner toggles private → second context refresh → 404.
+- `notification-prefs.spec.ts` — `/me/settings/notifications` round-trips toggles + a clean reload reflects the persisted state.
+- `unsubscribe-token.spec.ts` — mint a token via API helper (test-side), GET `/u/<token>` → confirmation page renders + preference flips off (assert via API).
+- OG cards: `og-card.spec.ts` — fetch `/artworks/<id>/opengraph-image` + assert 200 + `image/png` + non-zero bytes; same for `/artists/<slug>/opengraph-image` + `/c/<share_id>/opengraph-image`.
+- All specs use the existing Clerk test-mode storage state (set up in T-084).
+- CI: hook into the existing E2E workflow (`.github/workflows/e2e.yml`).
+- **Acceptance gate for shipping any future change to FollowButton / merge_anonymous / unsubscribe routes / OG generators:** these specs must pass.
 
 ### `T-017` Search facet counts
 - Spec'd but currently returns nothing. Costs per-search COUNT queries; needs precomputation or approximation at scale.

@@ -239,9 +239,7 @@ async fn search_paginates_via_opaque_cursor(pool: PgPool) {
         get_json(app.clone(), &format!("/v1/search?limit=2&cursor={c1}")).await;
     assert_eq!(status, 200);
     assert_eq!(p2.items.len(), 2);
-    let c2 = p2
-        .next_cursor
-        .expect("expected a next_cursor on page 2");
+    let c2 = p2.next_cursor.expect("expected a next_cursor on page 2");
 
     // No duplicates across page boundaries. Dedup by *title* not
     // artist_slug — the seed has multiple artworks per artist
@@ -254,8 +252,7 @@ async fn search_paginates_via_opaque_cursor(pool: PgPool) {
     }
 
     // Page 3 — last page, single remaining item, no further cursor.
-    let (status, p3): (_, Page) =
-        get_json(app, &format!("/v1/search?limit=2&cursor={c2}")).await;
+    let (status, p3): (_, Page) = get_json(app, &format!("/v1/search?limit=2&cursor={c2}")).await;
     assert_eq!(status, 200);
     assert_eq!(p3.items.len(), 1);
     assert!(p3.next_cursor.is_none());
@@ -285,8 +282,7 @@ async fn search_cursor_threads_through_filters(pool: PgPool) {
     // page through them at limit=1 and assert we got both distinct
     // titles + no third page.
     let app = app_keyword_only(pool);
-    let (_, p1): (_, Page) =
-        get_json(app.clone(), "/v1/search?medium=Painting&limit=1").await;
+    let (_, p1): (_, Page) = get_json(app.clone(), "/v1/search?medium=Painting&limit=1").await;
     assert_eq!(p1.items.len(), 1);
     let c1 = p1.next_cursor.expect("Painting filter has > 1 match");
 

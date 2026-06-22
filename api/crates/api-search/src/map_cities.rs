@@ -15,9 +15,9 @@
 
 use crate::AppState;
 use axum::{extract::State, Json};
+use ml_art_core::artist_ids::parse_artist_ids;
 use ml_art_core::error::ApiError;
 use serde::{Deserialize, Serialize};
-use ml_art_core::artist_ids::parse_artist_ids;
 use sqlx::{AssertSqlSafe, FromRow};
 use std::sync::Arc;
 
@@ -157,4 +157,3 @@ pub async fn handle(
     let rows: Vec<CityPivot> = qb.fetch_all(&state.pool).await?;
     Ok(Json(rows))
 }
-

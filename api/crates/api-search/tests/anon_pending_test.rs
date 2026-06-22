@@ -9,7 +9,6 @@ mod common;
 use common::{app_with_test_auth, send_authed, MIGRATOR};
 use serde::Deserialize;
 use sqlx::PgPool;
-use uuid::Uuid;
 
 // One of the seeded user/clerk-id pairs.
 const ALICE: &str = "test-user_test_alice";
@@ -88,13 +87,12 @@ async fn queue_follow_is_idempotent(pool: PgPool) {
         assert_eq!(status, 204);
     }
 
-    let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM anon_pending_actions WHERE anon_id = $1::uuid",
-    )
-    .bind(ANON_ID)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM anon_pending_actions WHERE anon_id = $1::uuid")
+            .bind(ANON_ID)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(count, 1, "repeat clicks of Follow shouldn't dup-queue");
 }
 
@@ -151,13 +149,12 @@ async fn merge_replays_queued_follow(pool: PgPool) {
     assert!(exists);
 
     // Pending queue is drained.
-    let remaining: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM anon_pending_actions WHERE anon_id = $1::uuid",
-    )
-    .bind(ANON_ID)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM anon_pending_actions WHERE anon_id = $1::uuid")
+            .bind(ANON_ID)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(remaining, 0);
 }
 
@@ -202,13 +199,12 @@ async fn merge_is_idempotent_for_already_followed_artist(pool: PgPool) {
     // Insert was a no-op because the follow already existed.
     assert_eq!(resp.follows_replayed, 0);
     // Queue still drained.
-    let remaining: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM anon_pending_actions WHERE anon_id = $1::uuid",
-    )
-    .bind(ANON_ID)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM anon_pending_actions WHERE anon_id = $1::uuid")
+            .bind(ANON_ID)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(remaining, 0);
 }
 
@@ -244,13 +240,12 @@ async fn merge_ignores_expired_pending_actions(pool: PgPool) {
 
     // The expired row gets drained anyway — we don't want a stale
     // intent to ever fire later.
-    let remaining: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM anon_pending_actions WHERE anon_id = $1::uuid",
-    )
-    .bind(ANON_ID)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM anon_pending_actions WHERE anon_id = $1::uuid")
+            .bind(ANON_ID)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(remaining, 0);
 }
 
@@ -258,8 +253,7 @@ async fn merge_ignores_expired_pending_actions(pool: PgPool) {
 async fn merge_with_no_anon_cookie_is_noop(pool: PgPool) {
     let app = app_with_test_auth(pool);
     // No X-Anonymous-Id header — merge returns zeros.
-    let (status, bytes) =
-        send_authed(app, "POST", "/v1/me/merge-anonymous", ALICE, None).await;
+    let (status, bytes) = send_authed(app, "POST", "/v1/me/merge-anonymous", ALICE, None).await;
     assert_eq!(status, 200);
     let resp: MergeResp = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(resp.uploads_merged, 0);
