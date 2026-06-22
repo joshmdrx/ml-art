@@ -37,40 +37,85 @@ interface InboundPayload {
 
 export default {
   async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
-    const email = await PostalMime.parse(message.raw);
+    // Self-diagnosing wrapper. `wrangler tail` in v3 doesn't reliably
+    // surface exceptions thrown from the email handler, which made the
+    // first round of debugging blind. We now (a) tag every stage so a
+    // failure says where, (b) log a structured line via console.log
+    // (which DOES reach tail), and (c) ride a diagnostic header on the
+    // outbound POST so api-side CloudWatch logs can pick it up even if
+    // the local tail is disconnected.
+    let stage = "init";
+    try {
+      stage = "parse";
+      const email = await PostalMime.parse(message.raw);
 
-    const body = stripQuotedHistory(email.text ?? "");
-    // Replay-dedup key. Prefer the inbound Message-ID header; fall back
-    // to a synthesised id so the webhook's NOT NULL guard is always
-    // satisfied (a missing header shouldn't make the message un-stored).
-    const messageId =
-      message.headers.get("message-id") ??
-      email.messageId ??
-      `cf-${crypto.randomUUID()}@reply.wander.gallery`;
+      stage = "extract-body";
+      const body = stripQuotedHistory(email.text ?? "");
 
-    const payload: InboundPayload = {
-      to: message.to,
-      from: message.from,
-      message: body,
-      message_id: messageId,
-    };
+      stage = "extract-message-id";
+      const messageId =
+        message.headers.get("message-id") ??
+        email.messageId ??
+        `cf-${crypto.randomUUID()}@reply.wander.gallery`;
 
-    const res = await fetch(env.REPLY_WEBHOOK_URL, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-inbound-secret": env.INBOUND_SECRET,
-      },
-      body: JSON.stringify(payload),
-    });
+      stage = "post";
+      const payload: InboundPayload = {
+        to: message.to,
+        from: message.from,
+        message: body,
+        message_id: messageId,
+      };
 
-    if (!res.ok) {
-      // Throwing rejects the message so Email Routing surfaces the
-      // failure (and retries within its bounded policy) rather than
-      // silently dropping a real reply. A 400 (bad/forged token) will
-      // keep failing — acceptable: such mail isn't a legitimate reply.
-      const detail = await res.text().catch(() => "");
-      throw new Error(`inbound webhook ${res.status}: ${detail.slice(0, 200)}`);
+      console.log(
+        JSON.stringify({
+          ev: "inbound-email-prePost",
+          to: message.to,
+          from: message.from,
+          bodyLen: body.length,
+          messageId,
+        }),
+      );
+
+      const res = await fetch(env.REPLY_WEBHOOK_URL, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-inbound-secret": env.INBOUND_SECRET,
+          // AWS WAF's CommonRuleSet blocks any HTTP request without a
+          // User-Agent (`NoUserAgent_HEADER`). Cloudflare Workers' fetch
+          // doesn't add one by default. Identify ourselves explicitly.
+          "user-agent": "ml-art-inbound-email-worker/1 (Cloudflare Email Routing)",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const detail = await res.text().catch(() => "");
+        throw new Error(
+          `webhook ${res.status}: ${detail.slice(0, 300)}`,
+        );
+      }
+
+      console.log(
+        JSON.stringify({ ev: "inbound-email-ok", to: message.to }),
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
+      // Loud structured log — tail captures console.error, and even when
+      // it doesn't, the CF Workers dashboard "Logs" tab shows it.
+      console.error(
+        JSON.stringify({
+          ev: "inbound-email-fail",
+          stage,
+          to: message.to,
+          from: message.from,
+          err: msg.slice(0, 1500),
+        }),
+      );
+      // Re-throw so Email Routing retries within its bounded policy.
+      // Persistent failures (forged tokens, 400-class) keep failing —
+      // acceptable: such mail isn't a legitimate reply.
+      throw err;
     }
   },
 };
