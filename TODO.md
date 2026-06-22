@@ -430,10 +430,16 @@ The digest filter is `artworks.published_at > GREATEST(follows.created_at, now()
 **Why:** Schema + API are mostly there. "Something small under £500" is a real query we silently can't serve. Keep the visual restraint — this isn't a marketplace.
 **Acceptance:**
 - Price range slider (currency-aware via `lib/format.ts`).
-- Dimension band: S / M / L preset + custom range in cm.
+- Dimension band: S / M / L preset + custom range in cm. Depends on `T-070` (artists need a way to enter physical dims first).
 - Medium multi-select (uses existing taxonomy).
 - All URL-driven via the established `useUrlState` pattern.
 - API-side gaps closed where present (currently `medium=` is a single-value param).
+
+**Open gap on medium:** the `medium=` filter today is a preset enum that doesn't match what artists actually type. Artists publish free-text (`oil on linen`, `gouache and ink on cotton`) while users filter against a fixed list (`Painting`, `Print`, `Photography`). Either:
+- (a) normalise artist input at save time against a controlled taxonomy (typeahead with free-text fallback into "Other"), or
+- (b) retrieval-side mapping (Claude call on first publish picks the canonical bucket; cluster fallback via Jina embeddings).
+
+T-057 / T-061 will need a stable medium taxonomy anyway for taste-vector grouping, so this isn't only a UX cleanup. Decide approach before T-062 lands the multi-select.
 
 ### `T-063` Inline "more like this" in grid
 **Where:** `ArtworkCard` extension + a small flyout component; backend already has `GET /v1/artworks/:id/similar`.
@@ -476,6 +482,16 @@ The digest filter is `artworks.published_at > GREATEST(follows.created_at, now()
 **Where:** generate `web/src/lib/api.ts` types from `api/crates/core/src/models.rs` via `ts-rs` (Rust-side derive) or schemars + `json-schema-to-typescript`.
 **Why:** Today both files are maintained by hand. Drift risk: an API field rename only breaks at runtime. Caught us once with `is_following` (we shipped the Rust side then realised the TS side was stale). Risk grows with surface area.
 **Acceptance:** every `pub struct` in `models.rs` with `#[derive(Serialize)]` round-trips to a TS `export interface` automatically on `cargo build` (or as a separate `make types` target); CI fails if the generated file drifts from what's checked in.
+
+### `T-070` Studio: artwork-dimensions input + filterable physical size
+**Where:** `web/src/components/studio/ArtworkEditModal.tsx` adds cm-based width / height / depth inputs; the API already has `artworks.dimensions` (jsonb) + `formatDimensions` helper but no editor exposes it.
+**Why:** An artist can publish today with no physical dimensions, and a buyer can't filter "small / medium / large" because most works have NULL dims. Schema + render are ready; the missing piece is studio input + a search filter.
+**Acceptance:**
+- Studio: width / height / depth-cm fields on the artwork form. Persist into `artworks.dimensions` jsonb. Optional depth (most flat work doesn't need it). Server-side validation: positive integers ≤ 9999.
+- Mirror existing T-039 price-input UX patterns (text + on-blur reformat).
+- API: `/v1/search` accepts a `size=` query param — either band (`s|m|l`) or `min_cm..max_cm`. Band thresholds documented in `core::sizes` (S < 40cm longest side, M 40–100, L > 100).
+- Web: T-062's dimension band wires to this filter.
+- Demo seed: `seed.py` already produces deterministic dimensions — keep.
 
 ### `T-069` E2E coverage for the retention loop
 **Where:** `e2e/tests/` — new Playwright specs covering Follow, anon-follow-queueing, public collections, OG cards, notification preferences, unsubscribe.
