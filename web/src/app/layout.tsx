@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
+import { Toaster } from "sonner";
 import { AnonymousMergeBridge } from "@/components/AnonymousMergeBridge";
+import { ConfirmDialogProvider } from "@/components/ui/ConfirmDialog";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -94,7 +96,21 @@ export default function RootLayout({
         <body className="min-h-full flex flex-col font-sans">
           {/* T-033: silent post-signin merge of the anon_id trail */}
           <AnonymousMergeBridge />
-          {children}
+          {/*
+            T-071 feedback primitives. ConfirmDialogProvider exposes
+            useConfirm() to anything below it; Toaster renders sonner
+            toasts for success / error / promise feedback. Both at the
+            body root so they sit above any modal in the tree.
+          */}
+          <ConfirmDialogProvider>{children}</ConfirmDialogProvider>
+          <Toaster
+            position="bottom-center"
+            richColors
+            closeButton
+            toastOptions={{
+              className: "font-sans",
+            }}
+          />
         </body>
       </html>
     </ClerkProvider>

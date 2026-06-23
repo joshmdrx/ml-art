@@ -17,6 +17,97 @@ Format:
 
 ---
 
+## 2026-06-22 — T-071: feedback + dialog primitives (sonner toasts, useConfirm hook, FieldError, JS-only form validation)
+
+**Context:** Real-artist testing (T-070 launch) surfaced three
+consistency cracks in the studio UI within minutes:
+
+1. Two error styles on the same form — HTML `min`/`max` attributes
+   produced native browser tooltips, custom JS validation rendered
+   inline red text. Same screen, two patterns.
+2. `window.confirm` for the "publish without dimensions?" nudge —
+   every other modal in the app uses Radix Dialog; this one fell
+   back to native.
+3. Edit modal stayed open after a successful save. Surprising. No
+   feedback (no toast either).
+
+Each is a one-line fix in isolation. Bundling them creates the
+opportunity to establish patterns, build the missing primitives, and
+ESLint-enforce the most fragile ones — so the next contributor
+inherits the convention instead of relitigating it.
+
+**Decisions:**
+
+1. **`<FieldError message={…} />`** is the single inline-error primitive.
+   `role="alert"`, `text-xs text-red-600`, returns null on empty. All
+   form fields with JS validation use it; nothing inlines bespoke
+   error styling.
+
+2. **`useConfirm()`** is the single way to ask a yes/no question. It's
+   a promise-based hook (`const ok = await confirm({...})`) backed by
+   Radix's `AlertDialog` primitive. Same async-imperative ergonomics
+   as `window.confirm` so call sites don't bloat with state. One
+   `<ConfirmDialogProvider>` lives at the app root.
+
+3. **`sonner` for toasts.** Picked over `react-hot-toast` and Radix's
+   `react-toast` primitive for: smaller bundle (~3KB gzipped),
+   `toast.promise(...)` ergonomics that fit our save flows, and the
+   visual vocabulary you'd expect (same author as Vaul, used widely in
+   Next.js apps). Toaster mounted at the root with `richColors
+   closeButton` defaults.
+
+4. **Toasts confirm outcomes outside the form. Errors stay inside.**
+   The motivation: toasts disappear; validation messages must persist
+   anchored to the field that failed. So:
+   - Async success → toast.success
+   - Long latency → toast.promise
+   - Field-level error → `<FieldError>`
+   - Form-level error (network / 500) → inline alert banner in the form
+   Never substitute one for another.
+
+5. **HTML form-validation attributes are banned** when there's a JS
+   submit handler. Mixing them with our own error UI is the root
+   cause of issue (1) above. Single narrow exception: a pure HTML
+   form with no JS handler (currently only `InquiryModal`).
+
+6. **Modal close-on-save is the default.** Multi-step flows
+   (create-then-add-children) handle the follow-up explicitly by
+   reopening in the new mode, not by suppressing the close.
+
+**Enforcement:** ESLint `no-restricted-globals` + `no-restricted-properties`
+rules ban `confirm` / `alert` / `prompt` (both bare and `window.*`
+forms). The HTML-attr rule is *not* automated — easy to write a
+brittle AST selector that false-positives on `<input type="range">`;
+catching it at review is cheaper. Pre-commit hook (lefthook) runs
+ESLint already, so the bans gate every push.
+
+**Reversibility:**
+- Components (FieldError, useConfirm) — reversible. Imports rewriteable.
+- sonner — reversible. `toast.*` call sites are few, and migrating to
+  another library means a search/replace + a Toaster swap.
+- ESLint bans — reversible. Already enforced at the rule level, not
+  via codemod.
+- Docs (`docs/ui-patterns.md`) — reversible.
+
+**Alternatives considered:**
+- *Props-driven `<ConfirmDialog>` component instead of a hook.* Rejected:
+  every consumer would need its own `useState` + pending-action state
+  just to ask a yes/no. The hook hides that plumbing.
+- *Radix `react-toast` primitive over sonner.* Rejected: significant
+  styling + queue-management work for a feature sonner gives us with
+  a single import.
+- *`react-hot-toast`.* Rejected: API is older, no built-in
+  `toast.promise` shape, larger bundle.
+- *Custom-roll a confirm dialog over Radix `Dialog` rather than
+  `AlertDialog`.* Rejected: `AlertDialog` is the purpose-built
+  primitive (correct ARIA, correct focus trap, correct keyboard
+  semantics). Don't rebuild it.
+- *AST-level ESLint rule banning `min`/`max`/`required`/`pattern` on
+  inputs.* Rejected: brittle (false-positives on `<input type="range">`,
+  `<input type="date">`); review + the doc are sufficient.
+
+---
+
 ## 2026-06-22 — T-070: dimensions stay optional at every status, cm-only input, 3 size bands, single band per query
 
 **Context:** The platform schema already has `artworks.dimensions jsonb`,
