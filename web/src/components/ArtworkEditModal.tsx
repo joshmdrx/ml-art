@@ -23,6 +23,7 @@ import {
   useTransition,
   type FormEvent,
 } from "react";
+import { toast } from "sonner";
 import {
   createArtwork,
   deleteArtwork,
@@ -35,6 +36,8 @@ import type { StudioArtworkDetail, StudioImage } from "@/lib/api";
 import { normalizeWebsiteUrl } from "@/lib/normalizeUrl";
 import { formatPriceForInput, parsePrice } from "@/lib/parsePrice";
 import { reportError, toUserMessage } from "@/lib/reportError";
+import { FieldError } from "@/components/ui/FieldError";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 
 const AVAILABILITY_OPTIONS = [
   { value: "available", label: "Available" },
@@ -163,12 +166,19 @@ export function ArtworkEditModal({
             <ArtworkForm
               detail={load.detail}
               artistDisplayName={artistDisplayName}
-              onSaved={(detail) =>
-                // Stay open after save; load the new state into the form
-                // so subsequent edits + image adds work against the
-                // freshly-created row.
-                setLoad({ kind: "ready", detail })
-              }
+              onSaved={(detail, closeAfter) => {
+                // T-071 — edit saves close the modal; create saves +
+                // in-modal image edits lift state in place so the
+                // artist can keep editing the freshly-created row
+                // (image upload section, dimensions, etc.). A toast
+                // fires from the form either way so the user sees
+                // the action succeeded.
+                if (closeAfter) {
+                  onClose();
+                } else {
+                  setLoad({ kind: "ready", detail });
+                }
+              }}
               onDeleted={onClose}
             />
           )}
@@ -200,10 +210,15 @@ function ArtworkForm({
 }: {
   detail: StudioArtworkDetail | null;
   artistDisplayName: string;
-  onSaved: (detail: StudioArtworkDetail) => void;
+  /** Called after a successful save (or in-modal image change).
+   * `closeAfter=true` tells the parent to close; falsy lifts state in
+   * place. Default-false because the riskier behaviour (closing) must
+   * be opt-in. */
+  onSaved: (detail: StudioArtworkDetail, closeAfter?: boolean) => void;
   onDeleted: () => void;
 }) {
   const isCreate = detail === null;
+  const confirm = useConfirm();
 
   const [title, setTitle] = useState(detail?.title ?? "");
   const [description, setDescription] = useState(detail?.description ?? "");
@@ -211,6 +226,25 @@ function ArtworkForm({
   const [yearCreated, setYearCreated] = useState(
     detail?.year_created != null ? String(detail.year_created) : ""
   );
+  const [yearError, setYearError] = useState<string | null>(null);
+
+  /** Validate the year input. Empty is fine (year is optional); a
+   * value must be a whole integer 1000–2100 — matches the historical
+   * `min`/`max` constraints we used to set on the <input>, now lifted
+   * into JS so every validation message lands as a `<FieldError>`.
+   * Returns null on valid input, the message string on invalid. */
+  function validateYear(): string | null {
+    const raw = yearCreated.trim();
+    if (raw === "") return null;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || !Number.isInteger(n)) {
+      return "Year must be a whole number.";
+    }
+    if (n < 1000 || n > 2100) {
+      return "Year must be between 1000 and 2100.";
+    }
+    return null;
+  }
   // Price is a free-text input (T-039) — the artist types "£120" or
   // "120.50", we parse to minor units on submit. State holds the raw
   // display string, not the integer.
@@ -347,16 +381,26 @@ function ArtworkForm({
     };
   }
 
-  function onSubmit(e: FormEvent<HTMLFormElement>) {
+  async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (isPending) return;
     setError(null);
     setDimsError(null);
+    setYearError(null);
 
     const parsedPrice = tryParsePrice();
     if (parsedPrice === undefined) {
       // tryParsePrice already set priceError + this is a synchronous
       // bail. Don't fire the network call.
+      return;
+    }
+
+    // T-071 — year validation runs in JS now (the HTML min/max
+    // attributes were removed because they showed browser-native
+    // tooltips that didn't match our FieldError styling).
+    const yearErr = validateYear();
+    if (yearErr) {
+      setYearError(yearErr);
       return;
     }
 
@@ -372,16 +416,21 @@ function ArtworkForm({
     // T-070 — soft nudge when publishing a work that still has no
     // dimensions. Buyers can't filter by size for works with NULL
     // dimensions, so we ask before letting the artist publish without
-    // — but don't gate. Decision recorded in `decisions.md` 2026-06-22.
+    // — but don't gate. Now via useConfirm() (T-071) so the dialog
+    // matches the rest of the app's styling.
     const isTransitionToPublished =
       status === "published" && detail?.status !== "published";
     if (
       (isCreate ? false : isTransitionToPublished) &&
       dims.value === undefined
     ) {
-      const proceed = window.confirm(
-        "You haven't added dimensions. Buyers won't be able to filter your work by size. Publish anyway?",
-      );
+      const proceed = await confirm({
+        title: "Publish without dimensions?",
+        description:
+          "Buyers won't be able to filter your work by size until you add them. You can edit and add them later.",
+        confirmLabel: "Publish anyway",
+        cancelLabel: "Keep editing",
+      });
       if (!proceed) return;
     }
 
@@ -403,9 +452,12 @@ function ArtworkForm({
               | "inquire",
             external_url: normalizeWebsiteUrl(externalUrl) ?? undefined,
           });
+          toast.success("Artwork created — add an image below.");
           // Lift to "ready with detail" so image management activates.
           // The created row has no images yet, so synthesize an empty
-          // detail with the shape the modal expects.
+          // detail with the shape the modal expects. closeAfter omitted
+          // → stay open so the artist can keep filling in dimensions,
+          // images, etc.
           onSaved({
             ...created,
             description: description.trim() || null,
@@ -416,10 +468,10 @@ function ArtworkForm({
           });
         } else {
           const updated = await patchArtwork(detail!.id, buildBody(parsedPrice));
-          onSaved({
-            ...detail!,
-            ...updated,
-          });
+          toast.success("Saved");
+          // closeAfter=true → parent closes the modal. T-071 default
+          // for edit flow.
+          onSaved({ ...detail!, ...updated }, true);
         }
       } catch (e) {
         setError(
@@ -432,13 +484,20 @@ function ArtworkForm({
     });
   }
 
-  function onDelete() {
+  async function onDelete() {
     if (!detail || isPending) return;
-    if (!confirm(`Delete “${detail.title ?? "Untitled"}”? This can't be undone.`)) return;
+    const proceed = await confirm({
+      title: `Delete “${detail.title ?? "Untitled"}”?`,
+      description: "This can't be undone.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!proceed) return;
     setError(null);
     startTransition(async () => {
       try {
         await deleteArtwork(detail.id);
+        toast.success("Artwork deleted");
         onDeleted();
       } catch (e) {
         setError(
@@ -497,11 +556,14 @@ function ArtworkForm({
           <input
             type="number"
             value={yearCreated}
-            onChange={(e) => setYearCreated(e.target.value)}
-            min={1000}
-            max={2100}
+            onChange={(e) => {
+              setYearCreated(e.target.value);
+              if (yearError) setYearError(null);
+            }}
+            inputMode="numeric"
             className="w-full bg-background border border-border px-3 py-2 text-sm focus:outline-none focus:border-foreground"
           />
+          <FieldError message={yearError} />
         </Field>
         <Field
           label="Price"
@@ -533,11 +595,7 @@ function ArtworkForm({
               ))}
             </select>
           </div>
-          {priceError && (
-            <p role="alert" className="mt-1 text-xs text-red-600">
-              {priceError}
-            </p>
-          )}
+          <FieldError message={priceError} />
         </Field>
       </div>
 
@@ -554,9 +612,6 @@ function ArtworkForm({
               setWidthCm(e.target.value);
               if (dimsError) setDimsError(null);
             }}
-            min={1}
-            max={5000}
-            step={1}
             placeholder="Width"
             aria-label="Width in cm"
             className="bg-background border border-border px-3 py-2 text-sm focus:outline-none focus:border-foreground"
@@ -569,9 +624,6 @@ function ArtworkForm({
               setHeightCm(e.target.value);
               if (dimsError) setDimsError(null);
             }}
-            min={1}
-            max={5000}
-            step={1}
             placeholder="Height"
             aria-label="Height in cm"
             className="bg-background border border-border px-3 py-2 text-sm focus:outline-none focus:border-foreground"
@@ -584,19 +636,12 @@ function ArtworkForm({
               setDepthCm(e.target.value);
               if (dimsError) setDimsError(null);
             }}
-            min={1}
-            max={5000}
-            step={1}
             placeholder="Depth (optional)"
             aria-label="Depth in cm, optional"
             className="bg-background border border-border px-3 py-2 text-sm focus:outline-none focus:border-foreground"
           />
         </div>
-        {dimsError && (
-          <p role="alert" className="mt-1 text-xs text-red-600">
-            {dimsError}
-          </p>
-        )}
+        <FieldError message={dimsError} />
       </Field>
 
       <div>
