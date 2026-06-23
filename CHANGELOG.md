@@ -3,6 +3,40 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-22 — T-071: UI feedback + dialog primitives
+
+Real-artist testing of T-070 surfaced three consistency cracks in the
+studio UI within minutes — mixed HTML/JS validation styling, native
+`window.confirm` for the publish-nudge, no success feedback after save.
+Each was small in isolation; bundling them was the opportunity to
+establish patterns, build the missing primitives, and enforce them.
+
+Primitives (`web/src/components/ui/`):
+- `<FieldError message={…} />` — single inline-error renderer; `role="alert"`, `text-xs text-red-600`, null on empty.
+- `useConfirm()` + `<ConfirmDialogProvider>` — promise-based yes/no hook over Radix AlertDialog. Provider mounted at app root; consumers anywhere below it get the hook with native `confirm()` ergonomics (`const ok = await confirm(...)`). Supports `destructive: true` for delete/archive flows.
+- `sonner` Toaster mounted at the root with `richColors + closeButton` defaults. `toast.success/error/promise` replaces inline "Saved" text.
+
+Enforcement (`web/eslint.config.mjs`):
+- `no-restricted-globals` + `no-restricted-properties` ban `confirm` / `alert` / `prompt` (both bare + `window.*` forms). Pre-commit lefthook runs ESLint, so reintroducing them fails the push.
+- `.open-next/**` added to ESLint globalIgnores so generated build output stops drowning real findings (was producing 21k errors).
+
+Tests (`web/src/__tests__/`):
+- `@testing-library/react` + `happy-dom` added. `vitest.setup.ts` wires per-test `cleanup()` so React trees don't leak between tests.
+- `FieldError.test.tsx` — 4 tests.
+- `ConfirmDialog.test.tsx` — 5 tests covering confirm / cancel / Escape / destructive styling / outside-provider error path.
+
+First adoption (`ArtworkEditModal`):
+- HTML `min` / `max` attributes dropped from year + dim inputs (they triggered native browser tooltips that didn't match `<FieldError>`).
+- New `validateYear()` in JS for parity to the old 1000–2100 range.
+- All `<p role="alert" text-xs text-red-600>` field errors swapped to `<FieldError>`.
+- `window.confirm` (publish-without-dimensions nudge + delete-confirm) replaced with `useConfirm()` calls — destructive variant for delete.
+- `toast.success("Artwork created — add an image below.")` / `"Saved"` / `"Artwork deleted"` on the three positive outcomes.
+- Modal close-on-save for edits; create lifts to detail in place (so the artist can keep adding images on the freshly-created row). New `closeAfter?: boolean` flag on `onSaved` with a default-false design (riskier behaviour must be opt-in).
+
+Docs:
+- `docs/ui-patterns.md` covers form validation, confirm dialogs, feedback patterns, modal behaviour, and enforcement.
+- `decisions.md` 2026-06-22 entry captures the picks (sonner over `react-hot-toast` / Radix toast, hook over props-driven dialog, AlertDialog vs Dialog, JS-only form validation) with rejected alternatives + reversibility ratings.
+
 ## 2026-06-22 — T-070: Studio artwork-dimensions editor + search size-band filter
 
 Artists couldn't enter physical artwork dimensions from the studio,

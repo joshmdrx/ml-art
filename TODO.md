@@ -483,6 +483,21 @@ T-057 / T-061 will need a stable medium taxonomy anyway for taste-vector groupin
 **Why:** Today both files are maintained by hand. Drift risk: an API field rename only breaks at runtime. Caught us once with `is_following` (we shipped the Rust side then realised the TS side was stale). Risk grows with surface area.
 **Acceptance:** every `pub struct` in `models.rs` with `#[derive(Serialize)]` round-trips to a TS `export interface` automatically on `cargo build` (or as a separate `make types` target); CI fails if the generated file drifts from what's checked in.
 
+### ~~`T-071` UI feedback + dialog primitives (FieldError, useConfirm, sonner toasts)~~ — shipped 2026-06-22
+
+- ✅ `<FieldError>` + `useConfirm()` + `<ConfirmDialogProvider>` shared primitives.
+- ✅ `sonner` Toaster mounted at the root with richColors + closeButton defaults.
+- ✅ ESLint `no-restricted-globals` + `no-restricted-properties` ban `confirm`/`alert`/`prompt` (both bare and `window.*`).
+- ✅ `.open-next/**` added to ESLint globalIgnores (was producing 21k errors).
+- ✅ Vitest tests: 4 for `<FieldError>`, 5 for `useConfirm` + provider (confirm / cancel / Escape / destructive / outside-provider). Per-test cleanup wired via `vitest.setup.ts`.
+- ✅ `docs/ui-patterns.md` documents the patterns; `decisions.md` 2026-06-22 captures the picks (sonner over alternatives, hook over props, AlertDialog vs Dialog, JS-only form validation) with rejected alternatives + reversibility ratings.
+- ✅ ArtworkEditModal refactored: JS year validation parity, no HTML `min`/`max` attrs, `<FieldError>` everywhere, `useConfirm()` for publish-nudge + delete (destructive), `toast.success` on save/delete, edit closes on save, create lifts to detail.
+
+**Deferred follow-ups (logged here for the next contributor):**
+- Migrate existing success-feedback surfaces (inquiry sent, reply sent, follow/unfollow, save-to-collection, settings saved) to `toast.success` as they're next touched.
+- Toast-error-on-failure pass for the `/u/[token]` unsubscribe + `/me/settings/notifications` pages.
+- HTML form-validation attribute ban as an AST-level ESLint rule (currently convention + review). Brittle to write generally — only worth doing if we ever see a regression.
+
 ### ~~`T-070` Studio: artwork-dimensions input + filterable physical size~~ — shipped 2026-06-22
 
 - ✅ `core::validation::dimensions_v1` — closed-schema validator (19 unit tests).
