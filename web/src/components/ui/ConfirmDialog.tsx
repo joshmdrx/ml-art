@@ -72,7 +72,19 @@ export function ConfirmDialogProvider({ children }: { children: React.ReactNode 
     const resolve = resolverRef.current;
     resolverRef.current = null;
     setPending(null);
-    resolve?.(ok);
+    // T-072 fix — defer the resolver by a tick. When this confirm is
+    // nested inside another Radix Dialog (the typical case: edit
+    // modal asks for confirmation), both the AlertDialog and the
+    // parent Dialog manage body's scroll-lock + pointer-events. If
+    // the caller fires `onClose()` synchronously after `await
+    // confirm(...)` returns, the parent Dialog starts unmounting in
+    // the same React tick as the AlertDialog is still tearing down —
+    // the two ref-counted cleanups race and body ends up with
+    // `pointer-events: none` stuck. The next tick is enough for the
+    // inner cleanup to flush before the outer one starts.
+    // See https://github.com/radix-ui/primitives/issues/2122 for the
+    // upstream bug; this microtask defer is the common workaround.
+    queueMicrotask(() => resolve?.(ok));
   }
 
   return (
