@@ -72,19 +72,27 @@ export function ConfirmDialogProvider({ children }: { children: React.ReactNode 
     const resolve = resolverRef.current;
     resolverRef.current = null;
     setPending(null);
-    // T-072 fix — defer the resolver by a tick. When this confirm is
-    // nested inside another Radix Dialog (the typical case: edit
-    // modal asks for confirmation), both the AlertDialog and the
-    // parent Dialog manage body's scroll-lock + pointer-events. If
-    // the caller fires `onClose()` synchronously after `await
-    // confirm(...)` returns, the parent Dialog starts unmounting in
-    // the same React tick as the AlertDialog is still tearing down —
-    // the two ref-counted cleanups race and body ends up with
-    // `pointer-events: none` stuck. The next tick is enough for the
-    // inner cleanup to flush before the outer one starts.
-    // See https://github.com/radix-ui/primitives/issues/2122 for the
-    // upstream bug; this microtask defer is the common workaround.
-    queueMicrotask(() => resolve?.(ok));
+    // T-072 fix — defer the resolver by a full macrotask so the
+    // AlertDialog has cleanly unmounted (including react-remove-scroll's
+    // body-style cleanup) before the caller continues and fires
+    // anything that would close the OUTER Dialog (the artwork edit
+    // modal). Two sequential cleanups instead of two racing ones.
+    //
+    // Why setTimeout(0) and not queueMicrotask: microtasks run BEFORE
+    // some of Radix's internal cleanups (which use rAF + idle
+    // callbacks) finish flushing. A full macrotask boundary lets the
+    // event loop fully unwind. Cost is one tick (~4ms in modern
+    // browsers); imperceptible. See radix-ui/primitives#2122.
+    //
+    // Belt-and-braces: also explicitly clear body's pointer-events on
+    // the next tick. If Radix's cleanup ever fails to (the underlying
+    // upstream bug), we don't leave the page unclickable.
+    setTimeout(() => {
+      if (document.body.style.pointerEvents === "none") {
+        document.body.style.pointerEvents = "";
+      }
+      resolve?.(ok);
+    }, 0);
   }
 
   return (
