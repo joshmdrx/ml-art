@@ -187,4 +187,14 @@ if [[ "$HTTP_CODE" != "200" ]]; then
   exit 1
 fi
 
+# Full prod smoke suite (T-075). See modules/api/deploy-api.sh for the
+# rationale + the SKIP_SMOKE=1 escape hatch.
+if [[ "${SKIP_SMOKE:-0}" != "1" ]]; then
+  echo ""
+  echo "▶ running prod smoke suite"
+  "$(dirname "$0")/smoke-prod.sh"
+else
+  echo "▶ SKIP_SMOKE=1 — skipping prod smoke suite"
+fi
+
 echo "✔ deploy complete."

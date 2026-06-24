@@ -483,6 +483,18 @@ T-057 / T-061 will need a stable medium taxonomy anyway for taste-vector groupin
 **Why:** Today both files are maintained by hand. Drift risk: an API field rename only breaks at runtime. Caught us once with `is_following` (we shipped the Rust side then realised the TS side was stale). Risk grows with surface area.
 **Acceptance:** every `pub struct` in `models.rs` with `#[derive(Serialize)]` round-trips to a TS `export interface` automatically on `cargo build` (or as a separate `make types` target); CI fails if the generated file drifts from what's checked in.
 
+### ~~`T-075` Prod smoke suite (read-only)~~ — shipped 2026-06-23
+
+- ✅ `scripts/smoke-prod.sh` — bash + curl assertions over the public surface (`/v1/health`, search, artist + artwork detail, neighborhoods, OG cards, images CDN). 17 checks, ~10s end-to-end.
+- ✅ `make smoke-prod` target + help-line entry.
+- ✅ Auto-runs at the tail of `make deploy-api` and `make deploy-web` so bad deploys fail loud at the deploy step. Escape hatch: `SKIP_SMOKE=1`.
+- ✅ Fixtures use the WikiArt demo seed (artist `demo-ukiyo-e`, artwork `fbc3702b-…`) — stable, not subject to user-deletion testing (which had already invalidated the obvious `josh-matthews` fixture during T-071 testing).
+
+**Deliberately out of scope:**
+- Write-path bugs (POST /v1/uploads/image, PATCH semantics) — needs authenticated test users + post-test cleanup. Lives with `T-069` (E2E retention loop) once that takes shape.
+- Cron / synthetic monitoring — overkill for pre-launch traffic. Revisit if we ever hit a "silently broken for hours" incident.
+- Mail-delivery + job-worker round-trips — needs a closed-loop test fixture (synthetic inquiry → verify the email arrives at a known mailbox); large enough to be its own ticket.
+
 ### ~~`T-071` UI feedback + dialog primitives (FieldError, useConfirm, sonner toasts)~~ — shipped 2026-06-22
 
 - ✅ `<FieldError>` + `useConfirm()` + `<ConfirmDialogProvider>` shared primitives.

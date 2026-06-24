@@ -3,6 +3,35 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-23 — T-075: Prod smoke suite (read-only, manual + post-deploy)
+
+T-070 + T-071 + T-072 ship cycle revealed multiple "silent prod
+breakage" failure modes (missing env var on the Lambda, migration not
+run, WAF rule new-fired against the inbound webhook). Each was a 30-60
+minute debug session; each would have been caught by a 5-second curl
+hitting a covered endpoint right after the deploy. So:
+
+- `scripts/smoke-prod.sh` — 17 checks across api / web / OG / image
+  CDN, asserting status + body fingerprints. Pretty colour output;
+  failing checks dump the first 240 bytes of the body so the operator
+  can grep without re-running.
+- `make smoke-prod` — manual entry point.
+- Wired into the tail of `make deploy-api` and `make deploy-web` so
+  a bad deploy fails loud at the deploy step. Escape hatch:
+  `SKIP_SMOKE=1` env.
+- Fixtures use the WikiArt demo seed (`demo-ukiyo-e` artist,
+  `fbc3702b-...` artwork) — won't be deleted by user-testing the way
+  the original `josh-matthews / A complicated artwork` fixture was
+  during T-071 manual testing.
+
+Deliberately NOT cron / synthetic monitoring — we're pre-launch and
+no real traffic to keep eyes on. Revisit if uptime ever becomes a
+business problem rather than a developer-feedback one.
+
+Out of scope: write-path coverage (needs authenticated test users +
+cleanup); mail delivery round-trip (needs synthetic inquiry → known
+mailbox). Both deferred per `TODO.md T-075`.
+
 ## 2026-06-22 — T-071: UI feedback + dialog primitives
 
 Real-artist testing of T-070 surfaced three consistency cracks in the

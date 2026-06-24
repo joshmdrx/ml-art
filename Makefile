@@ -62,6 +62,7 @@ help:
 	@echo "    make deploy-jobs-check   cargo lambda build only (no upload)"
 	@echo "    make deploy-web          build (OpenNext) + push web + sync assets + invalidate"
 	@echo "    make deploy-web-check    opennextjs-aws build only (no upload)"
+	@echo "    make smoke-prod          curl-based smoke suite (read-only, ~10s)"
 	@echo ""
 	@echo "  Util:"
 	@echo "    make psql         open a psql shell in the postgres container"
@@ -212,6 +213,15 @@ deploy-web:
 .PHONY: deploy-web-check
 deploy-web-check:
 	@scripts/deploy-web.sh --check
+
+# Production smoke suite (T-075). Read-only curl assertions over the
+# public surface; ~10s end-to-end. Auto-runs at the tail of
+# deploy-api and deploy-web so a bad deploy fails loud at the deploy
+# step. Also runnable on its own (`make smoke-prod`) before / after
+# any manual change.
+.PHONY: smoke-prod
+smoke-prod:
+	@scripts/smoke-prod.sh
 
 # ─── utilities ──────────────────────────────────────────────────────────────
 .PHONY: psql

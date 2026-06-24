@@ -109,4 +109,17 @@ if [[ "$HTTP_CODE" != "200" ]]; then
   exit 1
 fi
 
+# Full prod smoke suite (T-075) — read-only curl assertions across api +
+# web + OG + CDN. ~5s. Catches more than the single-endpoint health
+# check above (e.g. dependent-route 404s, body fingerprint regressions).
+# Skip by setting SKIP_SMOKE=1 in env for an explicit "I'll smoke
+# manually" deploy.
+if [[ "${SKIP_SMOKE:-0}" != "1" ]]; then
+  echo ""
+  echo "▶ running prod smoke suite"
+  "$(dirname "$0")/smoke-prod.sh"
+else
+  echo "▶ SKIP_SMOKE=1 — skipping prod smoke suite"
+fi
+
 echo "✔ deploy complete."
