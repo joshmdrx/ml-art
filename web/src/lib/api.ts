@@ -240,6 +240,12 @@ export interface StudioArtist {
    * just an extra field on this shape. Defaults to 0 in tests / older
    * builds. */
   follower_count?: number;
+  /** T-074 — count of deliverable + unread inquiries for this artist.
+   * Drives the unread-badge on the TopNav `Studio` link. Pending-
+   * verification inquiries (the buyer hasn't clicked the verify link
+   * yet) are NOT included — the artist hasn't been emailed about
+   * them. Same defaults-to-0 contract as `follower_count`. */
+  unread_inquiry_count?: number;
 }
 
 /** Body for `PATCH /v1/studio/settings`. Every field optional; omitting

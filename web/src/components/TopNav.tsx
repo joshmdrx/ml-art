@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Show, UserButton } from "@clerk/nextjs";
 import { SearchBar } from "./SearchBar";
+import { StudioNavLink } from "./StudioNavLink";
 
 /**
  * Persistent sticky top nav.
@@ -53,12 +54,11 @@ export function TopNav({
             </Link>
           </Show>
           <Show when="signed-in">
-            <Link
-              href="/studio"
-              className="text-muted hover:text-foreground"
-            >
-              Studio
-            </Link>
+            {/* T-074 — async server component; fetches /v1/studio/me
+                to render the unread-inquiry badge. Does its own
+                auth() check so an SSR-vs-CSR auth-state blip never
+                fires the fetch for an anonymous viewer. */}
+            <StudioNavLink />
             <Link
               href="/collections"
               className="text-muted hover:text-foreground"

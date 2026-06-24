@@ -3,6 +3,49 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-23 — T-074: Unread-inquiry badge on TopNav
+
+A signed-in artist now sees a small badge on the TopNav "Studio" link
+when they have deliverable + unread inquiries. Closes the gap between
+the inquiry-delivered email and the next time they remember to check
+the studio inbox.
+
+Backend:
+- `/v1/studio/me` extended with `unread_inquiry_count: i32`. Filter
+  is `delivered_at IS NOT NULL AND read_at IS NULL` so pending-
+  verification inquiries (the buyer hasn't clicked the verify link
+  yet) don't pad the count — the artist hasn't been emailed about
+  those yet either, so showing them would be confusing.
+- `unwrap_or(0)` on the count query so a DB blip degrades to "no
+  badge" rather than a 500.
+- One new integration test pinning the three-state semantic
+  (delivered+unread counts, delivered+read doesn't, pending doesn't).
+
+Web:
+- `<UnreadBadge count={n} label={...} />` primitive in `components/ui/`.
+  Returns null for count ≤ 0 so call sites stay compact. Caps display
+  at "9+" at 10 and above; `aria-label` always carries the literal count.
+- `<StudioNavLink />` async server component fetches `/v1/studio/me`,
+  renders the link with the badge when `unread_inquiry_count > 0`.
+  Does its own server-side `auth()` check so a brief SSR-vs-CSR
+  auth-state mismatch never fires the fetch for anonymous viewers.
+  Graceful no-badge fallback on errors via `reportError`.
+- 6 Vitest tests on the badge (render, hide-on-0, hide-on-negative,
+  cap at 9+, exact-9 boundary, exact-10 boundary).
+
+Refresh model: SSR-fresh on every page navigation. No polling, no
+WebSocket. If an inquiry arrives while the artist is sitting on a
+single page, the badge updates on their next nav. Acceptable v1
+trade-off; revisit if "stale-while-idle" becomes a complaint.
+
+Visual: foreground-bg circle with white digits (not red) — the site
+is monochrome-restrained and unread inquiries are good news, not an
+alarm. ~14px tall, capped width via `9+`.
+
+Deferred (not yet needed):
+- Tab-title prefix `(3) Wander — …` (Gmail-style)
+- Inquiries-tile badge on `/studio` dashboard
+
 ## 2026-06-23 — T-075: Prod smoke suite (read-only, manual + post-deploy)
 
 T-070 + T-071 + T-072 ship cycle revealed multiple "silent prod

@@ -73,6 +73,51 @@ async fn studio_me_returns_linked_artist(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_me_unread_inquiry_count_excludes_pending_and_read(pool: PgPool) {
+    // T-074 — the badge count must match the deliverable-and-unread
+    // semantic exactly:
+    //   - delivered + unread  → counted
+    //   - delivered + read    → not counted
+    //   - pending-verification (delivered_at IS NULL) → not counted
+    //     (the artist hasn't been emailed about these yet)
+    let app = app_with_test_auth(pool.clone());
+
+    // Alice's seed: no inquiries.
+    let (status, me): (_, serde_json::Value) =
+        get_json_authed(app.clone(), "/v1/studio/me", ALICE).await;
+    assert_eq!(status, 200);
+    assert_eq!(me["unread_inquiry_count"], 0, "baseline = 0");
+
+    // Insert three rows: delivered+unread (counts), delivered+read (not),
+    // and pending (not).
+    sqlx::query(
+        r#"
+        INSERT INTO inquiries
+            (id, artwork_id, artist_id, from_email, from_name, message,
+             verified_at, delivered_at, read_at)
+        VALUES
+            (gen_random_uuid(), $1::uuid, $2::uuid, 'a@example.com', 'A', 'msg',
+             now(), now(), NULL),
+            (gen_random_uuid(), $1::uuid, $2::uuid, 'b@example.com', 'B', 'msg',
+             now(), now(), now()),
+            (gen_random_uuid(), $1::uuid, $2::uuid, 'c@example.com', 'C', 'msg',
+             NULL, NULL, NULL)
+        "#,
+    )
+    .bind(ARTWORK_BLUE_MORNING)
+    .bind("aaa11111-1111-1111-1111-111111111111")
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (_, me): (_, serde_json::Value) = get_json_authed(app, "/v1/studio/me", ALICE).await;
+    assert_eq!(
+        me["unread_inquiry_count"], 1,
+        "only the delivered+unread row counts"
+    );
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn studio_me_404s_for_non_artist_user(pool: PgPool) {
     // Bob is a signed-in user with no `artists.user_id` link. Studio
     // must return 404, not 401, so we don't leak "yes there are artists

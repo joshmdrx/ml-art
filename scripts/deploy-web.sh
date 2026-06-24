@@ -26,6 +26,9 @@
 
 set -euo pipefail
 
+# Capture before any cd — used at the tail to invoke smoke-prod.sh.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 PROFILE="${AWS_PROFILE:-ml-art}"
 REGION="${AWS_REGION:-us-east-1}"
 FUNCTION_NAME="${WEB_FUNCTION_NAME:-ml-art-prod-web}"
@@ -192,7 +195,7 @@ fi
 if [[ "${SKIP_SMOKE:-0}" != "1" ]]; then
   echo ""
   echo "▶ running prod smoke suite"
-  "$(dirname "$0")/smoke-prod.sh"
+  "$SCRIPT_DIR/smoke-prod.sh"
 else
   echo "▶ SKIP_SMOKE=1 — skipping prod smoke suite"
 fi

@@ -483,6 +483,18 @@ T-057 / T-061 will need a stable medium taxonomy anyway for taste-vector groupin
 **Why:** Today both files are maintained by hand. Drift risk: an API field rename only breaks at runtime. Caught us once with `is_following` (we shipped the Rust side then realised the TS side was stale). Risk grows with surface area.
 **Acceptance:** every `pub struct` in `models.rs` with `#[derive(Serialize)]` round-trips to a TS `export interface` automatically on `cargo build` (or as a separate `make types` target); CI fails if the generated file drifts from what's checked in.
 
+### ~~`T-074` Unread-inquiry badge on TopNav~~ — shipped 2026-06-23
+
+- ✅ `/v1/studio/me` extended with `unread_inquiry_count: i32`. Filters on `delivered_at IS NOT NULL AND read_at IS NULL` so pending-verification inquiries (which the artist hasn't been emailed about yet) don't pad the count.
+- ✅ `<UnreadBadge>` component — 6 Vitest tests covering: render when > 0, hide on 0 / negative, "9+" cap at 10+, exact-9 still shows "9".
+- ✅ `<StudioNavLink>` async server component does its own `auth()` check so a brief SSR-vs-CSR auth-state mismatch never fires `/v1/studio/me` for anonymous viewers. Graceful no-badge fallback on fetch errors via `reportError`.
+- ✅ SSR-fresh refresh model — count updates on every page navigation. No polling, no WebSocket. Acceptable v1 trade-off; if artist sits on one page for an hour, badge waits until next nav.
+- ✅ Foreground-bg badge, not red — site is monochrome-restrained and unread inquiries are good news, not alarm. Aria-label always carries the count.
+
+**Deferred follow-ups:**
+- Tab-title prefix (`(3) Wander — …`, Gmail style). Cheap, high-signal; layer in only if the badge alone proves insufficient.
+- Inquiries-tile badge on the `/studio` dashboard. ~15 min addition once we want richer dashboard surfaces.
+
 ### ~~`T-075` Prod smoke suite (read-only)~~ — shipped 2026-06-23
 
 - ✅ `scripts/smoke-prod.sh` — bash + curl assertions over the public surface (`/v1/health`, search, artist + artwork detail, neighborhoods, OG cards, images CDN). 17 checks, ~10s end-to-end.
