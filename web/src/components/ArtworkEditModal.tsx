@@ -368,7 +368,12 @@ function ArtworkForm({
       description: description.trim() || null,
       medium: medium.trim() || null,
       year_created: yearCreated ? Number(yearCreated) : null,
-      dimensions: dims.value ?? undefined,
+      // T-072 — `null` (not `undefined`) so the server-side
+      // `deserialize_double_option` reads this as Some(None) and
+      // clears the column. Sending `undefined` here would serialise
+      // as omitted, which means "leave the existing value alone" —
+      // not what an artist who blanked the dims expects.
+      dimensions: dims.value ?? null,
       price_cents: parsedPrice?.amount_minor ?? null,
       currency: parsedPrice?.currency ?? (currency.trim() || "USD"),
       availability: availability as

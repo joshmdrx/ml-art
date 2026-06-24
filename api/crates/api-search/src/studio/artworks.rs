@@ -283,23 +283,51 @@ pub async fn detail(
 
 #[derive(Debug, Deserialize)]
 pub struct PatchArtwork {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // Each clearable field uses `deserialize_double_option` so an
+    // explicit JSON `null` lands as `Some(None)` (clear column),
+    // distinct from "key absent" (`None` — leave column alone).
+    // Without the helper, serde's default would collapse both into
+    // `None` and the "clear via null" branch in the SQL CASE WHEN
+    // below would silently never fire. See
+    // `api/crates/api-search/src/serde_helpers.rs` for the contract.
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_double_option"
+    )]
     pub title: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_double_option"
+    )]
     pub description: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_double_option"
+    )]
     pub year_created: Option<Option<i32>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_double_option"
+    )]
     pub medium: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_double_option"
+    )]
     pub dimensions: Option<Option<serde_json::Value>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_double_option"
+    )]
     pub price_cents: Option<Option<i64>>,
     #[serde(default)]
     pub currency: Option<String>,
     #[serde(default)]
     pub availability: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_double_option"
+    )]
     pub external_url: Option<Option<String>>,
     /// `draft` ↔ `published` ↔ `archived`. Setting `published` from
     /// `draft` stamps `published_at = now()` (handled in SQL via COALESCE).
@@ -333,14 +361,15 @@ pub async fn patch(
         }
     }
 
-    // T-070 — validate dimensions when the patch carries them. Patch
-    // semantics here mirror every other Option<Option<...>> field on
-    // this struct: a present object updates the column, an omitted key
-    // leaves it alone. `null` deserializes to `None` under the default
-    // serde rules so explicit-null-to-clear isn't supported (same
-    // limitation across the rest of the patch surface — not in scope
-    // for this ticket).
-    let dimensions_present = matches!(body.dimensions, Some(Some(_)));
+    // T-070 — validate dimensions when the patch carries a value.
+    // T-072 — `deserialize_double_option` on the struct now means
+    // `Some(None)` (explicit null) is distinct from `None` (absent),
+    // so the three patch states all behave correctly:
+    //   - body.dimensions = None         → leave column alone
+    //   - body.dimensions = Some(None)   → SET dimensions = NULL  (clear)
+    //   - body.dimensions = Some(Some(v))→ SET dimensions = v     (update)
+    // Validation only fires for the third case.
+    let dimensions_present = body.dimensions.is_some();
     let dimensions_value: Option<serde_json::Value> = match body.dimensions {
         Some(Some(ref v)) => {
             Some(ml_art_core::validation::dimensions_v1(v).map_err(ApiError::BadRequest)?)

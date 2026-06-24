@@ -29,7 +29,7 @@ use ml_art_core::{
     jobs::{EnqueueOpts, JobEvent},
     models::ArtistLocation,
 };
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -198,7 +198,10 @@ pub struct PatchLocation {
     /// `None`) — `deserialize_double_option` is the small helper that
     /// gives us real PATCH semantics: missing → `None`, null →
     /// `Some(None)`, string → `Some(Some(s))`.
-    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_double_option"
+    )]
     pub website_url: Option<Option<String>>,
     #[serde(default)]
     pub display_order: Option<i32>,
@@ -331,22 +334,10 @@ pub async fn delete(
     Ok(Json(DeleteAck { id, deleted: true }))
 }
 
-/// Serde helper: deserialize a field into `Option<Option<T>>` such that:
-///   missing key → `None`
-///   `null`      → `Some(None)`
-///   value       → `Some(Some(value))`
-///
-/// Without this, plain `#[serde(default)]` collapses both `null` and
-/// "missing" into outer `None`, making it impossible to clear a column
-/// over PATCH via JSON `null`. Generic so the same helper can be lifted
-/// elsewhere if we want real PATCH semantics on other endpoints.
-fn deserialize_double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    T: Deserialize<'de>,
-    D: Deserializer<'de>,
-{
-    Option::<T>::deserialize(deserializer).map(Some)
-}
+// Helper lifted to `crate::serde_helpers` (T-072) so artworks +
+// settings patch endpoints can share it. Was originally local here
+// from T-038; the broader fix exposed the bug pattern across the
+// whole studio patch surface.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Validation helpers

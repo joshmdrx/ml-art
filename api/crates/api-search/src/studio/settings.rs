@@ -41,22 +41,39 @@ const SELF_SERVE_STATUSES: &[&str] = &["active", "paused"];
 
 #[derive(Debug, Deserialize)]
 pub struct PatchSettings {
-    // `Option<Option<T>>` again — outer `Some` means "the caller
-    // included this key"; inner `None` means "set to NULL." Matches the
-    // pattern in `me/collections::patch` + `studio/artworks::patch`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // T-072 — each clearable field uses `deserialize_double_option` so
+    // `null` lands as `Some(None)` (clear column), distinct from
+    // absent (`None` — leave alone). Without the helper, serde's
+    // default collapses both into `None` and "clear via null" silently
+    // never fires. See `serde_helpers::deserialize_double_option`.
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_double_option"
+    )]
     pub bio: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_double_option"
+    )]
     pub artist_statement: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_double_option"
+    )]
     pub location: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_double_option"
+    )]
     pub website_url: Option<Option<String>>,
     /// `socials` is `NOT NULL DEFAULT '{}'` in the schema, so a present
-    /// value replaces wholesale (no null branch).
+    /// value replaces wholesale (no null branch — not clearable).
     #[serde(default)]
     pub socials: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_double_option"
+    )]
     pub commissioning_preferences: Option<Option<serde_json::Value>>,
     #[serde(default)]
     pub inquiry_preferences: Option<serde_json::Value>,

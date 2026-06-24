@@ -298,6 +298,79 @@ async fn studio_artworks_patch_dimensions_omitted_preserves(pool: PgPool) {
     assert_eq!(dims["width"], 50);
 }
 
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_artworks_patch_dimensions_null_clears(pool: PgPool) {
+    // T-072 — explicit JSON `null` in a PATCH body must clear the
+    // column. Before the deserialize_double_option fix, serde
+    // collapsed null → None at deserialize time so this branch
+    // silently never fired and artists couldn't remove dimensions
+    // once entered.
+    let app = app_with_test_auth(pool.clone());
+    sqlx::query(
+        r#"UPDATE artworks
+           SET dimensions = jsonb_build_object('unit','cm','width',50,'height',50)
+           WHERE id = $1::uuid"#,
+    )
+    .bind(ARTWORK_BLUE_MORNING)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let body = json!({"dimensions": serde_json::Value::Null}).to_string();
+    let (status, _) = send_authed(
+        app,
+        "PATCH",
+        &format!("/v1/studio/artworks/{ARTWORK_BLUE_MORNING}"),
+        ALICE,
+        Some(&body),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let dims: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT dimensions FROM artworks WHERE id = $1::uuid")
+            .bind(ARTWORK_BLUE_MORNING)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        dims.is_none(),
+        "dimensions column should be NULL after clear"
+    );
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_artworks_patch_description_null_clears(pool: PgPool) {
+    // T-072 — same clear-via-null path for a text column. Picked
+    // description because it's the most-likely-cleared field after
+    // dimensions; covers the String branch of the deserializer.
+    let app = app_with_test_auth(pool.clone());
+    sqlx::query("UPDATE artworks SET description = 'something' WHERE id = $1::uuid")
+        .bind(ARTWORK_BLUE_MORNING)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let body = json!({"description": serde_json::Value::Null}).to_string();
+    let (status, _) = send_authed(
+        app,
+        "PATCH",
+        &format!("/v1/studio/artworks/{ARTWORK_BLUE_MORNING}"),
+        ALICE,
+        Some(&body),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let desc: Option<String> =
+        sqlx::query_scalar("SELECT description FROM artworks WHERE id = $1::uuid")
+            .bind(ARTWORK_BLUE_MORNING)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(desc.is_none(), "description should be NULL after clear");
+}
+
 // ── /v1/studio/artworks misc ───────────────────────────────────
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]

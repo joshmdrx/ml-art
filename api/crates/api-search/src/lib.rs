@@ -13,6 +13,7 @@ pub mod neighborhoods;
 pub mod onboarding;
 pub mod search;
 pub mod search_map;
+mod serde_helpers;
 pub mod studio;
 pub mod uploads;
 pub mod webhooks;
