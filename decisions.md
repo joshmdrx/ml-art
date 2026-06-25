@@ -17,6 +17,89 @@ Format:
 
 ---
 
+## 2026-06-25 — T-050: behavioural events writer — single-table, queue-mediated, server-derived identity
+
+**Context:** Every ML retention feature (T-055 taste vector, T-056
+re-rank, T-057 neighbourhoods, T-060 digest, T-061 calibrator) was
+blocked on event data flowing. The `events` table has existed since
+launch but no writer. Time to wire it.
+
+**Decisions:**
+
+1. **Single `events` table with `event_name` discriminator + jsonb
+   `properties` + jsonb `context`.** Considered per-event-type tables
+   (better column hygiene, can't add an event without a migration).
+   Rejected: flexibility-now > schema-now. We can partition later
+   (T-016) without changing call sites. Spec'd in migration 0006;
+   shipped as-is.
+
+2. **Emit goes through the existing jobs queue** (`JobEvent::EventLog`),
+   not a direct Postgres INSERT from handlers. The handler in
+   `core::jobs::handle` owns the storage destination. Considered direct
+   INSERT (one fewer hop, less infra), rejected because the storage
+   abstraction is exactly what enables the future Postgres → S3 Parquet
+   migration (decisions.md 2026-06-17). Emit sites never see the
+   destination. SQS cost is negligible at this scale (~$0.10/month at
+   projected volume).
+
+3. **Best-effort emit, never blocks the request.** `events::emit`
+   logs at WARN on enqueue failure and swallows. Analytics breakage
+   must never propagate to a real user. Synchronous (not `tokio::spawn`)
+   so the event is in the queue before the response leaves — Lambda
+   freeze on response-return would lose the spawned task. SQS sendMessage
+   latency is single-digit-ms; invisible to the user.
+
+4. **Server-side identity, never client-supplied.** The `/v1/events`
+   POST endpoint reads `anonymous_id` from the cookie and `user_id`
+   from the Bearer token. Body-supplied identity fields are ignored.
+   A malicious client can spoof their OWN anon events but can't
+   attribute events to other identities.
+
+5. **Closed allowlist for client-side names.** Only `modifier_applied`
+   + `inquiry_started` accepted from `/v1/events`. Server-only events
+   (`artwork_saved`, `inquiry_submitted`, etc.) stay server-only.
+   Letting clients forge `artwork_saved` would poison the taste vector;
+   the allowlist is the cheapest defence.
+
+6. **PII (`context.ip` + `context.user_agent`) IS stored.** Considered
+   omitting / hashing. Rejected — the data is genuinely useful (region-
+   level analytics, abuse detection, session reconstruction) and we can
+   choose to hash on read later. Documented as PII; retention + DSAR
+   are deferred to a separate ticket (needs privacy policy +
+   cookie-consent banner work first).
+
+7. **All-or-nothing on batch validation.** Any name in a `/v1/events`
+   batch failing the allowlist rejects the whole batch. Considered
+   partial-success (commit valid, drop invalid). Rejected — half-state
+   is harder to reason about than a clean reject + client retry.
+
+8. **Page-1 only for `search_executed`.** Paginated scrolls don't
+   re-emit; we treat search as a single intent. Considered "one per
+   page" for richer engagement signal. Rejected — duplicate events
+   inflate result-count averages without telling us anything new.
+
+**Reversibility:**
+- Schema: reversible. Drop columns / table; nothing else depends on it yet.
+- Variant: reversible. Removing `JobEvent::EventLog` is a code change.
+- Allowlist: reversible. Adding a name is additive.
+- Emit sites: reversible per-handler.
+- PII storage: reversible — `UPDATE events SET context = context - 'ip' - 'user_agent'` truncates after the fact if we decide differently.
+
+**Alternatives considered:**
+- *Per-event-type tables.* Rejected for migration overhead.
+- *Direct Postgres INSERT from handlers (skip queue).* Rejected for
+  storage-destination encapsulation.
+- *Hashing IP on write.* Rejected for v1 — we'd lose analytic
+  granularity now and the data isn't user-exposed.
+- *`session_id` populated from a cookie.* Deferred — current cookie
+  setup gives us anon_id (sufficient for "one user's journey")
+  without needing a separate session boundary. Add when we have a
+  product need for it (probably never).
+- *Event-name strings hand-typed instead of enum.* Rejected — typo
+  protection + closed-schema serde validation in one go.
+
+---
+
 ## 2026-06-22 — T-071: feedback + dialog primitives (sonner toasts, useConfirm hook, FieldError, JS-only form validation)
 
 **Context:** Real-artist testing (T-070 launch) surfaced three

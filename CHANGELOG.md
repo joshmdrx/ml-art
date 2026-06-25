@@ -3,6 +3,92 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-25 — T-050: Behavioural events writer
+
+The `events` table has existed since launch but nothing wrote to it.
+Every ML retention track (T-055 taste vector, T-056 "for you" re-rank,
+T-057 neighbourhoods, T-060 Discover Weekly, T-061 calibrator) was
+blocked on this. Now flowing.
+
+Foundation (`core::events`):
+- `EventName` enum — closed taxonomy of 12 snake_case codes matching the
+  `events.event_name` column convention from migration 0006.
+- `extract_request_context(headers)` — JSON `{ip, user_agent}` from
+  `X-Forwarded-For`'s leftmost entry + the `User-Agent` header. Both PII.
+- `event_log(...)` builder + `emit(...)` best-effort enqueue. Logs at WARN
+  on failure, never propagates — analytics must never break a real request.
+
+Wire (`core::jobs`):
+- `JobEvent::EventLog { name, anonymous_id, user_id, properties, context }`
+  variant + handler arm INSERT into `events`. Storage destination
+  encapsulated behind the queue per `decisions.md` 2026-06-17 so a future
+  Postgres → S3 Parquet swap touches only `core::jobs::handle`.
+
+10 server-side emits:
+- `search_executed` on `GET /v1/search` — page-1 only (offset 0), full
+  filter set + result count in `properties`.
+- `artwork_viewed` on `GET /v1/artworks/:id` — emitted only on the success
+  branch (404 short-circuits before the emit).
+- `artwork_saved` / `artwork_unsaved` on the collection-membership routes.
+- `inquiry_submitted` on `POST /v1/artworks/:id/inquiries` — both anon and
+  signed-in paths attach the best-available identity (anon_id from cookie,
+  user_id from JWT when present).
+- `visual_search_uploaded` on `POST /v1/uploads/image` — bytes_size
+  captured BEFORE the bytes are consumed by the S3 put.
+- `artist_viewed` on `GET /v1/artists/:slug`.
+- `neighborhood_viewed` on `GET /v1/neighborhoods/:slug` — filter params
+  preserved so we can distinguish "browsed bare" from "browsed and narrowed".
+- `artist_followed` / `artist_unfollowed` on the follow CRUD routes.
+
+Client-side batch endpoint:
+- `POST /v1/events` accepts a batched JSON body. Server-side allowlist
+  (`CLIENT_ALLOWED = [ModifierApplied, InquiryStarted]`) — clients can't
+  fake server-only signals like `artwork_saved`. Rate-limited by the
+  per-anon search policy.
+- Server derives `anonymous_id` from the cookie + `user_id` from the JWT,
+  ignoring any client-supplied identity fields.
+- All-or-nothing semantics: any name in the batch failing validation
+  rejects the entire batch.
+- Max batch 50, empty 400.
+
+Web client (`web/src/lib/events.ts`):
+- `track(name, properties)` enqueues + schedules a flush. Returns immediately.
+- Flushes on count ≥10, 5s timer, `pagehide`, `visibilitychange → hidden`.
+- `keepalive: true` so tab-close flushes survive.
+- SSR-safe (no-op when `window === undefined`).
+- Same-origin POST to `/api/events` (browser cookie scoped to wander.gallery,
+  can't reach api.wander.gallery directly).
+
+2 client-side emits:
+- `modifier_applied` — fires in `ModifierBar.toggle()` with the effective
+  `codes` AFTER the toggle. Empty `codes` is a valid signal ("user cleared").
+- `inquiry_started` — fires when `InquiryModal` opens. Combined with the
+  server-side `inquiry_submitted` this gives the open→submit funnel ratio.
+
+Anonymous → signed-in linking:
+- T-033's merge handler already had `UPDATE events SET user_id = $new_user
+  WHERE anonymous_id = $anon` from day 1; the existing
+  `merge_stamps_user_id_on_anon_rows` test covers it. Now operational
+  because emit sites populate rows.
+
+PII:
+- `context.ip` + `context.user_agent` are PII under GDPR / UK GDPR. The
+  module doc spells it out. Retention + DSAR + cookie-consent banner are
+  deferred — see the TODO entry for the follow-ups.
+
+Tests:
+- 5 unit tests on `core::events` (serde round-trip, IP extraction, missing
+  headers, whitespace, empty-string).
+- 18 integration tests in `events_test.rs` covering: emission per handler,
+  page-2 search suppression, 404 doesn't-emit, the `POST /v1/events`
+  fan-out + allowlist + cap paths, end-to-end handler-INSERT.
+- 4 Vitest cases on the web batcher (count-flush, timer-flush, empty-noop,
+  visibility-change).
+
+Verified live on prod (api v19, jobs v7, web v43): a synthetic
+`POST /api/events` landed both client events; an `artist_viewed` from a
+manual hit landed the server-side path. Events flowing.
+
 ## 2026-06-25 — T-073: Canonical medium taxonomy + filterable category
 
 Free-text `medium` ("Oil on linen") never intersected with the

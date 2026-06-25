@@ -205,7 +205,27 @@ Ordered roughly by precondition graph: foundation (`T-050`) → retention
 (`T-051..T-053`) → loops (`T-054`) → ML core (`T-055..T-057`) → UX
 additions (`T-058..T-063`).
 
-### `T-050` Behavioural events writer
+### ~~`T-050` Behavioural events writer~~ — shipped 2026-06-25
+
+The `events` table (migration 0006) has existed since launch; nothing wrote to it. T-055/56/57/60/61 (taste vector, "for you", neighbourhoods, digest, calibrator) were all gated on event data flowing. This unblocks them.
+
+- ✅ `core::events` module: closed `EventName` taxonomy (12 codes), `extract_request_context` (IP + UA from `X-Forwarded-For` + `User-Agent`), `event_log()` builder, best-effort `emit()`.
+- ✅ `JobEvent::EventLog` variant + handler arm `INSERT INTO events`. Storage destination encapsulated behind the queue per the 2026-06-17 decision.
+- ✅ 10 server-side emits wired: `search_executed` (page-1 only), `artwork_viewed`, `artwork_saved`/`unsaved`, `inquiry_submitted` (both anon + signed-in paths attach the best-available identity), `visual_search_uploaded`, `artist_viewed`, `neighborhood_viewed`, `artist_followed`/`unfollowed`.
+- ✅ 2 client-side emits via `POST /v1/events` (T-050.3): `modifier_applied`, `inquiry_started`. Server-side allowlist gates which names are accepted from the client.
+- ✅ `web/src/lib/events.ts` batcher: count-flush at 10, timer-flush at 5s, `pagehide` + `visibilitychange→hidden` triggers, `keepalive: true` on the fetch.
+- ✅ `web/src/app/api/events/route.ts` same-origin proxy (browser cookie scoped to wander.gallery, can't reach api.wander.gallery directly).
+- ✅ T-033 merge handler already had `UPDATE events SET user_id = $new_user WHERE anonymous_id = $anon` from day 1 — covered by `merge_stamps_user_id_on_anon_rows` test. Now operational because emit sites populate rows.
+- ✅ PII: IP + UA stored on every row. Documented in the `core::events` module-level doc. Retention + DSAR + cookie-consent banner are deferred follow-ups (separate tickets — privacy policy + banner work needed first).
+- ✅ Tests: 5 unit tests on `core::events`, 18 integration tests on the emit + persistence + ingest paths, 4 Vitest cases on the web batcher.
+
+**Verified live on prod** (api v19, jobs v7, web v43): both server and client emit paths flowing end-to-end into the `events` table.
+
+**Deferred follow-ups (logged here for the next contributor):**
+- `events.partition` (monthly) — T-016. Defer until volume justifies; current scale fits a single non-partitioned table comfortably.
+- `inquiry_started` → `inquiry_submitted` funnel ratio dashboard. The data is now there; the analytics surface isn't.
+- Cookie-consent banner + privacy-policy update before EU/UK launch. PII is in `context`; we're not GDPR-compliant on the disclosure side.
+- Web Lambda → api forward of `X-Forwarded-For` so SSR-rendered events carry the user's real IP rather than the Lambda's. Currently 99% of `artwork_viewed` events show `user_agent = "node"` for this reason — same user, just attributed via the cookie not the IP.
 **Where:** `core::events` (new module) + handler call sites in `search.rs`, `artwork.rs`, `inquiries.rs`, `studio/*`, `me/*`, `uploads.rs`.
 **Why:** `0006_events_profiles.sql` shipped the table; no writer exists. Every taste-vector, recommendation, analytics, and CF feature below is blocked on event data flowing in. Single highest-leverage piece of plumbing on the post-launch board.
 **Acceptance:**
