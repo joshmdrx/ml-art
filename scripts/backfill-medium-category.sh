@@ -102,6 +102,31 @@ run_sql "UPDATE artworks SET medium_category='mixed_media'
          WHERE medium_category IS NULL
            AND medium ~* '\\m(mixed media|found object|multi-media|multi media)\\M';"
 
+# WikiArt seed quirk — the seed loader uses art-movement names (style)
+# in the `medium` column rather than material descriptions. Mapping
+# style → category for the standard WikiArt styles so the seed corpus
+# stops dragging the NULL-category count up. Future T-073 work moves
+# this into the seed loader (`ml/seed/`) directly so a re-seed produces
+# categorised data without needing this pass.
+run_sql "UPDATE artworks SET medium_category='print'
+         WHERE medium_category IS NULL
+           AND medium IN ('Ukiyo E', 'Ukiyo-e');"
+
+run_sql "UPDATE artworks SET medium_category='painting'
+         WHERE medium_category IS NULL
+           AND medium IN (
+               'Realism', 'Rococo', 'Romanticism', 'Symbolism',
+               'Abstract Expressionism', 'Art Nouveau', 'Baroque',
+               'Cubism', 'Early Renaissance', 'Expressionism',
+               'Fauvism', 'High Renaissance', 'Impressionism',
+               'Mannerism Late Renaissance', 'Minimalism',
+               'Naive Art Primitivism', 'Northern Renaissance',
+               'Pointillism', 'Post Impressionism', 'Pop Art',
+               'Synthetic Cubism', 'Analytical Cubism',
+               'Contemporary Realism', 'New Realism',
+               'Action Painting', 'Color Field Painting'
+           );"
+
 if [[ "$APPLY" == "1" ]]; then
   echo
   echo "▶ Spread after backfill:"
