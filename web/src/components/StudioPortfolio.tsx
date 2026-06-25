@@ -20,6 +20,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { clsx } from "clsx";
 import { ArtworkEditModal } from "@/components/ArtworkEditModal";
 import type { StudioArtist, StudioArtworkSummary } from "@/lib/api";
+import { formatMedium } from "@/lib/medium";
 
 type StatusFilter = "all" | "draft" | "published" | "archived";
 
@@ -134,7 +135,11 @@ function ArtworkCard({
         <h3 className="font-serif text-base truncate">
           {artwork.title ?? "Untitled"}
         </h3>
-        <p className="text-xs text-muted">{artwork.medium ?? "—"}</p>
+        {/* T-073 — show category + materials together. Falls back to
+            "—" only when both are blank (no taxonomy + no free text). */}
+        <p className="text-xs text-muted">
+          {formatMedium(artwork.medium_category, artwork.medium) || "—"}
+        </p>
         <div className="flex gap-2 pt-2">
           <button
             type="button"

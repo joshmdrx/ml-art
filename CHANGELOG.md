@@ -3,6 +3,60 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-25 — T-073: Canonical medium taxonomy + filterable category
+
+Free-text `medium` ("Oil on linen") never intersected with the
+FilterBar's preset dropdown ("Painting") — the medium filter
+silently matched nothing for years. T-057 (algorithmic
+neighbourhoods) and T-061 (taste calibrator) also need a stable
+medium axis for clustering / personalization, so the fix is
+foundational, not just UX cleanup.
+
+Schema:
+- Migration 0021 adds `artworks.medium_category text` with a CHECK
+  constraint pinning the 11-value v1 list (painting / drawing /
+  photography / print / sculpture / mixed_media / collage / textile
+  / ceramic / digital / other).
+- Existing `medium` column repurposed as the free-text "materials"
+  field. No rename — semantically still makes sense, less churn.
+- Partial btree index on `(medium_category) WHERE medium_category
+  IS NOT NULL AND deleted_at IS NULL` for the multi-value ANY()
+  search filter.
+
+Backend:
+- `core::media::CATEGORIES` — single source of truth (3 unit tests).
+- `core::validation::medium_category_v1` (strict, write-path) and
+  `parse_medium_query` (tolerant, read-path) (7 unit tests).
+- Studio POST + PATCH accept `medium_category` with T-072 double-
+  option semantics — `null` clears, omit leaves alone, value sets.
+- `/v1/search?medium=` is now multi-value comma-separated against
+  `medium_category`. Unknown tokens dropped silently so bookmarked
+  URLs with renamed categories surface what survives.
+- 8 new integration tests; 3 existing tests rewritten against the
+  new column.
+
+Backfill:
+- `scripts/backfill-medium-category.sh` — rules-first ILIKE pass +
+  explicit WikiArt-style mapping. Idempotent (every clause guards
+  on `WHERE medium_category IS NULL`).
+- Prod run: 2000/2000 rows categorised, zero NULL. 1903 painting
+  (WikiArt corpus) + 80 print (Ukiyo-e) + Josh's real artworks.
+
+Web:
+- `lib/medium.ts` — `MEDIUM_CATEGORIES`, `mediumLabel`, `formatMedium`,
+  `isMediumCategory`. 11 new Vitest unit tests.
+- `ArtworkEditModal` — Category select (canonical) + Materials free-
+  text. Soft-confirm now combines dimensions + category in one
+  dialog so a doubly-incomplete publish only prompts once.
+- `FilterBar` — multi-select pill with toggle items + checkbox-
+  style visual indicator. Old `MEDIUM_OPTIONS` enum (art-movement
+  names that never matched real data) gone.
+- `/artworks/[id]` + studio portfolio tile render combined display:
+  `Painting · Oil on linen`.
+
+Decision: `decisions.md` 2026-06-25 (taxonomy choice, alternatives,
+rejected single-value-vs-multi-tag, why-not-LLM-in-write-path).
+
 ## 2026-06-23 — T-074: Unread-inquiry badge on TopNav
 
 A signed-in artist now sees a small badge on the TopNav "Studio" link

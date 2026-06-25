@@ -5,6 +5,9 @@
  * here. (We'll move to `ts-rs` codegen later — for v0 hand-written is fine.)
  */
 
+import type { MediumCategory } from "@/lib/medium";
+export type { MediumCategory };
+
 export type Availability = "available" | "sold" | "not_for_sale" | "inquire";
 
 export type SortOrder =
@@ -177,7 +180,11 @@ export interface ArtworkFull {
   title: string | null;
   description: string | null;
   year_created: number | null;
+  /** T-073 — free-text materials description ("Oil on linen"). Display only. */
   medium: string | null;
+  /** T-073 — canonical taxonomy code. See `lib/medium.ts` for the list
+   * + display formatting. Nullable for legacy + drafted rows. */
+  medium_category: MediumCategory | null;
   dimensions: Dimensions | null;
   price_cents: number | null;
   currency: string;
@@ -267,7 +274,10 @@ export interface StudioArtworkSummary {
   id: string;
   title: string | null;
   status: "draft" | "published" | "archived";
+  /** T-073 — free-text materials. Display only. */
   medium: string | null;
+  /** T-073 — canonical taxonomy code, filterable. See `lib/medium.ts`. */
+  medium_category: MediumCategory | null;
   price_cents: number | null;
   currency: string;
   availability: Availability;
@@ -308,7 +318,10 @@ export interface CreateArtworkBody {
   title?: string;
   description?: string;
   year_created?: number;
+  /** T-073 — free-text materials. */
   medium?: string;
+  /** T-073 — canonical taxonomy code; one of `MEDIUM_CATEGORIES`. */
+  medium_category?: MediumCategory;
   dimensions?: Dimensions;
   price_cents?: number;
   currency?: string;
@@ -396,6 +409,9 @@ export interface PatchArtworkBody {
   description?: string | null;
   year_created?: number | null;
   medium?: string | null;
+  /** T-073 — `null` clears the column (T-072 patch semantic); omit to
+   * leave alone; value sets. */
+  medium_category?: MediumCategory | null;
   dimensions?: Dimensions | null;
   price_cents?: number | null;
   currency?: string;

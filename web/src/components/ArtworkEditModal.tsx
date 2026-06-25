@@ -32,7 +32,8 @@ import {
   removeArtworkImage,
   uploadArtworkImage,
 } from "@/app/actions/studio";
-import type { StudioArtworkDetail, StudioImage } from "@/lib/api";
+import type { MediumCategory, StudioArtworkDetail, StudioImage } from "@/lib/api";
+import { isMediumCategory, MEDIUM_CATEGORIES, mediumLabel } from "@/lib/medium";
 import { normalizeWebsiteUrl } from "@/lib/normalizeUrl";
 import { formatPriceForInput, parsePrice } from "@/lib/parsePrice";
 import { reportError, toUserMessage } from "@/lib/reportError";
@@ -222,7 +223,12 @@ function ArtworkForm({
 
   const [title, setTitle] = useState(detail?.title ?? "");
   const [description, setDescription] = useState(detail?.description ?? "");
+  // T-073 — `medium` is now the free-text "materials" field; the
+  // canonical filter lives on `medium_category`.
   const [medium, setMedium] = useState(detail?.medium ?? "");
+  const [mediumCategory, setMediumCategory] = useState<string>(
+    detail?.medium_category ?? "",
+  );
   const [yearCreated, setYearCreated] = useState(
     detail?.year_created != null ? String(detail.year_created) : ""
   );
@@ -367,6 +373,14 @@ function ArtworkForm({
       title: title.trim() || null,
       description: description.trim() || null,
       medium: medium.trim() || null,
+      // T-073 — canonical category. Same `null = clear` rule as
+      // dimensions (T-072 deserialize_double_option). isMediumCategory
+      // guards against the select holding an unknown value (shouldn't
+      // happen — the <select> options are bounded — but defensive).
+      medium_category:
+        mediumCategory && isMediumCategory(mediumCategory)
+          ? (mediumCategory as MediumCategory)
+          : null,
       year_created: yearCreated ? Number(yearCreated) : null,
       // T-072 — `null` (not `undefined`) so the server-side
       // `deserialize_double_option` reads this as Some(None) and
@@ -418,25 +432,31 @@ function ArtworkForm({
       return;
     }
 
-    // T-070 — soft nudge when publishing a work that still has no
-    // dimensions. Buyers can't filter by size for works with NULL
-    // dimensions, so we ask before letting the artist publish without
-    // — but don't gate. Now via useConfirm() (T-071) so the dialog
-    // matches the rest of the app's styling.
+    // T-070 + T-073 — soft nudge when publishing a work that still
+    // has no dimensions OR no category. Buyers can't filter by size
+    // for works with NULL dimensions, and can't filter by medium for
+    // works with NULL medium_category. We ask before letting the
+    // artist publish without — but don't gate. Combined into one
+    // dialog so a doubly-incomplete publish only prompts once.
     const isTransitionToPublished =
       status === "published" && detail?.status !== "published";
-    if (
-      (isCreate ? false : isTransitionToPublished) &&
-      dims.value === undefined
-    ) {
-      const proceed = await confirm({
-        title: "Publish without dimensions?",
-        description:
-          "Buyers won't be able to filter your work by size until you add them. You can edit and add them later.",
-        confirmLabel: "Publish anyway",
-        cancelLabel: "Keep editing",
-      });
-      if (!proceed) return;
+    if ((isCreate ? false : isTransitionToPublished)) {
+      const missing: string[] = [];
+      if (dims.value === undefined) missing.push("dimensions");
+      if (!mediumCategory) missing.push("a medium category");
+      if (missing.length > 0) {
+        const what = missing.join(" or ");
+        const proceed = await confirm({
+          title: `Publish without ${what}?`,
+          description:
+            "Buyers won't be able to filter your work by " +
+            missing.join(" or ") +
+            " until you add them. You can edit and add later.",
+          confirmLabel: "Publish anyway",
+          cancelLabel: "Keep editing",
+        });
+        if (!proceed) return;
+      }
     }
 
     startTransition(async () => {
@@ -446,6 +466,10 @@ function ArtworkForm({
             title: title.trim() || undefined,
             description: description.trim() || undefined,
             medium: medium.trim() || undefined,
+            medium_category:
+              mediumCategory && isMediumCategory(mediumCategory)
+                ? (mediumCategory as MediumCategory)
+                : undefined,
             year_created: yearCreated ? Number(yearCreated) : undefined,
             dimensions: dims.value,
             price_cents: parsedPrice?.amount_minor ?? undefined,
@@ -537,7 +561,31 @@ function ArtworkForm({
         />
       </Field>
 
-      <Field label="Medium" hint="e.g. Oil on linen, Inkjet print, Bronze.">
+      {/* T-073 — category is the canonical taxonomy bucket (filterable).
+          Materials underneath is free text for the specifics. Display
+          combines them as "Painting · Oil on linen". */}
+      <Field
+        label="Category"
+        hint="Buyers filter by this. Pick the closest match — describe the specifics below."
+      >
+        <select
+          value={mediumCategory}
+          onChange={(e) => setMediumCategory(e.target.value)}
+          className="w-full bg-background border border-border px-3 py-2 text-sm focus:outline-none focus:border-foreground"
+        >
+          <option value="">— Select a category —</option>
+          {MEDIUM_CATEGORIES.map((code) => (
+            <option key={code} value={code}>
+              {mediumLabel(code)}
+            </option>
+          ))}
+        </select>
+      </Field>
+
+      <Field
+        label="Materials"
+        hint="Optional. e.g. Oil on linen, Inkjet print, Bronze."
+      >
         <input
           type="text"
           value={medium}

@@ -20,12 +20,15 @@ import {
   applyFilterParam,
   AVAILABILITY_OPTIONS,
   bucketTokenFromPriceParams,
-  MEDIUM_OPTIONS,
+  buildMediumParam,
+  MEDIUM_CATEGORIES,
+  parseMediumParam,
   PRICE_BUCKETS,
   priceParamsFromToken,
   SIZE_BANDS,
   type FilterKind,
 } from "@/lib/filterBar";
+import { mediumLabel } from "@/lib/medium";
 
 interface FilterBarProps {
   /** Subset of pills to render. Order is preserved in the layout. */
@@ -51,7 +54,11 @@ export function FilterBar({ availableFilters, basePath }: FilterBarProps) {
   }
 
   // Current values from the URL — these drive the "active" rendering.
-  const currentMedium = searchParams.get("medium") || undefined;
+  // T-073 — medium is now a multi-value comma-separated parameter
+  // against the canonical taxonomy (`painting,print`). `parseMediumParam`
+  // drops unknown tokens so a bookmarked URL with a renamed category
+  // surfaces what survives instead of hard-erroring.
+  const currentMedia = parseMediumParam(searchParams.get("medium"));
   const currentAvailability = searchParams.get("availability") || undefined;
   const currentLocation = searchParams.get("location") || undefined;
   const priceMin = numOrUndef(searchParams.get("price_min"));
@@ -71,19 +78,51 @@ export function FilterBar({ availableFilters, basePath }: FilterBarProps) {
     >
       {availableFilters.includes("medium") && (
         <PillMenu
-          label={currentMedium ? `Medium: ${currentMedium}` : "Medium"}
-          active={Boolean(currentMedium)}
+          label={
+            currentMedia.length === 0
+              ? "Medium"
+              : currentMedia.length === 1
+                ? `Medium: ${mediumLabel(currentMedia[0])}`
+                : `Medium: ${currentMedia.length} selected`
+          }
+          active={currentMedia.length > 0}
           onClear={() => push({ medium: null })}
         >
-          {MEDIUM_OPTIONS.map((m) => (
-            <DropdownMenu.Item
-              key={m}
-              onSelect={() => push({ medium: m })}
-              className="px-3 py-1.5 text-sm cursor-pointer hover:bg-background focus:bg-background focus:outline-none"
-            >
-              {m}
-            </DropdownMenu.Item>
-          ))}
+          {/* T-073 — multi-select. Each item is a toggle: clicking
+              flips that code in/out of the `?medium=` comma list.
+              Radix's onSelect closes the menu by default, but here we
+              want it to stay open while the artist picks more than
+              one. Override the close-on-select with `e.preventDefault()`
+              on the item. */}
+          {MEDIUM_CATEGORIES.map((code) => {
+            const isOn = currentMedia.includes(code);
+            return (
+              <DropdownMenu.Item
+                key={code}
+                onSelect={(e) => {
+                  e.preventDefault();
+                  const next = isOn
+                    ? currentMedia.filter((c) => c !== code)
+                    : [...currentMedia, code];
+                  push({ medium: buildMediumParam(next) });
+                }}
+                className={clsx(
+                  "px-3 py-1.5 text-sm cursor-pointer hover:bg-background focus:bg-background focus:outline-none flex items-center gap-2",
+                )}
+              >
+                <span
+                  aria-hidden
+                  className={clsx(
+                    "inline-block w-3 h-3 border",
+                    isOn
+                      ? "border-foreground bg-foreground"
+                      : "border-border",
+                  )}
+                />
+                {mediumLabel(code)}
+              </DropdownMenu.Item>
+            );
+          })}
         </PillMenu>
       )}
 

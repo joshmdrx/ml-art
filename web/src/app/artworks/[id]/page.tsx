@@ -6,6 +6,7 @@ import { ArtworkGrid } from "@/components/ArtworkGrid";
 import { BackToSearchLink } from "@/components/BackToSearchLink";
 import { InquireButton } from "@/components/InquireButton";
 import { SaveButton } from "@/components/SaveButton";
+import { formatMedium } from "@/lib/medium";
 import {
   getArtwork,
   getSimilarArtworks,
@@ -124,7 +125,13 @@ export default async function ArtworkPage({ params }: { params: Params }) {
               {artwork.year_created && (
                 <Row label="Year" value={String(artwork.year_created)} />
               )}
-              {artwork.medium && <Row label="Medium" value={artwork.medium} />}
+              {/* T-073 — combiner renders "Painting · Oil on linen"
+                  if both, the category Title Case if only category,
+                  the raw materials text if only that (legacy). */}
+              {(() => {
+                const v = formatMedium(artwork.medium_category, artwork.medium);
+                return v ? <Row label="Medium" value={v} /> : null;
+              })()}
               {dims && <Row label="Dimensions" value={dims} />}
               <Row
                 label="Availability"

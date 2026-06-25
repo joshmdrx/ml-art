@@ -53,27 +53,34 @@ export const AVAILABILITY_OPTIONS: ReadonlyArray<{ label: string; value: string 
   { label: "Not for sale", value: "not_for_sale" },
 ];
 
-/**
- * Curated medium list. The seed corpus is the WikiArt sample so values are
- * art-historical styles, not material descriptors. When real artists onboard
- * with mediums like "oil on canvas", this list should be replaced by a
- * server-fed aggregation — see `T-017` (facet counts) for the same query
- * shape; that work and this list become the same change.
- */
-export const MEDIUM_OPTIONS: ReadonlyArray<string> = [
-  "Impressionism",
-  "Post Impressionism",
-  "Expressionism",
-  "Cubism",
-  "Realism",
-  "Romanticism",
-  "Baroque",
-  "Pop Art",
-  "Minimalism",
-  "Abstract Expressionism",
-  "Color Field Painting",
-  "Ukiyo E",
-];
+// T-073 — medium filter now uses the canonical taxonomy codes from
+// `lib/medium.ts` (MEDIUM_CATEGORIES). The old MEDIUM_OPTIONS list of
+// art-movement names (Impressionism, Cubism…) is gone — those never
+// matched what artists actually type, and post-T-073 the server-side
+// SQL filter is on `medium_category` anyway.
+export { MEDIUM_CATEGORIES } from "@/lib/medium";
+
+/** Parse `?medium=painting,print` into an array of canonical codes.
+ * Drops unknown tokens silently (matches the server's
+ * `parse_medium_query` tolerance — bookmarked URLs with renamed
+ * categories still surface what survives). */
+export function parseMediumParam(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  // Lazy import to avoid a circular reference at module init.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { isMediumCategory } = require("@/lib/medium") as typeof import("@/lib/medium");
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && isMediumCategory(s));
+}
+
+/** Build the `?medium=` value from a list of category codes.
+ * Returns `null` for empty (so the FilterBar's
+ * `applyFilterParam({medium: null})` clears the URL key). */
+export function buildMediumParam(codes: readonly string[]): string | null {
+  return codes.length === 0 ? null : codes.join(",");
+}
 
 /**
  * Build a new URL search string from `current`, applying a single-key

@@ -483,6 +483,25 @@ T-057 / T-061 will need a stable medium taxonomy anyway for taste-vector groupin
 **Why:** Today both files are maintained by hand. Drift risk: an API field rename only breaks at runtime. Caught us once with `is_following` (we shipped the Rust side then realised the TS side was stale). Risk grows with surface area.
 **Acceptance:** every `pub struct` in `models.rs` with `#[derive(Serialize)]` round-trips to a TS `export interface` automatically on `cargo build` (or as a separate `make types` target); CI fails if the generated file drifts from what's checked in.
 
+### ~~`T-073` Canonical medium taxonomy + filterable category~~ — shipped 2026-06-25
+
+- ✅ Migration `0021_artwork_medium_category.sql` — adds `artworks.medium_category text` with a CHECK constraint pinning the 11-value v1 taxonomy + partial btree index.
+- ✅ `core::media::CATEGORIES` — single source of truth; 3 unit tests pin count + reject typos.
+- ✅ `core::validation::medium_category_v1` (strict, write-path) + `parse_medium_query` (tolerant, read-path). 7 new unit tests.
+- ✅ POST + PATCH `/v1/studio/artworks` accept `medium_category` with T-072 double-option semantics. 3 new integration tests.
+- ✅ `/v1/search?medium=` is now multi-value comma-separated against `medium_category`. Unknown tokens dropped silently. 3 new integration tests + 2 existing tests rewritten.
+- ✅ Public `ArtworkFull` + Studio response shapes carry the new field.
+- ✅ `scripts/backfill-medium-category.sh` — rules-first ILIKE + WikiArt-style mapping. 2000/2000 prod rows backfilled. Idempotent.
+- ✅ Web: `lib/medium.ts` constants + helpers (`mediumLabel`, `formatMedium`, `isMediumCategory`); 11 new Vitest unit tests.
+- ✅ Web: `ArtworkEditModal` — category select + renamed "Materials" free-text; soft-confirm on publish-without-category-or-dimensions (combined dialog).
+- ✅ Web: `FilterBar` — multi-select pill with toggle items + active count display (`Medium: 2 selected`). Old MEDIUM_OPTIONS list removed.
+- ✅ Web: `/artworks/[id]` + studio portfolio tile use `formatMedium` to render `Painting · Oil on linen`.
+
+**Deferred follow-ups:**
+- Move `STYLE_TO_CATEGORY` map into `ml/seed/` so re-seed produces categorised data straight away (script becomes a one-shot for legacy).
+- Add NFT / Video / Installation when a real artist asks. Additive migration.
+- Multi-tag if the single-value + `mixed_media` bucket starts feeling restrictive.
+
 ### ~~`T-074` Unread-inquiry badge on TopNav~~ — shipped 2026-06-23
 
 - ✅ `/v1/studio/me` extended with `unread_inquiry_count: i32`. Filters on `delivered_at IS NOT NULL AND read_at IS NULL` so pending-verification inquiries (which the artist hasn't been emailed about yet) don't pad the count.
