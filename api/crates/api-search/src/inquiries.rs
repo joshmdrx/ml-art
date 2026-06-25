@@ -18,10 +18,13 @@
 
 use axum::{
     extract::{Path, State},
+    http::HeaderMap,
     Json,
 };
 use ml_art_core::{
+    auth::OptionalAnonId,
     error::ApiError,
+    events::{self, EventName},
     jobs::{EnqueueOpts, JobEvent},
     models::InquiryAck,
 };
@@ -75,6 +78,8 @@ pub async fn create(
     // sends a verification link). If we ever need to distinguish, use
     // a `Result<AuthedUser, ApiError>` extractor here instead.
     auth: Option<AuthedUser>,
+    OptionalAnonId(anon_id): OptionalAnonId,
+    headers: HeaderMap,
     Json(body): Json<CreateInquiry>,
 ) -> Result<Json<CreateInquiryResponse>, ApiError> {
     // Look up the artwork (and its artist). 404 if missing/unpublished.
@@ -169,6 +174,25 @@ pub async fn create(
             "inquiry delivered (signed-in)"
         );
 
+        // T-050 — signed-in submission. Both identities attached:
+        // `user_id` is the actor, `anonymous_id` (if present) lets
+        // T-033 link this row to their pre-signin trail.
+        events::emit(
+            &state.jobs,
+            events::event_log(
+                EventName::InquirySubmitted,
+                anon_id,
+                Some(user.id),
+                serde_json::json!({
+                    "artwork_id": target.artwork_id,
+                    "artist_id": target.artist_id,
+                    "anonymous": false,
+                }),
+                events::extract_request_context(&headers),
+            ),
+        )
+        .await;
+
         return Ok(Json(CreateInquiryResponse {
             ack: InquiryAck {
                 id: row.id,
@@ -231,6 +255,24 @@ pub async fn create(
         token = %token,
         "inquiry pending verification"
     );
+
+    // T-050 — anonymous submission. `user_id` is None; T-033's merge
+    // will link the row to a user_id later if/when this anon signs up.
+    events::emit(
+        &state.jobs,
+        events::event_log(
+            EventName::InquirySubmitted,
+            anon_id,
+            None,
+            serde_json::json!({
+                "artwork_id": target.artwork_id,
+                "artist_id": target.artist_id,
+                "anonymous": true,
+            }),
+            events::extract_request_context(&headers),
+        ),
+    )
+    .await;
 
     let debug_token = if state.cfg.env.is_dev() {
         Some(token)

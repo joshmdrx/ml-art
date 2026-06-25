@@ -80,6 +80,20 @@ pub enum JobEvent {
     /// T-052b — build + send a single user's digest. Idempotent via
     /// the `user_notification_log` PK (user_id, kind, sent_on::date).
     NotifyFollowersDigestUser { user_id: Uuid },
+    /// T-050 — append a row to the `events` table. The storage
+    /// destination (Postgres now, S3 Parquet in the cold tier later
+    /// per `decisions.md` 2026-06-17) lives behind `handle`; call
+    /// sites only ever know this variant. Identity attribution:
+    /// `anonymous_id` set for anon callers, `user_id` for signed-in.
+    /// Both can be `None` for system-emitted events but the table
+    /// allows the unattributed row.
+    EventLog {
+        name: crate::events::EventName,
+        anonymous_id: Option<Uuid>,
+        user_id: Option<Uuid>,
+        properties: serde_json::Value,
+        context: serde_json::Value,
+    },
 }
 
 impl JobEvent {
@@ -98,6 +112,7 @@ impl JobEvent {
             JobEvent::UploadModerate { .. } => "upload_moderate",
             JobEvent::NotifyFollowersDigestKickoff {} => "notify_followers_digest_kickoff",
             JobEvent::NotifyFollowersDigestUser { .. } => "notify_followers_digest_user",
+            JobEvent::EventLog { .. } => "event_log",
         }
     }
 }
@@ -535,6 +550,33 @@ pub async fn handle(event: JobEvent, deps: &JobsDeps) -> Result<(), HandlerError
             digest_handlers::kickoff(deps)
                 .await
                 .map_err(|e| HandlerError::Domain(e.to_string()))?;
+        }
+        JobEvent::EventLog {
+            name,
+            anonymous_id,
+            user_id,
+            properties,
+            context,
+        } => {
+            // T-050 — single INSERT into the `events` table. Storage
+            // destination is intentionally encapsulated here so a
+            // future Postgres → S3 Parquet swap doesn't touch any
+            // emit site. Schema-version stays at the column default (1).
+            sqlx::query(
+                r#"
+                INSERT INTO events
+                    (anonymous_id, user_id, event_name, properties, context)
+                VALUES ($1, $2, $3, $4, $5)
+                "#,
+            )
+            .bind(anonymous_id)
+            .bind(user_id)
+            .bind(name.as_str())
+            .bind(&properties)
+            .bind(&context)
+            .execute(&deps.pool)
+            .await
+            .map_err(|e| HandlerError::Domain(format!("event_log insert: {e}")))?;
         }
         JobEvent::NotifyFollowersDigestUser { user_id } => {
             digest_handlers::send_user_digest(deps, user_id)

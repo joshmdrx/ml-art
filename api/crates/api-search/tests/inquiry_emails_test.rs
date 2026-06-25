@@ -33,11 +33,14 @@ async fn signed_in_inquiry_enqueues_deliver_job(pool: PgPool) {
 
     // Exactly one inquiry_deliver_to_artist job; no verification job
     // (signed-in path bypasses verification).
-    let counts: Vec<(String, i64)> =
-        sqlx::query_as("SELECT kind, count(*)::bigint FROM jobs GROUP BY kind ORDER BY kind")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
+    // Filter event_log rows out — these tests predate T-050 and
+    // care about the email-pipeline jobs, not the analytics emits.
+    let counts: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT kind, count(*)::bigint FROM jobs WHERE kind <> 'event_log' GROUP BY kind ORDER BY kind",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
     assert_eq!(
         counts.len(),
         1,
@@ -62,10 +65,11 @@ async fn anonymous_inquiry_enqueues_verification_job(pool: PgPool) {
 
     // Anonymous path enqueues the verification email, NOT the
     // delivery email. Delivery fires later via the verify endpoint.
-    let kinds: Vec<(String,)> = sqlx::query_as("SELECT kind FROM jobs ORDER BY created_at")
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+    let kinds: Vec<(String,)> =
+        sqlx::query_as("SELECT kind FROM jobs WHERE kind <> 'event_log' ORDER BY created_at")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
     assert_eq!(kinds.len(), 1);
     assert_eq!(kinds[0].0, "inquiry_send_verification");
 
@@ -102,15 +106,18 @@ async fn anonymous_verify_enqueues_deliver_job(pool: PgPool) {
     let (vstatus, _) = send_authed(app, "GET", &verify_url, "bogus-token", None).await;
     assert_eq!(vstatus, 200);
 
-    // After verify, both job kinds present.
-    let kinds: Vec<String> =
-        sqlx::query_as::<_, (String,)>("SELECT kind FROM jobs ORDER BY created_at")
-            .fetch_all(&pool)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|(k,)| k)
-            .collect();
+    // After verify, both email-pipeline job kinds present. Event_log
+    // rows from T-050's analytics emits are filtered out — they're
+    // tangential to this test's purpose.
+    let kinds: Vec<String> = sqlx::query_as::<_, (String,)>(
+        "SELECT kind FROM jobs WHERE kind <> 'event_log' ORDER BY created_at",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|(k,)| k)
+    .collect();
     assert_eq!(
         kinds,
         vec![

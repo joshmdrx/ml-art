@@ -3,11 +3,14 @@
 use crate::AppState;
 use axum::{
     extract::{Path, Query, State},
+    http::HeaderMap,
     Json,
 };
 use chrono::{DateTime, Utc};
 use ml_art_core::{
+    auth::OptionalAnonId,
     error::ApiError,
+    events::{self, EventName},
     images::url_for_s3_key,
     models::{ArtworkArtist, ArtworkFull, ArtworkImage, ArtworkSummary, Paginated},
 };
@@ -26,6 +29,8 @@ const SIMILAR_LIMIT_MAX: i64 = 24;
 pub async fn detail(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
+    OptionalAnonId(anon_id): OptionalAnonId,
+    headers: HeaderMap,
 ) -> Result<Json<ArtworkFull>, ApiError> {
     let row: Option<ArtworkRow> = sqlx::query_as(
         r#"
@@ -76,6 +81,19 @@ pub async fn detail(
     .bind(id)
     .fetch_all(&state.pool)
     .await?;
+
+    // T-050 — artwork_viewed. Best-effort enqueue; never blocks the response.
+    events::emit(
+        &state.jobs,
+        events::event_log(
+            EventName::ArtworkViewed,
+            anon_id,
+            None,
+            serde_json::json!({ "artwork_id": id }),
+            events::extract_request_context(&headers),
+        ),
+    )
+    .await;
 
     Ok(Json(row.into_full(images)))
 }

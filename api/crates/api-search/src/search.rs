@@ -17,6 +17,7 @@
 //! Filters apply in all paths.
 
 use crate::AppState;
+use axum::http::HeaderMap;
 use axum::{
     extract::{Query, State},
     Json,
@@ -25,6 +26,7 @@ use ml_art_core::{
     auth::OptionalAnonId,
     cursor::{CursorError, PageCursor},
     error::ApiError,
+    events::{self, EventName},
     location_search::LocationTerms,
     models::{ArtworkSummary, Paginated, SortOrder},
     modifiers::{self, DEFAULT_ALPHA},
@@ -118,6 +120,7 @@ pub async fn handle(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SearchParams>,
     OptionalAnonId(anon_id): OptionalAnonId,
+    headers: HeaderMap,
 ) -> Result<Json<Paginated<ArtworkSummary>>, ApiError> {
     let limit = params.limit.clamp(1, 48);
     let sort = params.sort.unwrap_or_default();
@@ -292,6 +295,35 @@ pub async fn handle(
         items.truncate(limit as usize);
     }
     let next_cursor = has_next.then(|| PageCursor::from_offset(offset + limit).encode());
+
+    // T-050 — search_executed. Captures intent (q + filters) plus the
+    // result_count for funnel analysis. Page-1 only (offset 0) so paginated
+    // scrolls don't pollute as separate searches.
+    if offset == 0 {
+        events::emit(
+            &state.jobs,
+            events::event_log(
+                EventName::SearchExecuted,
+                anon_id,
+                None,
+                serde_json::json!({
+                    "q": params.q.clone(),
+                    "medium": params.medium.clone(),
+                    "price_min": params.price_min,
+                    "price_max": params.price_max,
+                    "availability": params.availability.clone(),
+                    "location": params.location.clone(),
+                    "size": params.size.clone(),
+                    "modifiers": params.modifiers.clone(),
+                    "image_upload_id": params.image_upload_id,
+                    "sort": params.sort,
+                    "result_count": items.len(),
+                }),
+                events::extract_request_context(&headers),
+            ),
+        )
+        .await;
+    }
 
     Ok(Json(Paginated { items, next_cursor }))
 }
