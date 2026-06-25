@@ -134,7 +134,11 @@ pub struct ArtworkFull {
     pub title: Option<String>,
     pub description: Option<String>,
     pub year_created: Option<i32>,
+    /// T-073 — free-text materials description ("Oil on linen").
     pub medium: Option<String>,
+    /// T-073 — canonical taxonomy code from `core::media::CATEGORIES`.
+    /// Nullable until backfilled for older rows.
+    pub medium_category: Option<String>,
     pub dimensions: Option<serde_json::Value>,
     pub price_cents: Option<i64>,
     pub currency: String,

@@ -54,7 +54,13 @@ pub struct StudioArtworkSummary {
     pub id: Uuid,
     pub title: Option<String>,
     pub status: String,
+    /// T-073 — free-text materials description ("Oil on linen"). Display only.
     pub medium: Option<String>,
+    /// T-073 — canonical taxonomy code; one of `core::media::CATEGORIES`.
+    /// Drives the search filter + the studio category select. Nullable
+    /// while existing data is backfilled / for drafts the artist hasn't
+    /// categorised yet.
+    pub medium_category: Option<String>,
     pub price_cents: Option<i64>,
     pub currency: String,
     pub availability: String,
@@ -120,7 +126,7 @@ pub async fn list(
     let rows: Vec<ArtworkRow> = sqlx::query_as(
         r#"
         SELECT
-            a.id, a.title, a.status, a.medium,
+            a.id, a.title, a.status, a.medium, a.medium_category,
             a.price_cents, a.currency, a.availability,
             ai.s3_key AS primary_s3_key,
             a.created_at, a.updated_at, a.published_at
@@ -157,6 +163,12 @@ pub struct CreateArtwork {
     pub description: Option<String>,
     #[serde(default)]
     pub year_created: Option<i32>,
+    /// T-073 — canonical taxonomy code; one of
+    /// `core::media::CATEGORIES`. Optional at create (artist may
+    /// not have decided yet); soft-nudged at publish on the web side.
+    #[serde(default)]
+    pub medium_category: Option<String>,
+    /// Free-text materials description ("Oil on linen"). Display only.
     #[serde(default)]
     pub medium: Option<String>,
     #[serde(default)]
@@ -212,16 +224,27 @@ pub async fn create(
         Some(v) => Some(ml_art_core::validation::dimensions_v1(v).map_err(ApiError::BadRequest)?),
     };
 
+    // T-073 — validate medium_category against the canonical taxonomy
+    // when present. The DB CHECK constraint would also reject bad
+    // values, but doing it here gives a clean 400 with the allowed list.
+    let medium_category: Option<&str> = match body.medium_category.as_deref() {
+        Some(c) if !c.is_empty() => {
+            Some(ml_art_core::validation::medium_category_v1(c).map_err(ApiError::BadRequest)?)
+        }
+        _ => None,
+    };
+
     let row: ArtworkRow = sqlx::query_as(
         r#"
         INSERT INTO artworks (
             artist_id, title, description, year_created, medium,
-            dimensions, price_cents, currency, availability,
+            medium_category, dimensions, price_cents, currency, availability,
             external_url, status
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'draft')
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft')
         RETURNING
-            id, title, status, medium, price_cents, currency, availability,
+            id, title, status, medium, medium_category,
+            price_cents, currency, availability,
             NULL::text AS primary_s3_key,
             created_at, updated_at, published_at
         "#,
@@ -231,6 +254,7 @@ pub async fn create(
     .bind(description)
     .bind(body.year_created)
     .bind(body.medium.as_deref())
+    .bind(medium_category)
     .bind(&dimensions)
     .bind(body.price_cents)
     .bind(currency)
@@ -256,7 +280,7 @@ pub async fn detail(
     let row: Option<ArtworkDetailRow> = sqlx::query_as(
         r#"
         SELECT
-            a.id, a.title, a.status, a.medium,
+            a.id, a.title, a.status, a.medium, a.medium_category,
             a.price_cents, a.currency, a.availability,
             a.description, a.year_created, a.dimensions, a.external_url,
             a.created_at, a.updated_at, a.published_at
@@ -310,6 +334,16 @@ pub struct PatchArtwork {
         deserialize_with = "crate::serde_helpers::deserialize_double_option"
     )]
     pub medium: Option<Option<String>>,
+    /// T-073 — canonical medium category. Same double-option semantics
+    /// as the other clearable fields: absent leaves alone, `null`
+    /// clears, value sets. Validated against
+    /// `core::media::CATEGORIES` server-side; the DB CHECK is
+    /// belt-and-braces.
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_double_option"
+    )]
+    pub medium_category: Option<Option<String>>,
     #[serde(
         default,
         deserialize_with = "crate::serde_helpers::deserialize_double_option"
@@ -377,33 +411,47 @@ pub async fn patch(
         _ => None,
     };
 
+    // T-073 — validate medium_category when the patch carries a value.
+    // Mirrors the dimensions path; same three-state semantic.
+    let medium_category_present = body.medium_category.is_some();
+    let medium_category_value: Option<String> = match body.medium_category.as_ref() {
+        Some(Some(c)) => Some(
+            ml_art_core::validation::medium_category_v1(c)
+                .map(str::to_string)
+                .map_err(ApiError::BadRequest)?,
+        ),
+        _ => None,
+    };
+
     // Bool-flag-per-Option<Option<_>> pattern lets the caller explicitly
     // set a field to NULL by passing JSON `null`, vs not touching it by
     // omitting the key. Same shape as `me/collections::patch`.
     let row: Option<ArtworkRow> = sqlx::query_as(
         r#"
         UPDATE artworks SET
-            title         = CASE WHEN $3::boolean THEN $4 ELSE title END,
-            description   = CASE WHEN $5::boolean THEN $6 ELSE description END,
-            year_created  = CASE WHEN $7::boolean THEN $8::int ELSE year_created END,
-            medium        = CASE WHEN $9::boolean THEN $10 ELSE medium END,
-            dimensions    = CASE WHEN $11::boolean THEN $12::jsonb ELSE dimensions END,
-            price_cents   = CASE WHEN $13::boolean THEN $14::bigint ELSE price_cents END,
-            currency      = COALESCE($15, currency),
-            availability  = COALESCE($16, availability),
-            external_url  = CASE WHEN $17::boolean THEN $18 ELSE external_url END,
-            status        = COALESCE($19, status),
-            published_at  = CASE
-                                WHEN $19 = 'published' AND published_at IS NULL
-                                THEN now()
-                                ELSE published_at
-                            END,
-            updated_at    = now()
+            title           = CASE WHEN $3::boolean  THEN $4  ELSE title END,
+            description     = CASE WHEN $5::boolean  THEN $6  ELSE description END,
+            year_created    = CASE WHEN $7::boolean  THEN $8::int ELSE year_created END,
+            medium          = CASE WHEN $9::boolean  THEN $10 ELSE medium END,
+            medium_category = CASE WHEN $11::boolean THEN $12 ELSE medium_category END,
+            dimensions      = CASE WHEN $13::boolean THEN $14::jsonb ELSE dimensions END,
+            price_cents     = CASE WHEN $15::boolean THEN $16::bigint ELSE price_cents END,
+            currency        = COALESCE($17, currency),
+            availability    = COALESCE($18, availability),
+            external_url    = CASE WHEN $19::boolean THEN $20 ELSE external_url END,
+            status          = COALESCE($21, status),
+            published_at    = CASE
+                                  WHEN $21 = 'published' AND published_at IS NULL
+                                  THEN now()
+                                  ELSE published_at
+                              END,
+            updated_at      = now()
         WHERE id = $1
           AND artist_id = $2
           AND deleted_at IS NULL
         RETURNING
-            id, title, status, medium, price_cents, currency, availability,
+            id, title, status, medium, medium_category,
+            price_cents, currency, availability,
             (SELECT s3_key FROM artwork_images
               WHERE artwork_id = artworks.id AND is_primary) AS primary_s3_key,
             created_at, updated_at, published_at
@@ -419,6 +467,8 @@ pub async fn patch(
     .bind(body.year_created.flatten())
     .bind(body.medium.is_some())
     .bind(body.medium.flatten())
+    .bind(medium_category_present)
+    .bind(medium_category_value)
     .bind(dimensions_present)
     .bind(dimensions_value)
     .bind(body.price_cents.is_some())
@@ -715,6 +765,7 @@ struct ArtworkRow {
     title: Option<String>,
     status: String,
     medium: Option<String>,
+    medium_category: Option<String>,
     price_cents: Option<i64>,
     currency: String,
     availability: String,
@@ -731,6 +782,7 @@ impl ArtworkRow {
             title: self.title,
             status: self.status,
             medium: self.medium,
+            medium_category: self.medium_category,
             price_cents: self.price_cents,
             currency: self.currency,
             availability: self.availability,
@@ -748,6 +800,7 @@ struct ArtworkDetailRow {
     title: Option<String>,
     status: String,
     medium: Option<String>,
+    medium_category: Option<String>,
     price_cents: Option<i64>,
     currency: String,
     availability: String,
@@ -771,6 +824,7 @@ impl ArtworkDetailRow {
                 title: self.title,
                 status: self.status,
                 medium: self.medium,
+                medium_category: self.medium_category,
                 price_cents: self.price_cents,
                 currency: self.currency,
                 availability: self.availability,

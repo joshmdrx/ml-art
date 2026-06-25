@@ -106,11 +106,53 @@ async fn search_keyword_no_match_is_empty(pool: PgPool) {
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn search_medium_filter(pool: PgPool) {
+    // T-073 — `?medium=` now filters on `medium_category` (canonical
+    // taxonomy code) rather than the free-text `medium` field. Tag
+    // Linocut Study with the canonical `print` code; everything else
+    // stays NULL → silently excluded.
+    sqlx::query("UPDATE artworks SET medium_category='print' WHERE title='Linocut Study'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
     let app = app_keyword_only(pool);
-    let (_, page): (_, Page) = get_json(app, "/v1/search?medium=Print&limit=10").await;
-    // Only "Linocut Study" is published with medium=Print.
+    let (_, page): (_, Page) = get_json(app, "/v1/search?medium=print&limit=10").await;
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].title.as_deref(), Some("Linocut Study"));
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_medium_filter_multi_value(pool: PgPool) {
+    // Comma-separated multi-value. Painting + Print should both surface.
+    sqlx::query("UPDATE artworks SET medium_category='print' WHERE title='Linocut Study'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE artworks SET medium_category='painting' WHERE title='Blue Morning'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let app = app_keyword_only(pool);
+    let (_, page): (_, Page) = get_json(app, "/v1/search?medium=painting,print&limit=10").await;
+    let titles: Vec<_> = page.items.iter().filter_map(|i| i.title.clone()).collect();
+    assert!(titles.contains(&"Blue Morning".to_string()));
+    assert!(titles.contains(&"Linocut Study".to_string()));
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_medium_filter_unknown_value_passes_through(pool: PgPool) {
+    // Bookmarked URL with a since-renamed category surfaces a clean
+    // unfiltered result rather than 400-ing or returning empty.
+    sqlx::query("UPDATE artworks SET medium_category='print' WHERE title='Linocut Study'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let app = app_keyword_only(pool);
+    let (_, page): (_, Page) = get_json(app, "/v1/search?medium=nft,bogus&limit=10").await;
+    // Both tokens are dropped → no filter clause → all published rows.
+    assert!(page.items.len() > 1, "all unknown → no filter applied");
 }
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
@@ -375,23 +417,31 @@ async fn search_rejects_malformed_cursor(pool: PgPool) {
 async fn search_cursor_threads_through_filters(pool: PgPool) {
     // A cursor obtained while a filter was active must still apply
     // the filter on the follow-up request (the client passes the
-    // same params alongside the cursor). Seed has two Paintings;
-    // page through them at limit=1 and assert we got both distinct
-    // titles + no third page.
+    // same params alongside the cursor). Tag two artworks with the
+    // canonical `painting` category, then page through them at
+    // limit=1 and assert we got both distinct titles + no third page.
+    sqlx::query(
+        "UPDATE artworks SET medium_category='painting'
+         WHERE title IN ('Blue Morning', 'Crimson Field')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
     let app = app_keyword_only(pool);
-    let (_, p1): (_, Page) = get_json(app.clone(), "/v1/search?medium=Painting&limit=1").await;
+    let (_, p1): (_, Page) = get_json(app.clone(), "/v1/search?medium=painting&limit=1").await;
     assert_eq!(p1.items.len(), 1);
-    let c1 = p1.next_cursor.expect("Painting filter has > 1 match");
+    let c1 = p1.next_cursor.expect("painting filter has > 1 match");
 
     let (_, p2): (_, Page) = get_json(
         app,
-        &format!("/v1/search?medium=Painting&limit=1&cursor={c1}"),
+        &format!("/v1/search?medium=painting&limit=1&cursor={c1}"),
     )
     .await;
     assert_eq!(p2.items.len(), 1);
     // Different titles → cursor advanced past the first match.
     assert_ne!(p1.items[0].title, p2.items[0].title);
     // No third page — confirms the filter is still applied on page 2
-    // (without it, the cursor offset would land in non-Painting rows).
+    // (without it, the cursor offset would land in non-painting rows).
     assert!(p2.next_cursor.is_none());
 }

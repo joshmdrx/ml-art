@@ -385,6 +385,94 @@ async fn studio_artworks_patch_dimensions_null_clears(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_artworks_create_accepts_medium_category(pool: PgPool) {
+    // T-073 — canonical category persists on create; free-text
+    // `medium` lives alongside it as the materials field.
+    let app = app_with_test_auth(pool.clone());
+    let body = json!({
+        "title": "Test work",
+        "medium_category": "painting",
+        "medium": "Oil on linen",
+    })
+    .to_string();
+    let (status, bytes) = send_authed(app, "POST", "/v1/studio/artworks", ALICE, Some(&body)).await;
+    assert_eq!(status, 201);
+    let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(created["medium_category"], "painting");
+    assert_eq!(created["medium"], "Oil on linen");
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_artworks_create_rejects_unknown_medium_category(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+    let body = json!({"title": "Bad", "medium_category": "Painting"}).to_string(); // wrong case
+    let (status, _) = send_authed(app, "POST", "/v1/studio/artworks", ALICE, Some(&body)).await;
+    assert_eq!(status, 400);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_artworks_patch_medium_category_sets_then_clears(pool: PgPool) {
+    // T-073 — three-state patch semantic on medium_category: set,
+    // leave-alone, clear-via-null. Mirrors the dimensions test.
+    let app = app_with_test_auth(pool.clone());
+
+    // 1. Set
+    let body = json!({"medium_category": "print"}).to_string();
+    let (status, _) = send_authed(
+        app.clone(),
+        "PATCH",
+        &format!("/v1/studio/artworks/{ARTWORK_BLUE_MORNING}"),
+        ALICE,
+        Some(&body),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let v: Option<String> =
+        sqlx::query_scalar("SELECT medium_category FROM artworks WHERE id=$1::uuid")
+            .bind(ARTWORK_BLUE_MORNING)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(v.as_deref(), Some("print"));
+
+    // 2. Omit → unchanged
+    let body = json!({"title": "Reset Title"}).to_string();
+    send_authed(
+        app.clone(),
+        "PATCH",
+        &format!("/v1/studio/artworks/{ARTWORK_BLUE_MORNING}"),
+        ALICE,
+        Some(&body),
+    )
+    .await;
+    let v: Option<String> =
+        sqlx::query_scalar("SELECT medium_category FROM artworks WHERE id=$1::uuid")
+            .bind(ARTWORK_BLUE_MORNING)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(v.as_deref(), Some("print"), "omit must leave alone");
+
+    // 3. Clear via null
+    let body = json!({"medium_category": serde_json::Value::Null}).to_string();
+    send_authed(
+        app,
+        "PATCH",
+        &format!("/v1/studio/artworks/{ARTWORK_BLUE_MORNING}"),
+        ALICE,
+        Some(&body),
+    )
+    .await;
+    let v: Option<String> =
+        sqlx::query_scalar("SELECT medium_category FROM artworks WHERE id=$1::uuid")
+            .bind(ARTWORK_BLUE_MORNING)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(v.is_none(), "explicit null clears");
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn studio_artworks_patch_description_null_clears(pool: PgPool) {
     // T-072 — same clear-via-null path for a text column. Picked
     // description because it's the most-likely-cleared field after

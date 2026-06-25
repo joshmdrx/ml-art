@@ -443,14 +443,19 @@ async fn list_modifiers_returns_five(pool: PgPool) {
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn search_by_image_upload_respects_filters(pool: PgPool) {
-    // Image anchor + medium filter narrows the result set. Blue
-    // Morning is medium='Painting'; passing medium=Sculpture should
-    // drop it from the results even though it's the nearest neighbour.
+    // T-073 — image anchor + medium filter narrows the result set.
+    // Tag Blue Morning as `painting`; filter for `sculpture` only
+    // → Blue Morning is excluded even though it's the nearest
+    // neighbour to the image-upload anchor.
+    sqlx::query("UPDATE artworks SET medium_category='painting' WHERE title='Blue Morning'")
+        .execute(&pool)
+        .await
+        .unwrap();
     let upload_id = seed_upload(&pool, unit_vector_at(0)).await;
     let app = common::app_with_fixed_vector(pool, unit_vector_at(1));
     let (_, page): (_, SearchPage) = common::get_json(
         app,
-        &format!("/v1/search?image_upload_id={upload_id}&medium=Sculpture"),
+        &format!("/v1/search?image_upload_id={upload_id}&medium=sculpture"),
     )
     .await;
     assert!(
@@ -458,7 +463,7 @@ async fn search_by_image_upload_respects_filters(pool: PgPool) {
             .items
             .iter()
             .any(|a| a.title.as_deref() == Some("Blue Morning")),
-        "medium=Sculpture filter should exclude Blue Morning (medium='Painting')"
+        "medium=sculpture filter should exclude Blue Morning (category=painting)"
     );
 }
 

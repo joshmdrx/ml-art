@@ -131,6 +131,52 @@ fn extract_positive_int(v: &Value, key: &str) -> Result<i64, String> {
     Ok(as_i64)
 }
 
+/// T-073 — validate `artworks.medium_category`. Accepts only canonical
+/// snake_case codes from `core::media::CATEGORIES`; everything else
+/// returns an error (which the studio handler maps to a 400). NULL /
+/// absent is the caller's responsibility — this only runs when the
+/// caller has explicitly opted to set the column.
+///
+/// Returns the input string on success so call sites can chain into
+/// SQL bind without re-allocating.
+pub fn medium_category_v1(code: &str) -> Result<&str, String> {
+    if crate::media::is_valid_category(code) {
+        Ok(code)
+    } else {
+        Err(format!(
+            "medium_category: must be one of {:?} (got {code:?})",
+            crate::media::CATEGORIES
+        ))
+    }
+}
+
+/// Parse the `?medium=` query-string value into a deduped vec of
+/// canonical category codes. Empty / all-invalid input yields
+/// `None` so the search handler can branch into "no filter clause"
+/// (vs `Some(vec![])` which would mean "filter for the empty set").
+///
+/// Tolerant: unknown tokens are dropped silently, NOT 400'd. The
+/// rationale is that a bookmarked URL like `?medium=painting,nft`
+/// should still surface paintings — defending against a future
+/// taxonomy rename more important than strict validation here.
+/// Strict validation lives at the write path (`medium_category_v1`).
+pub fn parse_medium_query(raw: &str) -> Option<Vec<String>> {
+    let mut out: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter(|s| crate::media::is_valid_category(s))
+        .map(str::to_string)
+        .collect();
+    out.sort();
+    out.dedup();
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,5 +310,78 @@ mod tests {
         // schema. Closed schema → 400.
         let v = json!({"width": 1, "height": 1, "unit_legacy": "in"});
         assert!(dimensions_v1(&v).unwrap_err().contains("unknown"));
+    }
+
+    // ── medium_category_v1 + parse_medium_query (T-073) ──────────
+
+    #[test]
+    fn medium_category_accepts_canonical_codes() {
+        for &c in crate::media::CATEGORIES {
+            assert!(medium_category_v1(c).is_ok(), "{c} should be accepted");
+        }
+    }
+
+    #[test]
+    fn medium_category_rejects_unknown() {
+        for bad in [
+            "Painting",
+            "PAINTING",
+            "mixed media",
+            "nft",
+            "",
+            " painting",
+        ] {
+            assert!(
+                medium_category_v1(bad).is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_medium_query_returns_none_for_empty() {
+        assert_eq!(parse_medium_query(""), None);
+        assert_eq!(parse_medium_query(",,,"), None);
+    }
+
+    #[test]
+    fn parse_medium_query_single_value() {
+        assert_eq!(
+            parse_medium_query("painting"),
+            Some(vec!["painting".into()])
+        );
+    }
+
+    #[test]
+    fn parse_medium_query_dedupes_and_sorts() {
+        assert_eq!(
+            parse_medium_query("print,painting,print"),
+            Some(vec!["painting".into(), "print".into()])
+        );
+    }
+
+    #[test]
+    fn parse_medium_query_drops_unknown_tokens() {
+        // Bookmarked URL with a since-renamed token should still
+        // surface the surviving values, not 400.
+        assert_eq!(
+            parse_medium_query("painting,nft,bogus"),
+            Some(vec!["painting".into()])
+        );
+    }
+
+    #[test]
+    fn parse_medium_query_trims_whitespace() {
+        assert_eq!(
+            parse_medium_query(" painting , print "),
+            Some(vec!["painting".into(), "print".into()])
+        );
+    }
+
+    #[test]
+    fn parse_medium_query_all_unknown_yields_none() {
+        // Important — `Some(vec![])` would mean "filter for empty
+        // set" and return zero rows; `None` means "no filter."
+        assert_eq!(parse_medium_query("nft,video,foobar"), None);
     }
 }

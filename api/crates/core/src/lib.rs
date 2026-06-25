@@ -22,6 +22,7 @@ pub mod geocoding;
 pub mod images;
 pub mod jobs;
 pub mod location_search;
+pub mod media;
 pub mod middleware;
 pub mod models;
 pub mod moderation;

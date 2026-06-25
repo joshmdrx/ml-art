@@ -479,9 +479,24 @@ fn build_filters(
         clauses.push(format!("AND a.id <> ${idx}"));
     }
 
-    if let Some(m) = p.medium.as_deref().filter(|s| !s.is_empty()) {
-        let idx = next.bind(args, m.to_string())?;
-        clauses.push(format!("AND a.medium = ${idx}"));
+    // T-073 — `?medium=` is now a multi-value comma-separated filter
+    // against the canonical `medium_category` column ("Painting"),
+    // NOT the free-text `medium` ("Oil on linen"). Old single-value
+    // exact-match-on-medium-text never matched anything once artists
+    // started typing real materials anyway, so this isn't a breaking
+    // change in practice — the filter just starts working.
+    //
+    // `parse_medium_query` silently drops unknown tokens (a bookmark
+    // with a since-renamed category surfaces what survives) and
+    // returns `None` for "no filter clause" vs `Some(vec![])` which
+    // would filter for the empty set. See `core::validation`.
+    if let Some(cats) = p
+        .medium
+        .as_deref()
+        .and_then(ml_art_core::validation::parse_medium_query)
+    {
+        let idx = next.bind(args, cats)?;
+        clauses.push(format!("AND a.medium_category = ANY(${idx}::text[])"));
     }
 
     if let Some(pm) = p.price_min {
