@@ -13,6 +13,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useTransition } from "react";
 import { clsx } from "clsx";
 import type { SearchModifier } from "@/lib/api";
+import { track } from "@/lib/events";
 
 export function ModifierBar({ modifiers }: { modifiers: SearchModifier[] }) {
   const router = useRouter();
@@ -31,6 +32,14 @@ export function ModifierBar({ modifiers }: { modifiers: SearchModifier[] }) {
     if (next.size === 0) usp.delete("modifiers");
     else usp.set("modifiers", Array.from(next).join(","));
     const qs = usp.toString();
+    // T-050.3 — emit on toggle. `codes` is the set AFTER the toggle so
+    // analytics see the effective state, not the diff. Cleared selections
+    // still fire (empty codes array) — "user cleared modifiers" is a
+    // distinct signal from "never engaged."
+    track("modifier_applied", {
+      codes: Array.from(next),
+      toggled: name,
+    });
     startTransition(() => router.push(`/search${qs ? `?${qs}` : ""}`));
   }
 

@@ -4,6 +4,7 @@
 pub mod anon;
 pub mod artist;
 pub mod artwork;
+pub mod events;
 pub mod extractors;
 pub mod inquiries;
 pub mod map_cities;
@@ -163,6 +164,14 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         // Email Worker authenticates with a shared-secret header. See
         // `webhooks::inbound_email`.
         .route("/v1/webhooks/email/inbound", post(webhooks::inbound_email))
+        // T-050.3 — batched client-side events. Rate-limited by the
+        // same per-anon search-tier policy (browsing intensity tracks
+        // event volume well). Server derives identity from the
+        // cookie + auth; client-supplied values are ignored.
+        .route(
+            "/v1/events",
+            post(events::ingest).layer(from_fn_with_state(limiters.clone(), search_limit)),
+        )
         // ── Onboarding (T-012 Phase 1). Mints + publishes an artist
         // row for the calling user. Subsequent edits go through the
         // existing /v1/studio/* surfaces.

@@ -1399,6 +1399,18 @@ export async function unsubscribeWithToken(
 // T-052c — anonymous pending intents
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** T-050.3 — forward a batched events payload to the api. Used by the
+ *  `/api/events` route as a thin bridge so the browser can post
+ *  same-origin (cookie scoped to wander.gallery, not api.wander.gallery).
+ *  Returns the raw Response so the bridge can mirror status codes. */
+export async function postEvents(body: unknown): Promise<Response> {
+  return apiFetch("/v1/events", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 /** Queue a "follow this artist when I sign up" intent against the
  *  anon-id cookie. The merge-anonymous handler drains + replays after
  *  sign-in. Idempotent. Best-effort — failures are non-fatal (the user

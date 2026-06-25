@@ -233,6 +233,100 @@ async fn collection_remove_artwork_emits_artwork_unsaved(pool: PgPool) {
     assert_eq!(count_event_log_rows(&pool, "artwork_unsaved").await, 1);
 }
 
+// ── POST /v1/events (T-050.3) ──────────────────────────────────────────
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn events_endpoint_fans_out_allowed_names(pool: PgPool) {
+    let app = app_with_postgres_jobs(pool.clone());
+    let body = serde_json::json!({
+        "events": [
+            { "name": "modifier_applied", "properties": { "codes": ["moodier"] } },
+            { "name": "inquiry_started", "properties": { "artwork_id": ARTWORK_BLUE_MORNING } },
+        ],
+    })
+    .to_string();
+    let (status, _) = common::send_json(app, "POST", "/v1/events", Some(&body)).await;
+    assert_eq!(status, 202);
+    assert_eq!(count_event_log_rows(&pool, "modifier_applied").await, 1);
+    assert_eq!(count_event_log_rows(&pool, "inquiry_started").await, 1);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn events_endpoint_rejects_server_only_names(pool: PgPool) {
+    // `artwork_saved` is a server-side-only event; allowing the
+    // client to fake one would let attackers pollute taste vectors.
+    let app = app_with_postgres_jobs(pool.clone());
+    let body = serde_json::json!({
+        "events": [
+            { "name": "artwork_saved", "properties": { "artwork_id": ARTWORK_BLUE_MORNING } }
+        ],
+    })
+    .to_string();
+    let (status, bytes) = common::send_json(app, "POST", "/v1/events", Some(&body)).await;
+    assert_eq!(status, 400);
+    assert!(String::from_utf8_lossy(&bytes).contains("not allowed"));
+    // Nothing landed.
+    assert_eq!(count_event_log_rows(&pool, "artwork_saved").await, 0);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn events_endpoint_rejects_unknown_names(pool: PgPool) {
+    // Outright bogus names → 400 (serde fails the enum deserialize).
+    let app = app_with_postgres_jobs(pool.clone());
+    let body = serde_json::json!({
+        "events": [ { "name": "definitely_not_a_real_event", "properties": {} } ],
+    })
+    .to_string();
+    let (status, _) = common::send_json(app, "POST", "/v1/events", Some(&body)).await;
+    // axum returns 422 on Json<T> deserialize failure rather than the
+    // domain 400 we use for app-level rejects.
+    assert!(status == 400 || status == 422, "got {status}");
+    let (n,): (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM jobs WHERE kind = 'event_log'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn events_endpoint_rejects_empty_batch(pool: PgPool) {
+    let app = app_with_postgres_jobs(pool.clone());
+    let (status, _) = common::send_json(app, "POST", "/v1/events", Some(r#"{"events":[]}"#)).await;
+    assert_eq!(status, 400);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn events_endpoint_caps_batch_size(pool: PgPool) {
+    let app = app_with_postgres_jobs(pool.clone());
+    // 51 events — one over the limit. All-or-nothing reject means
+    // ZERO events land, not 50.
+    let entries: Vec<_> = (0..51)
+        .map(|_| serde_json::json!({ "name": "modifier_applied", "properties": {} }))
+        .collect();
+    let body = serde_json::json!({ "events": entries }).to_string();
+    let (status, _) = common::send_json(app, "POST", "/v1/events", Some(&body)).await;
+    assert_eq!(status, 400);
+    assert_eq!(count_event_log_rows(&pool, "modifier_applied").await, 0);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn events_endpoint_partial_invalid_is_all_or_nothing(pool: PgPool) {
+    // First event valid, second invalid → reject the whole batch,
+    // don't emit the first. Mixed-success batches leave analytics
+    // in a half-state we'd have to reason about; cleaner to be strict.
+    let app = app_with_postgres_jobs(pool.clone());
+    let body = serde_json::json!({
+        "events": [
+            { "name": "modifier_applied", "properties": {} },
+            { "name": "artwork_saved",    "properties": {} },
+        ],
+    })
+    .to_string();
+    let (status, _) = common::send_json(app, "POST", "/v1/events", Some(&body)).await;
+    assert_eq!(status, 400);
+    assert_eq!(count_event_log_rows(&pool, "modifier_applied").await, 0);
+}
+
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn handle_event_log_writes_row_to_events_table(pool: PgPool) {
     // Wire the handler directly — proves the storage destination

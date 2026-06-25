@@ -16,6 +16,7 @@ import { useEffect, useState, useTransition, type FormEvent } from "react";
 import { toUserMessage } from "@/lib/reportError";
 import { sendInquiry } from "@/app/actions/inquiries";
 import type { InquiryAck } from "@/lib/api";
+import { track } from "@/lib/events";
 
 type SubmitState =
   | { kind: "idle" }
@@ -52,6 +53,14 @@ export function InquiryModal({
     }
     onOpenChange(next);
   }
+
+  // T-050.3 — fire `inquiry_started` the moment the modal opens.
+  // Distinct from `inquiry_submitted` (which fires on the server after
+  // the row lands) so the funnel ratio open/submit is computable.
+  useEffect(() => {
+    if (!open) return;
+    track("inquiry_started", { artwork_id: artworkId });
+  }, [open, artworkId]);
 
   // Pre-fill from Clerk when the modal opens. The setStates inside the
   // effect are intentional: we're syncing local form state from an
