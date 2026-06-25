@@ -18,7 +18,7 @@
 
 mod common;
 
-use common::{app_with_postgres_jobs, MIGRATOR};
+use common::{app_with_postgres_jobs, send_authed, MIGRATOR};
 use ml_art_core::{
     emails::EmailClient,
     events::EventName,
@@ -30,7 +30,10 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+const ALICE: &str = "test-user_test_alice";
 const ARTWORK_BLUE_MORNING: &str = "bbb11111-1111-1111-1111-111111111111";
+const ARTIST_ALICE: &str = "aaa11111-1111-1111-1111-111111111111";
+const ARTIST_BRUNO: &str = "aaa22222-2222-2222-2222-222222222222";
 
 /// Count `event_log` rows in `jobs` whose payload has the given
 /// `name` field. The payload is jsonb-stringified; `->>` extracts the
@@ -123,6 +126,111 @@ async fn anonymous_inquiry_emits_inquiry_submitted(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(anon_flag, serde_json::json!(true));
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn artist_detail_emits_artist_viewed(pool: PgPool) {
+    let app = app_with_postgres_jobs(pool.clone());
+    let (status, _) = common::send_json(app, "GET", "/v1/artists/alice-test", None).await;
+    assert_eq!(status, 200);
+    assert_eq!(count_event_log_rows(&pool, "artist_viewed").await, 1);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn neighborhood_detail_emits_neighborhood_viewed(pool: PgPool) {
+    let app = app_with_postgres_jobs(pool.clone());
+    let (status, _) = common::send_json(app, "GET", "/v1/neighborhoods/test-vibes", None).await;
+    assert_eq!(status, 200);
+    assert_eq!(count_event_log_rows(&pool, "neighborhood_viewed").await, 1);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn follow_create_emits_artist_followed(pool: PgPool) {
+    // Alice signs in and follows Bruno. The auth helper uses
+    // `app_with_test_auth` (test JWT verifier); we ALSO need the
+    // Postgres jobs backend so events land in the jobs table. The
+    // existing `app_with_postgres_jobs` helper wires both.
+    let app = app_with_postgres_jobs(pool.clone());
+    let url = format!("/v1/me/follows/{ARTIST_BRUNO}");
+    let (status, _) = send_authed(app, "POST", &url, ALICE, None).await;
+    assert_eq!(status, 204);
+    assert_eq!(count_event_log_rows(&pool, "artist_followed").await, 1);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn follow_delete_emits_artist_unfollowed(pool: PgPool) {
+    // Follow first (so DELETE has something to remove), then unfollow,
+    // then assert the SECOND event landed. Both follow + unfollow
+    // count toward event_log rows; the assertion targets only
+    // artist_unfollowed by name.
+    let app = app_with_postgres_jobs(pool.clone());
+    let url = format!("/v1/me/follows/{ARTIST_BRUNO}");
+    let (status, _) = send_authed(app.clone(), "POST", &url, ALICE, None).await;
+    assert_eq!(status, 204);
+    let (status, _) = send_authed(app, "DELETE", &url, ALICE, None).await;
+    assert_eq!(status, 204);
+
+    assert_eq!(count_event_log_rows(&pool, "artist_followed").await, 1);
+    assert_eq!(count_event_log_rows(&pool, "artist_unfollowed").await, 1);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn collection_add_artwork_emits_artwork_saved(pool: PgPool) {
+    // Seed doesn't ship a collection, so the test creates one then
+    // adds Bruno's Stone Form artwork into it. Both calls go through
+    // /v1/me/collections — only the add-artwork should emit.
+    let app = app_with_postgres_jobs(pool.clone());
+
+    let body = serde_json::json!({ "name": "Test collection" }).to_string();
+    let (status, bytes) = send_authed(
+        app.clone(),
+        "POST",
+        "/v1/me/collections",
+        ALICE,
+        Some(&body),
+    )
+    .await;
+    assert_eq!(status, 201);
+    let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let collection_id = created["id"].as_str().unwrap();
+
+    let stone_form = "bbb33333-3333-3333-3333-333333333333";
+    let add_body = serde_json::json!({ "artwork_id": stone_form }).to_string();
+    let url = format!("/v1/me/collections/{collection_id}/artworks");
+    let (status, _) = send_authed(app, "POST", &url, ALICE, Some(&add_body)).await;
+    assert_eq!(status, 204);
+
+    assert_eq!(count_event_log_rows(&pool, "artwork_saved").await, 1);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn collection_remove_artwork_emits_artwork_unsaved(pool: PgPool) {
+    let app = app_with_postgres_jobs(pool.clone());
+    let body = serde_json::json!({ "name": "Test collection" }).to_string();
+    let (_, bytes) = send_authed(
+        app.clone(),
+        "POST",
+        "/v1/me/collections",
+        ALICE,
+        Some(&body),
+    )
+    .await;
+    let collection_id = serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let stone_form = "bbb33333-3333-3333-3333-333333333333";
+
+    // Save then unsave.
+    let add_body = serde_json::json!({ "artwork_id": stone_form }).to_string();
+    let url = format!("/v1/me/collections/{collection_id}/artworks");
+    send_authed(app.clone(), "POST", &url, ALICE, Some(&add_body)).await;
+    let url = format!("/v1/me/collections/{collection_id}/artworks/{stone_form}");
+    let (status, _) = send_authed(app, "DELETE", &url, ALICE, None).await;
+    assert_eq!(status, 204);
+
+    assert_eq!(count_event_log_rows(&pool, "artwork_saved").await, 1);
+    assert_eq!(count_event_log_rows(&pool, "artwork_unsaved").await, 1);
 }
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]

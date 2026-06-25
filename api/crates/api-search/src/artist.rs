@@ -8,11 +8,14 @@ use crate::extractors::AuthedUser;
 use crate::AppState;
 use axum::{
     extract::{Path, State},
+    http::HeaderMap,
     Json,
 };
 use chrono::{DateTime, Utc};
 use ml_art_core::{
+    auth::OptionalAnonId,
     error::ApiError,
+    events::{self, EventName},
     images::url_for_s3_key,
     models::{ArtistDetail, ArtistFull, ArtistLocation, ArtworkSummary, Paginated},
 };
@@ -30,6 +33,8 @@ pub async fn handle(
     // Follow button. Missing/invalid auth is non-fatal; the field
     // defaults to false.
     auth: Option<AuthedUser>,
+    OptionalAnonId(anon_id): OptionalAnonId,
+    headers: HeaderMap,
 ) -> Result<Json<ArtistDetail>, ApiError> {
     // 1. Look up the artist.
     let artist_row: Option<ArtistRow> = sqlx::query_as(
@@ -158,6 +163,22 @@ pub async fn handle(
         .unwrap_or(false),
         None => false,
     };
+
+    // T-050 — artist_viewed. Emitted on success (404 short-circuits
+    // above with `return Err(NotFound)` so dead-slug views never
+    // pollute the analytics). Signed-in user gets attribution if
+    // present; anon_id covers the rest.
+    events::emit(
+        &state.jobs,
+        events::event_log(
+            EventName::ArtistViewed,
+            anon_id,
+            auth.as_ref().map(|AuthedUser(u)| u.id),
+            serde_json::json!({ "artist_id": artist.id, "slug": slug }),
+            events::extract_request_context(&headers),
+        ),
+    )
+    .await;
 
     Ok(Json(ArtistDetail {
         artist: full,

@@ -9,11 +9,16 @@
 
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     Json,
 };
 use chrono::{DateTime, Utc};
-use ml_art_core::{error::ApiError, images::url_for_s3_key, models::Paginated};
+use ml_art_core::{
+    error::ApiError,
+    events::{self, EventName},
+    images::url_for_s3_key,
+    models::Paginated,
+};
 use serde::Serialize;
 use sqlx::FromRow;
 use std::sync::Arc;
@@ -53,6 +58,7 @@ pub async fn create(
     State(state): State<Arc<AppState>>,
     Path(artist_id): Path<Uuid>,
     AuthedUser(user): AuthedUser,
+    headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     // Cheap existence + status check before the INSERT. We don't
     // care about the race between this SELECT and the INSERT because
@@ -80,9 +86,20 @@ pub async fn create(
     .execute(&state.pool)
     .await?;
 
-    // TODO(T-050): write `artist_followed` event with
-    // (user_id=user.id, artist_id=artist_id). For now the
-    // table row IS the signal.
+    // T-050 — artist_followed. The follows row itself is the canonical
+    // state; this event adds the temporal signal (the WHEN, which
+    // drives "users who just followed Alice also followed…" later).
+    events::emit(
+        &state.jobs,
+        events::event_log(
+            EventName::ArtistFollowed,
+            None,
+            Some(user.id),
+            serde_json::json!({ "artist_id": artist_id }),
+            events::extract_request_context(&headers),
+        ),
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -98,6 +115,7 @@ pub async fn delete(
     State(state): State<Arc<AppState>>,
     Path(artist_id): Path<Uuid>,
     AuthedUser(user): AuthedUser,
+    headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     sqlx::query("DELETE FROM follows WHERE user_id = $1 AND artist_id = $2")
         .bind(user.id)
@@ -105,7 +123,19 @@ pub async fn delete(
         .execute(&state.pool)
         .await?;
 
-    // TODO(T-050): write `artist_unfollowed` event.
+    // T-050 — artist_unfollowed. Negative-signal feature for the
+    // taste vector and (later) the recommender.
+    events::emit(
+        &state.jobs,
+        events::event_log(
+            EventName::ArtistUnfollowed,
+            None,
+            Some(user.id),
+            serde_json::json!({ "artist_id": artist_id }),
+            events::extract_request_context(&headers),
+        ),
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }

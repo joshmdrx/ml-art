@@ -12,12 +12,13 @@
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     Json,
 };
 use chrono::{DateTime, Utc};
 use ml_art_core::{
     error::ApiError,
+    events::{self, EventName},
     images::url_for_s3_key,
     models::{ArtworkSummary, CollectionDetail, CollectionSummary, Paginated},
 };
@@ -375,6 +376,7 @@ pub async fn add_artwork(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
     AuthedUser(user): AuthedUser,
+    headers: HeaderMap,
     Json(body): Json<AddArtwork>,
 ) -> Result<StatusCode, ApiError> {
     // Confirm the collection exists and belongs to this user. Done in a
@@ -420,6 +422,20 @@ pub async fn add_artwork(
         .execute(&state.pool)
         .await?;
 
+    // T-050 — artwork_saved. Always-on emit on the signed-in path
+    // (there is no anon-save flow; the queue+merge UI lives at T-033b).
+    events::emit(
+        &state.jobs,
+        events::event_log(
+            EventName::ArtworkSaved,
+            None,
+            Some(user.id),
+            serde_json::json!({ "artwork_id": body.artwork_id, "collection_id": id }),
+            events::extract_request_context(&headers),
+        ),
+    )
+    .await;
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -431,6 +447,7 @@ pub async fn remove_artwork(
     State(state): State<Arc<AppState>>,
     Path((id, artwork_id)): Path<(Uuid, Uuid)>,
     AuthedUser(user): AuthedUser,
+    headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     let res = sqlx::query(
         r#"
@@ -458,6 +475,19 @@ pub async fn remove_artwork(
         .bind(user.id)
         .execute(&state.pool)
         .await?;
+
+    // T-050 — artwork_unsaved.
+    events::emit(
+        &state.jobs,
+        events::event_log(
+            EventName::ArtworkUnsaved,
+            None,
+            Some(user.id),
+            serde_json::json!({ "artwork_id": artwork_id, "collection_id": id }),
+            events::extract_request_context(&headers),
+        ),
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }

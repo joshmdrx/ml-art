@@ -36,12 +36,13 @@
 
 use axum::{
     extract::{Multipart, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     Json,
 };
 use ml_art_core::{
     auth::{OptionalAnonId, User},
     error::ApiError,
+    events::{self, EventName},
     jobs::{EnqueueOpts, JobEvent},
 };
 use pgvector::Vector;
@@ -69,6 +70,7 @@ pub async fn create(
     State(state): State<Arc<AppState>>,
     auth: Option<AuthedUser>,
     OptionalAnonId(anon_id): OptionalAnonId,
+    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<(StatusCode, Json<UploadAck>), ApiError> {
     // Image embedding is required (not best-effort), so refuse the
@@ -165,6 +167,9 @@ pub async fn create(
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("embed upload: {e}")))?;
 
     // PUT to S3/MinIO. Now we know the embed succeeded.
+    // Capture the byte count BEFORE handing ownership to the
+    // object store — used in the analytics emit at the end.
+    let bytes_size = bytes.len();
     state
         .object_store
         .put(&s3_key, bytes, &content_type)
@@ -208,6 +213,24 @@ pub async fn create(
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("enqueue moderation: {e}")))?;
 
     let image_url = state.object_store.public_url(&s3_key);
+
+    // T-050 — visual_search_uploaded. Both identities attached so a
+    // signed-in upload still gets the anon-id crosswalk for T-033.
+    events::emit(
+        &state.jobs,
+        events::event_log(
+            EventName::VisualSearchUploaded,
+            anon_id,
+            user.as_ref().map(|u| u.id),
+            serde_json::json!({
+                "upload_id": upload_id,
+                "bytes_size": bytes_size,
+                "content_type": content_type,
+            }),
+            events::extract_request_context(&headers),
+        ),
+    )
+    .await;
 
     Ok((
         StatusCode::CREATED,

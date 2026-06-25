@@ -6,10 +6,13 @@
 use crate::AppState;
 use axum::{
     extract::{Path, Query, State},
+    http::HeaderMap,
     Json,
 };
 use ml_art_core::{
+    auth::OptionalAnonId,
     error::ApiError,
+    events::{self, EventName},
     images::url_for_s3_key,
     models::{ArtworkSummary, Neighborhood, NeighborhoodDetail, Paginated},
 };
@@ -82,6 +85,8 @@ pub async fn detail(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
     Query(filters): Query<DetailQuery>,
+    OptionalAnonId(anon_id): OptionalAnonId,
+    headers: HeaderMap,
 ) -> Result<Json<NeighborhoodDetail>, ApiError> {
     let row: Option<NeighborhoodRow> = sqlx::query_as(
         r#"
@@ -183,6 +188,28 @@ pub async fn detail(
 
     // Build representative URLs from the curated rep ids.
     let rep_urls = fetch_primary_image_urls(&state, &row.representative_artwork_ids).await?;
+
+    // T-050 — neighborhood_viewed. Filter params live in the payload
+    // so downstream readers can distinguish "browsed bare" from
+    // "browsed and narrowed by medium/price."
+    events::emit(
+        &state.jobs,
+        events::event_log(
+            EventName::NeighborhoodViewed,
+            anon_id,
+            None,
+            serde_json::json!({
+                "neighborhood_id": row.id,
+                "slug": slug,
+                "medium": filters.medium,
+                "price_min": filters.price_min,
+                "price_max": filters.price_max,
+                "availability": filters.availability,
+            }),
+            events::extract_request_context(&headers),
+        ),
+    )
+    .await;
 
     Ok(Json(NeighborhoodDetail {
         neighborhood: row.into_neighborhood(&rep_urls),
