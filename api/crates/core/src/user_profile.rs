@@ -39,6 +39,8 @@
 //!   Deferred to a refinement.
 
 use crate::db::Pool;
+use crate::jobs::{EnqueueOpts, JobEvent, JobsDeps};
+use chrono::{DateTime, Duration, Utc};
 use pgvector::Vector;
 use uuid::Uuid;
 
@@ -236,7 +238,7 @@ pub async fn refresh_user(pool: &Pool, user_id: Uuid) -> sqlx::Result<RefreshRes
 /// next time they sign in (via T-033 anon-merge + the next refresh).
 pub async fn users_with_recent_activity(
     pool: &Pool,
-    since: chrono::DateTime<chrono::Utc>,
+    since: DateTime<Utc>,
 ) -> sqlx::Result<Vec<Uuid>> {
     let rows: Vec<(Uuid,)> = sqlx::query_as(
         r#"
@@ -250,6 +252,51 @@ pub async fn users_with_recent_activity(
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// How far back the kickoff scans for "recent activity" when deciding
+/// who to refresh. A daily cron with a 25h window has 1h of overlap to
+/// absorb missed runs without losing users.
+pub const KICKOFF_LOOKBACK_HOURS: i64 = 25;
+
+/// Two-stage fan-out kickoff. Scans for users with events in the last
+/// `KICKOFF_LOOKBACK_HOURS` and enqueues one `JobEvent::UserProfileRefresh`
+/// per. Mirrors the digest kickoff pattern: cron (or manual
+/// `jobs-worker --enqueue`) fires this once; this fans out the per-user
+/// work onto the same queue.
+///
+/// No `user_wants` opt-out check — taste-vector refresh is purely
+/// backend computation, never user-visible directly. The opt-out
+/// surface for the *downstream* features (digest, "for you") lives
+/// in those handlers via `T-068` preferences.
+///
+/// Returns the count enqueued so callers can log it. Not currently
+/// scheduled live — the cron wiring (EventBridge → SQS in prod,
+/// poller cron in dev) is deferred until we have real users
+/// (`TODO.md` T-055 follow-up).
+pub async fn kickoff(deps: &JobsDeps) -> anyhow::Result<usize> {
+    let since = Utc::now() - Duration::hours(KICKOFF_LOOKBACK_HOURS);
+    let users = users_with_recent_activity(&deps.pool, since).await?;
+
+    tracing::info!(
+        candidates = users.len(),
+        lookback_hours = KICKOFF_LOOKBACK_HOURS,
+        "user_profile_refresh kickoff: candidate users scanned",
+    );
+
+    let mut enqueued = 0usize;
+    for user_id in users {
+        deps.jobs
+            .enqueue(
+                JobEvent::UserProfileRefresh { user_id },
+                EnqueueOpts::default(),
+            )
+            .await?;
+        enqueued += 1;
+    }
+
+    tracing::info!(enqueued, "user_profile_refresh kickoff: jobs enqueued");
+    Ok(enqueued)
 }
 
 #[cfg(test)]

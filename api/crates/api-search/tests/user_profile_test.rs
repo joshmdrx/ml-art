@@ -276,3 +276,92 @@ async fn enqueue_persists_user_profile_refresh_variant(pool: PgPool) {
 fn _ensure_handler_error_in_scope(e: HandlerError) -> HandlerError {
     e
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T-055.2 — kickoff (fan-out)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn kickoff_enqueues_one_refresh_per_active_user(pool: PgPool) {
+    // Alice has two events, Bob has one, no anonymous events.
+    // Kickoff should enqueue exactly two UserProfileRefresh jobs.
+    insert_event(&pool, ALICE, "artwork_viewed", ARTWORK_POS_0, 0.1).await;
+    insert_event(&pool, ALICE, "artwork_saved", ARTWORK_POS_1, 0.2).await;
+    insert_event(&pool, BOB, "inquiry_submitted", ARTWORK_POS_2, 0.3).await;
+
+    let deps = deps_for_handler(pool.clone());
+    jobs::handle(JobEvent::UserProfileRefreshKickoff {}, &deps)
+        .await
+        .expect("kickoff handler should succeed");
+
+    // The `for_tests()` JobsBackend captures everything enqueued so we
+    // can assert on shape without touching the jobs table.
+    let captured = deps.jobs.captured();
+    assert_eq!(captured.len(), 2, "two active users → two jobs");
+
+    let mut user_ids: Vec<Uuid> = captured
+        .iter()
+        .map(|e| match e {
+            JobEvent::UserProfileRefresh { user_id } => *user_id,
+            other => panic!("expected UserProfileRefresh, got {:?}", other),
+        })
+        .collect();
+    user_ids.sort();
+    let mut expected = vec![ALICE, BOB];
+    expected.sort();
+    assert_eq!(user_ids, expected);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn kickoff_ignores_anonymous_events(pool: PgPool) {
+    // Two anonymous events, no signed-in events. Kickoff enqueues
+    // nothing — anonymous taste folds in via the T-033 anon-merge
+    // handler at sign-in.
+    sqlx::query(
+        r#"
+        INSERT INTO events (anonymous_id, event_name, properties, context, occurred_at)
+        VALUES
+          (gen_random_uuid(), 'artwork_viewed',
+              jsonb_build_object('artwork_id', $1::text),
+              '{}'::jsonb, now()),
+          (gen_random_uuid(), 'artwork_saved',
+              jsonb_build_object('artwork_id', $2::text),
+              '{}'::jsonb, now())
+        "#,
+    )
+    .bind(ARTWORK_POS_0)
+    .bind(ARTWORK_POS_1)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let deps = deps_for_handler(pool.clone());
+    jobs::handle(JobEvent::UserProfileRefreshKickoff {}, &deps)
+        .await
+        .unwrap();
+
+    assert!(
+        deps.jobs.captured().is_empty(),
+        "anonymous-only activity → no refresh jobs"
+    );
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn kickoff_skips_stale_users(pool: PgPool) {
+    // Alice's events are 2 days old → outside the 25h lookback. She
+    // shouldn't get a refresh job. Bob's are fresh → he should.
+    insert_event(&pool, ALICE, "artwork_saved", ARTWORK_POS_0, 2.0).await;
+    insert_event(&pool, BOB, "artwork_saved", ARTWORK_POS_1, 0.1).await;
+
+    let deps = deps_for_handler(pool.clone());
+    jobs::handle(JobEvent::UserProfileRefreshKickoff {}, &deps)
+        .await
+        .unwrap();
+
+    let captured = deps.jobs.captured();
+    assert_eq!(captured.len(), 1, "only the fresh user gets a job");
+    match &captured[0] {
+        JobEvent::UserProfileRefresh { user_id } => assert_eq!(*user_id, BOB),
+        other => panic!("unexpected event: {:?}", other),
+    }
+}

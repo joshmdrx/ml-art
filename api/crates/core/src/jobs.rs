@@ -100,6 +100,13 @@ pub enum JobEvent {
     /// (currently dormant) scheduled trigger that scans for users with
     /// activity in the last 24h.
     UserProfileRefresh { user_id: Uuid },
+    /// T-055.2 — fan-out kickoff. Handler scans for users with recent
+    /// activity and enqueues one `UserProfileRefresh` per. Mirrors the
+    /// digest kickoff pattern (EventBridge → SQS in prod, manual via
+    /// `jobs-worker --enqueue` locally). Currently not on a live cron
+    /// — the trigger code is shipped, the schedule wiring is deferred
+    /// until real users exist.
+    UserProfileRefreshKickoff {},
 }
 
 impl JobEvent {
@@ -120,6 +127,7 @@ impl JobEvent {
             JobEvent::NotifyFollowersDigestUser { .. } => "notify_followers_digest_user",
             JobEvent::EventLog { .. } => "event_log",
             JobEvent::UserProfileRefresh { .. } => "user_profile_refresh",
+            JobEvent::UserProfileRefreshKickoff {} => "user_profile_refresh_kickoff",
         }
     }
 }
@@ -597,6 +605,13 @@ pub async fn handle(event: JobEvent, deps: &JobsDeps) -> Result<(), HandlerError
             crate::user_profile::refresh_user(&deps.pool, user_id)
                 .await
                 .map_err(|e| HandlerError::Domain(format!("user_profile_refresh: {e}")))?;
+        }
+        JobEvent::UserProfileRefreshKickoff {} => {
+            // T-055.2 — fan out one `UserProfileRefresh` per user with
+            // recent activity. Logging lives inside `kickoff`.
+            crate::user_profile::kickoff(deps)
+                .await
+                .map_err(|e| HandlerError::Domain(format!("user_profile_refresh_kickoff: {e}")))?;
         }
     }
     Ok(())
