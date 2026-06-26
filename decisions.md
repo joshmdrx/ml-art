@@ -68,6 +68,68 @@ rewrite. No schema commitments — `kind='semantic'` is just a string.
 
 ---
 
+## 2026-06-26 — T-055: user taste vector — weighted-decayed L2-normalised sum, two-stage queue fan-out
+
+**Context:** Events flowing (T-050) + cluster centroids in place
+(T-057) unblock the first real ML personalisation engine. The
+`user_profiles.taste_embedding` column has existed since migration
+0006 with the HNSW index ready; we just needed something to write to
+it. Every downstream retention feature (T-056 re-rank, T-060 digest,
+cluster-of-a-user, T-061 calibrator merge) reads from this vector.
+
+**Decisions:**
+
+1. **Weighted-sum + L2-normalise, not EWMA-over-time.** The TODO
+   originally said EWMA but on reflection that's redundant: time decay
+   is already baked into per-event weights via
+   `0.95^(weeks_old)`. EWMA would just be a second decay on top. The
+   weighted-sum-with-decay formulation is the same math expressed
+   more directly, and easier to reason about when tuning weights.
+
+2. **Per-event weights live as `pub const` in the module, not in
+   config.** They're tuning knobs the ML pipeline owner adjusts, not
+   ops-time deployment config. Recompile-to-change is fine for that
+   audience and keeps the per-event weight table in one obvious place.
+
+3. **Negative weight on unsave, mirroring the save weight.** A user
+   who saves then later unsaves should net to ~zero (modulo decay),
+   not "save × 2." The `base_weight` function returns a signed value;
+   the accumulator treats it as a vector subtraction. Modelled the
+   same way for any future toggle events.
+
+4. **Sub-noise-floor norms return None.** If a user has a single very-
+   old view event, the decayed magnitude is essentially zero and the
+   normalised direction is meaningless noise. Skip the write entirely
+   rather than persist a misleading vector — downstream surfaces gate
+   on `taste_embedding IS NOT NULL` already.
+
+5. **Two-stage fan-out via the jobs queue, matching the T-052b digest
+   pattern.** `Kickoff` scans + enqueues, `Refresh` does per-user
+   work. Both run on the existing queue infra (Postgres locally, SQS
+   in prod). No new cron infrastructure invented; reuses what's there.
+
+6. **No anonymous-user profiles in v1.** The TODO said "anonymous
+   users get refreshed too (keyed by `anonymous_id`)" but the schema
+   makes `user_id` a PK FK into `users` — anonymous profiles need
+   either a schema migration or a separate table. Deferred to T-061
+   (the calibrator), where anonymous taste-vector seeding has a
+   natural home alongside the cold-start UX. Pre-signin taste isn't
+   lost: events keep flowing and the T-033 anon-merge handler links
+   them to the user record at sign-in.
+
+7. **Cron not live.** Same deferral as T-057's
+   `neighborhoods-build` — both ML batch jobs wait for real users to
+   start onboarding. The kickoff handler + `users_with_recent_activity`
+   are ready; only the EventBridge → SQS schedule is unbuilt.
+   Triggered manually via `jobs-worker --enqueue` until then.
+
+**Reversibility:** Very high. Weights are constants; decay rate is a
+constant. Schema-side we're only writing to existing columns. Killing
+the cron stops refreshes; setting `taste_embedding=NULL` resets a
+user. The whole pipeline is one module + 2 JobEvent variants.
+
+---
+
 ## 2026-06-26 — T-057 tuning pass: leaf/15/2, Anthropic-vs-Groq bake-off
 
 **Context:** First end-to-end run of the T-057 pipeline (above) against

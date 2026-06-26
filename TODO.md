@@ -375,15 +375,15 @@ The digest filter is `artworks.published_at > GREATEST(follows.created_at, now()
 - ✅ 4 integration tests covering the chain; 7 unit tests on the token shape.
 - **Productionisation fixes during 2026-06-22 cutover:** demoted 5 AWS WAF body-content sub-rules to COUNT (false positives on image-upload + JSON-webhook traffic — see `decisions.md` 2026-06-22); flipped on WAF logging in TF; wired `S3_UPLOADS_BUCKET` env on api+jobs Lambdas; fixed STS-cred override in `core::object_store` (was AccessDenied'ing on every S3 PUT under role-based creds).
 
-### `T-055` User taste vector + nightly refresh
-**Where:** New `core::user_profile` module; `JobEvent::UserProfileRefresh` variant + handler; cron trigger (CloudWatch Events → SQS in prod / Postgres job-poller cron in dev).
-**Why:** Foundation for `T-056` (personalised search re-rank), `T-060` (Discover Weekly), cluster-of-a-user, similar-artists. Schema (`user_profiles.taste_embedding` + HNSW) already exists.
-**Acceptance:**
-- Job: for each user with new events in the last 24h, fetch recent N events + associated artwork embeddings, compute weighted EWMA, L2-normalise, persist with `profile_updated_at = now()`.
-- Initial weights — `inquiry: 5 / follow: 4 / save: 3 / visual_upload: 3 / modifier: 2 / dwell>15s: 1 / click: 0.5 / scroll-past: -0.1`. Decay 0.95 per week.
-- Anonymous users get refreshed too (keyed by `anonymous_id`); merge on sign-in via `T-033`.
-- `interaction_count` on `user_profiles` is incremented per refresh so downstream surfaces can gate on it (≥10 to enable personalised retrieval).
-- Acceptance test: ≥10 saves of artworks near a centroid → resulting taste vector cosine-sim to that centroid > 0.6.
+### ~~`T-055` User taste vector + nightly refresh~~ ✓ shipped 2026-06-26
+`core::user_profile` computes a per-user L2-normalised weighted-sum taste embedding from event-linked artwork embeddings, decayed by `0.95^(weeks_old)` (soft 13-week half-life). Base weights v1: `inquiry_submitted=5`, `artwork_saved=3` (`-3` on unsave), `artwork_viewed=0.5`. `JobEvent::UserProfileRefresh { user_id }` + `JobEvent::UserProfileRefreshKickoff {}` (two-stage fan-out, mirrors T-052b digest pattern). Persisted to `user_profiles.taste_embedding`; sub-noise-floor results return None rather than writing a meaningless direction. 20 tests total (7 unit + 13 integration).
+
+**Live cron deferred until real users onboarding** — same trigger condition as T-057 (`make neighborhoods-build` scheduling). The kickoff handler + `users_with_recent_activity` are wired; the EventBridge → SQS schedule wiring is the only thing missing. Manual local invoke: `cargo run -p jobs-worker -- --enqueue '{"kind":"user_profile_refresh_kickoff","payload":{}}'`.
+
+**Deferred to follow-ups (noted in module docs):**
+- `artist_followed` / `artist_unfollowed` — need artist-centroid join (`AVG(embedding)` over artist's artworks). Add when first real follow events appear.
+- `modifier_applied` / `visual_search_uploaded` — no `artwork_id` in `properties`; would need a modifier-vector lookup / upload-embedding fetch.
+- Anonymous user profiles — `user_profiles.user_id` FKs into `users` so pre-signin taste lives implicitly in events until T-033 anon-merge links it. Natural home for an anon-taste store is T-061 (calibrator).
 
 ### `T-056` Personalised search re-rank + "For you" row
 **Where:** `api-search::search.rs` adds a `taste_ranked` CTE; new `/v1/me/recommendations/for-you` endpoint; homepage row.

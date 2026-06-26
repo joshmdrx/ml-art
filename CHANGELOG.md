@@ -3,6 +3,70 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-26 — T-055: User taste vector + nightly refresh (code ready, cron not live)
+
+The first ML personalisation engine. With events flowing (T-050) and
+cluster centroids in place (T-057), this turns the event stream into a
+per-user vector that downstream surfaces (T-056 re-rank, T-060 digest,
+cluster-of-a-user) can query.
+
+Pipeline (`api/crates/core/src/user_profile.rs`):
+
+- **Math** — for each qualifying event with associated artwork embedding,
+  contribute `weight · 0.95^(weeks_old) · embedding` to the user's
+  accumulator. L2-normalise the result. Sub-noise-floor norms return
+  `None` rather than writing a meaningless direction.
+- **Weights v1** — `inquiry_submitted=5`, `artwork_saved=3` (`-3` on
+  unsave to net out the prior save modulo decay), `artwork_viewed=0.5`.
+  Mirrors the TODO entry; tune as engagement data accumulates.
+- **Decay** — `WEEKLY_DECAY=0.95` per week, computed continuously by days
+  since the event (so the curve is smooth, not stepped). Half-life is
+  ~13 weeks; a 90-day-old event still counts ~52%. 90-day lookback window
+  bounds the query as the events table grows.
+- **Persistence** — upsert into `user_profiles` (taste_embedding,
+  interaction_count, last_active, profile_updated_at). HNSW index already
+  exists (migration 0006) so downstream queries can find the user's
+  nearest artworks with one operator.
+
+Jobs queue integration:
+
+- `JobEvent::UserProfileRefresh { user_id }` — per-user refresh, plain
+  dispatch into `core::user_profile::refresh_user`.
+- `JobEvent::UserProfileRefreshKickoff {}` — two-stage fan-out matching
+  T-052b's digest pattern. Handler scans for users with events in the
+  last `KICKOFF_LOOKBACK_HOURS` (25 — daily cron + 1h overlap) and
+  enqueues one `UserProfileRefresh` per. No `user_wants` opt-out check
+  (taste-vector is purely backend computation; the opt-out lives in
+  downstream features).
+
+**Cron not live yet.** Same deferral as T-057's `neighborhoods-build`
+schedule — both wait for real users to start onboarding. Manual
+local invoke via the existing CLI:
+
+    cargo run -p jobs-worker -- --enqueue \
+      '{"kind":"user_profile_refresh_kickoff","payload":{}}'
+
+Deferred to follow-ups (noted inline in `core::user_profile`):
+
+- `artist_followed` / `artist_unfollowed` — would contribute the
+  weighted artist centroid; needs an `AVG(embedding)` join over the
+  artist's artworks. Skipped for v1 to keep the SQL straightforward.
+- `modifier_applied` / `visual_search_uploaded` — no `artwork_id` in
+  `properties`; would need a modifier-vector lookup / upload-embedding
+  fetch.
+- Anonymous user profiles — `user_profiles.user_id` FKs into `users`;
+  pre-signin taste lives in events until T-033 anon-merge links it.
+  T-061 (the calibrator) is the natural home for an anon-taste store.
+
+Tests: 7 math unit tests (weight table, empty input, single save,
+save+unsave cancels, inquiry-dominates-views, decay attenuates old
+events, unit-norm invariant) + 13 integration tests (no-events skip,
+single save, blended events, non-contributing events ignored,
+idempotency, user isolation, recent-activity dedup with anon excluded,
+handler dispatch, handler ok on empty events, enqueue smoke, kickoff
+fan-out per active user, kickoff ignores anonymous events, kickoff
+skips stale users outside the lookback). 20 tests total, all green.
+
 ## 2026-06-26 — T-057: Algorithmic neighbourhoods (HDBSCAN + Claude label)
 
 `/neighborhoods` was populated by a single hand-curated row (`test-vibes`).
