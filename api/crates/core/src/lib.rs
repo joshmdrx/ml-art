@@ -32,4 +32,5 @@ pub mod notifications;
 pub mod object_store;
 pub mod reply_address;
 pub mod telemetry;
+pub mod user_profile;
 pub mod validation;

@@ -94,6 +94,12 @@ pub enum JobEvent {
         properties: serde_json::Value,
         context: serde_json::Value,
     },
+    /// T-055 — refresh one user's taste vector. Handler reads recent
+    /// events, joins to artwork embeddings, writes the weighted+decayed
+    /// sum to `user_profiles.taste_embedding`. Enqueued by the
+    /// (currently dormant) scheduled trigger that scans for users with
+    /// activity in the last 24h.
+    UserProfileRefresh { user_id: Uuid },
 }
 
 impl JobEvent {
@@ -113,6 +119,7 @@ impl JobEvent {
             JobEvent::NotifyFollowersDigestKickoff {} => "notify_followers_digest_kickoff",
             JobEvent::NotifyFollowersDigestUser { .. } => "notify_followers_digest_user",
             JobEvent::EventLog { .. } => "event_log",
+            JobEvent::UserProfileRefresh { .. } => "user_profile_refresh",
         }
     }
 }
@@ -582,6 +589,14 @@ pub async fn handle(event: JobEvent, deps: &JobsDeps) -> Result<(), HandlerError
             digest_handlers::send_user_digest(deps, user_id)
                 .await
                 .map_err(|e| HandlerError::Domain(e.to_string()))?;
+        }
+        JobEvent::UserProfileRefresh { user_id } => {
+            // T-055 — compute weighted-decayed taste embedding from
+            // recent events and upsert `user_profiles`. Domain logic
+            // lives in `core::user_profile`; this arm is just dispatch.
+            crate::user_profile::refresh_user(&deps.pool, user_id)
+                .await
+                .map_err(|e| HandlerError::Domain(format!("user_profile_refresh: {e}")))?;
         }
     }
     Ok(())
