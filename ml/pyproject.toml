@@ -35,6 +35,17 @@ seed = [
     "psycopg[binary]>=3.1",
     "boto3>=1.34",
 ]
+# T-057 — algorithmic neighbourhoods (HDBSCAN + Claude labels).
+# `hdbscan` is the cluster algorithm; `scikit-learn` only for the
+# nearest-centroid lookups the labelling step uses; `anthropic` for
+# the vision-mode Claude call.
+neighborhoods = [
+    "psycopg[binary]>=3.1",
+    "pgvector>=0.2",
+    "hdbscan>=0.8",
+    "scikit-learn>=1.4",
+    "anthropic>=0.40",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.5",

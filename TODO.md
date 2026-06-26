@@ -395,15 +395,8 @@ The digest filter is `artworks.published_at > GREATEST(follows.created_at, now()
 - Mode flag `?personalize=off` for debugging on both API + page.
 - Per-request log line `personalise=on user=<id> alpha=…` for diagnosis.
 
-### `T-057` Algorithmic neighbourhoods (HDBSCAN + Claude label)
-**Where:** `ml/scripts/compute_neighborhoods.py` (new); persistence via a new ingestion endpoint or direct DB write; runs as a containerised Lambda or scheduled batch.
-**Why:** Replace hand-curated set with discovered clusters per `decisions.md` 2026-06-17. Schema (`neighborhoods.kind='semantic'`, `cluster_centroid`, `representative_artwork_ids`, `computed_at`) is fully ready.
-**Acceptance:**
-- Pull all `artworks.status='published'` embeddings; HDBSCAN with `min_cluster_size` tuned around ~30. Output per cluster: centroid, member artwork ids, top-K nearest to centroid.
-- Label step: sample 10 nearest per cluster; one Claude call per cluster with structured output `{name: 2-4 words, one_sentence_description}`. Cache by centroid hash so re-runs only re-label drifted clusters.
-- Persistence: write rows with `kind='semantic'`. Match old centroids to new by greedy nearest-match for slug stability across re-runs.
-- Hand-curated set (`kind='curated'`) coexists. UX call (filter? merge? curated-first then algorithmic?) deferred to implementation time.
-- Cadence: weekly via cron-enqueued job. Skip if artwork population shifted < 5% since last run.
+### ~~`T-057` Algorithmic neighbourhoods (HDBSCAN + Claude label)~~ ✓ shipped 2026-06-26
+Pipeline lives at `ml/ml_art/neighborhoods.py`, runnable via `make neighborhoods-build`. HDBSCAN with `cluster_selection_method='leaf'`, `min_cluster_size=15`, `min_samples=2`, euclidean over L2-normalised embeddings — tuned after the initial `eom`/30 default produced one 856-artwork mega-bucket. Claude (Sonnet 4.6) labels each cluster with 5 centroid-nearest sample images; result persisted as `kind='semantic'`, top 3 clusters by size become `is_featured`. Pure-rebuild semantics (drops + re-inserts every run; no Hungarian-matching yet since no real bookmarks pre-launch). Curated set untouched — coexists by `kind` discriminator. Groq + Llama 4 Scout wired as a fallback/iteration provider behind `--provider groq`; baked off, Claude clearly wins on evocative register (`decisions.md` 2026-06-26). First prod build seeded 14 neighbourhoods from ~2000 eligible artworks. Scheduled weekly cadence + drift-skip is deferred (run manually for now).
 
 ### `T-058` Series concept for artists
 **Where:** New migration (`series` table + `artworks.series_id` FK); studio UI; artist-page "View by series" layout option.

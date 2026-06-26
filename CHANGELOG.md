@@ -3,6 +3,66 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-26 — T-057: Algorithmic neighbourhoods (HDBSCAN + Claude label)
+
+`/neighborhoods` was populated by a single hand-curated row (`test-vibes`).
+The schema has been designed for algorithmic clusters since launch — this
+finally writes them.
+
+Pipeline (`ml/ml_art/neighborhoods.py`, ~550 lines, run via
+`make neighborhoods-build`):
+
+- Pull every artwork that has an embedding + an `is_primary`, `approved`
+  image, owned by an active non-deleted artist.
+- HDBSCAN with `cluster_selection_method='leaf'`, `min_cluster_size=15`,
+  `min_samples=2`, `metric='euclidean'`. The defaults were tuned against
+  the live corpus: the initial `eom`/30 config collapsed everything
+  Western-figurative into one 856-artwork mega-bucket. `leaf` selection
+  picks finer-grained clusters from the condensed tree; the low
+  `min_samples` keeps noise classification gentle. Euclidean is correct
+  because embeddings are L2-normalised at write time — euclidean on a
+  unit sphere is monotone in cosine distance and HDBSCAN's mutual-
+  reachability arithmetic is cleaner in a real metric.
+- One vision-LLM call per cluster behind a `Labeller` interface:
+  - `AnthropicLabeller` (default — `claude-sonnet-4-6`, 12 centroid-
+    nearest images).
+  - `GroqLabeller` (`meta-llama/llama-4-scout-17b-16e-instruct`, 5
+    images — Groq's per-request image cap). OpenAI-compatible endpoint
+    via `requests`; retry-with-backoff on 429/5xx.
+  Prompt asks for 2-4-word evocative name + one-sentence description in
+  JSON. Per-cluster fallback to `Cluster {n}` on parse failure so a
+  single bad reply doesn't crash the run.
+- Persist with `kind='semantic'`. Top 3 clusters by size get
+  `is_featured=true` for the homepage row; everyone else gets a
+  `display_order` slot.
+- Pure rebuild: every run drops all `kind='semantic'` rows and
+  re-inserts. No Hungarian-matching of old → new centroids yet —
+  rationale in `decisions.md`. Hand-curated set (`kind='curated'`)
+  untouched.
+
+Tunability:
+- `--preview` runs clustering + prints size distribution only (no
+  labelling call, no DB write). Designed for cheap configuration sweeps.
+- `--dry-run [--output PATH]` runs clustering + labelling, dumps a
+  structured JSON file with labels and representative image URLs. Used
+  for the Anthropic-vs-Groq bake-off; still useful for prompt
+  iteration.
+- `--cluster-method {eom,leaf}`, `--min-samples N`, `--cluster-epsilon`
+  expose the HDBSCAN tunables for one-off sweeps.
+
+First prod build (2026-06-26) seeded 14 neighbourhoods from ~2000
+eligible artworks (74% noise — the 1494 artworks not placed in any
+cluster still appear via search / artist pages, just not as part of a
+discrete neighbourhood, which is honest signal).
+
+Tests: 18 unit tests covering `slugify` (ASCII-fold, fallback on empty),
+`dedupe_slugs` (suffix-on-collision), `_parse_label_response` (clean
+JSON, prose-wrapped JSON, malformed → fallback, missing/empty fields),
+`Cluster.most_central` (centroid-distance ordering),
+`cluster_artworks` (two-blob separation, noise-drop). The DB write +
+real LLM calls are integration concerns — exercised by the prod run,
+not unit-mocked.
+
 ## 2026-06-25 — T-050: Behavioural events writer
 
 The `events` table has existed since launch but nothing wrote to it.

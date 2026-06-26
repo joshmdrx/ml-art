@@ -116,6 +116,23 @@ _seed-check:
 		exit 1; \
 	fi
 
+# T-057 — rebuild algorithmic neighbourhoods from the live embeddings.
+# Pure rebuild: drops all kind='semantic' rows, runs HDBSCAN, asks
+# Claude to label each cluster, persists. Pass DATABASE_URL + ANTHROPIC_API_KEY
+# explicitly; the script doesn't read .env. Defaults are tuned (see
+# DEFAULT_* in ml_art/neighborhoods.py); pass extra flags via FLAGS=…
+# (e.g. `make neighborhoods-build FLAGS=--dry-run`).
+.PHONY: neighborhoods-build
+neighborhoods-build:
+	@if [ -z "$$DATABASE_URL" ] || [ -z "$$ANTHROPIC_API_KEY" ]; then \
+		echo "✘ DATABASE_URL and ANTHROPIC_API_KEY must be set"; exit 1; \
+	fi
+	@cd ml && uv run --extra neighborhoods python -m ml_art.neighborhoods \
+		--database-url "$$DATABASE_URL" \
+		--anthropic-key "$$ANTHROPIC_API_KEY" \
+		--prune-test-vibes \
+		$(FLAGS)
+
 .PHONY: setup
 setup: up migrate seed
 	@echo ""

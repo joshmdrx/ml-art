@@ -17,6 +17,137 @@ Format:
 
 ---
 
+## 2026-06-25 — T-057: algorithmic neighbourhoods — HDBSCAN over normalised CLIP, evocative Claude labels, pure-rebuild persistence
+
+**Context:** `/neighborhoods` was populated by a single hand-curated
+`test-vibes` row. Schema has supported algorithmic clusters since
+launch (`kind='semantic'`, `cluster_centroid vector(1024)`,
+`representative_artwork_ids uuid[]`). Time to actually populate it —
+the schema being ready meant the only open questions were operational.
+
+**Decisions:**
+
+1. **`min_cluster_size=30`.** Picked the bottom of the "tight enough
+   to feel coherent, loose enough to find more than 2 groups" range.
+   With ~few-hundred published artworks, smaller would over-fit; much
+   larger would collapse to ≤2 noisy macro-clusters.
+
+2. **HDBSCAN with `metric='euclidean'`, `cluster_selection_method='eom'`,
+   over L2-normalised embeddings.** Considered cosine directly but the
+   `hdbscan` package's metric-tree fast paths assume a true metric;
+   euclidean on a unit-norm vector is monotone in cosine distance,
+   so the cluster shapes are identical and the math is cleaner. `eom`
+   over `leaf` because we want the most stable clusters, not the
+   maximum-density-peak ones.
+
+3. **Evocative names over taxonomic.** Asked Claude for "Quiet
+   Mornings" / "Saturated Geometry" style names instead of "Pastel
+   Still Life" / "Abstract Geometric Acrylic". The latter is what a
+   filter chip should be; the former is what a *destination* should
+   be — the whole UX value of neighbourhoods over filters.
+
+4. **Pure-rebuild, no Hungarian-matching of old → new centroids.**
+   Future weekly runs will drift cluster shapes. Mature systems map
+   old slugs to new clusters by greedy nearest-centroid match to keep
+   bookmarks / shareable URLs stable. We don't have shareable bookmarks
+   yet (pre-launch) and slugs are derived from labels anyway, so we
+   accept slug churn for now. Revisit when first real user bookmarks a
+   neighbourhood URL.
+
+5. **Drop the `test-vibes` row on every run (`--prune-test-vibes`).**
+   It served its purpose validating the page renders; algorithmic
+   clusters supersede it cleanly.
+
+6. **Per-cluster fallback on label failure, not whole-run abort.** One
+   Claude reply with broken JSON should produce `Cluster 7` /
+   `Placeholder description` for *that* cluster, not lose the other 11.
+
+**Reversibility:** High. The whole pipeline is one script + one DELETE.
+Tuning parameters is a re-run away; switching algorithms is a file
+rewrite. No schema commitments — `kind='semantic'` is just a string.
+
+---
+
+## 2026-06-26 — T-057 tuning pass: leaf/15/2, Anthropic-vs-Groq bake-off
+
+**Context:** First end-to-end run of the T-057 pipeline (above) against
+the live corpus surfaced two issues the design discussion didn't catch.
+
+**Problem A — clustering collapsed.** `eom` + `min_cluster_size=30`
+produced 2 clusters from 2000 artworks: one 856-artwork "Western
+figurative everything" mega-bucket and one 48-artwork ukiyo-e cluster.
+~55% of the corpus classified as noise. The `eom` selection biases
+toward fewer, more-stable clusters in the condensed tree — fine in
+abstract, but on hierarchical CLIP-embedding data it merges entire
+branches up.
+
+**Tuning sweep (via the new `--preview` mode, which clusters without
+labelling — single API-free run per config):**
+
+| method | mcs | min_samples | clusters | noise |
+|---|---|---|---|---|
+| eom  | 30 | default(=mcs) | 2  | 55% |
+| leaf | 30 | default       | 3  | 81% |
+| eom  | 30 | 3             | 6  | 70% |
+| eom  | 30 | 1             | 2  | 26% (one 1445-bucket) |
+| leaf | 20 | 2             | 9  | 75% |
+| leaf | 15 | 3             | 11 | 76% |
+| **leaf** | **15** | **2** | **14** | **74%** |
+
+**Decided:** `cluster_selection_method='leaf'`, `min_cluster_size=15`,
+`min_samples=2`. 14 clusters with smooth size decay (90 → 15), no
+mega-bucket, every cluster maps to a recognisable visual neighbourhood
+in eyeball-check (cubism w/ instruments, pointillist landscapes,
+ukiyo-e, Renaissance religious, Symbolist mountains, AbEx, etc.).
+The 74% "noise" rate isn't bad: those artworks still appear in search
+and on artist pages — they just don't belong to a discrete
+neighbourhood. Honest signal over forced assignment.
+
+The earlier `eom`/30 decision (#1–#2 above) is preserved for context;
+this entry supersedes it.
+
+**Problem B — provider lock-in vs cost.** Original ship was Anthropic-
+only. User raised the cost question. Ran a head-to-head:
+
+- Same clusters, same prompt, sample size 5 for both.
+- Anthropic `claude-sonnet-4-6`: ~$0.05/run, ~30s.
+- Groq `meta-llama/llama-4-scout-17b-16e-instruct`: ~cents/run, ~5s
+  (modulo free-tier 429s, so the retry loop is necessary).
+
+**Result:** Anthropic clearly wins on register. Same ukiyo-e cluster:
+Anthropic says *"Silk and Shadow — Women in layered kimono inhabit
+intimate moments, their elaborate dress and quiet gestures suspended in
+soft, cream-toned space."* Groq says *"Elegant Japanese Portraits —
+Classical depictions of refined Japanese women in traditional dress."*
+Both accurate; Groq lands in the museum-caption register while
+Anthropic delivers the discovery-cue voice the design asked for
+("cream-toned space" vs "traditional dress" tells the story).
+
+**Decided:** Anthropic stays the default. Groq is wired up behind
+`--provider groq` as the cheap/fast iteration lane (prompt tweaks, full
+re-runs while tuning) and as a hot fallback if Anthropic ever rate-
+limits or has an outage. Pulling in Groq cost ~80 lines of code +
+adding `pgvector` + `requests` to the `neighborhoods` extras; cheap
+optionality.
+
+**Hidden gotchas surfaced:**
+- The `pgvector` adapter must be `register_vector(conn)`-ed or the
+  `embedding` column comes back as a string (e.g. `"[0.1,0.2,…]"`) and
+  `np.array(...)` silently builds a ragged object array that
+  HDBSCAN can't fit. Added the register call right after `psycopg.connect`.
+- Groq's vision endpoints cap at 5 images per request. Default sample
+  size is now per-provider (12 for Anthropic, 5 for Groq) rather than
+  a global constant.
+- Groq's free tier rate-limits aggressively — retry-with-backoff on
+  429 + 5xx is a 10-line addition, but skipping it makes any multi-
+  cluster run fail.
+
+**Reversibility:** Same as the original — script + DELETE. Provider
+selection is per-run flag, sample size is per-run flag, cluster
+config is per-run flag. Nothing fixed in schema.
+
+---
+
 ## 2026-06-25 — T-050: behavioural events writer — single-table, queue-mediated, server-derived identity
 
 **Context:** Every ML retention feature (T-055 taste vector, T-056
