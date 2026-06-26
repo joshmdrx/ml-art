@@ -85,6 +85,12 @@ pub enum EventName {
     ArtistFollowed,
     /// `DELETE /v1/me/follows/:artist_id` — `properties`: `{artist_id}`.
     ArtistUnfollowed,
+    /// T-061 first-session calibrator. `POST /v1/calibrate/pick`.
+    /// `properties`: `{pair_id, artwork_id, rejected_artwork_id}`.
+    /// `artwork_id` is the chosen one — the field name matches what
+    /// T-055's taste-vector SQL JOIN expects, so calibration picks
+    /// feed straight into the user's taste vector at weight 2.0.
+    CalibrationPick,
 }
 
 impl EventName {
@@ -105,6 +111,7 @@ impl EventName {
             EventName::NeighborhoodViewed => "neighborhood_viewed",
             EventName::ArtistFollowed => "artist_followed",
             EventName::ArtistUnfollowed => "artist_unfollowed",
+            EventName::CalibrationPick => "calibration_pick",
         }
     }
 }

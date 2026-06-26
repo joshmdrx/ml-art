@@ -4,6 +4,7 @@
 pub mod anon;
 pub mod artist;
 pub mod artwork;
+pub mod calibrate;
 pub mod events;
 pub mod extractors;
 pub mod inquiries;
@@ -93,6 +94,11 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route("/v1/artworks/:id/similar", get(artwork::similar))
         .route("/v1/neighborhoods", get(neighborhoods::index))
         .route("/v1/neighborhoods/:slug", get(neighborhoods::detail))
+        // T-061 first-session calibrator. GET samples pairs from
+        // far-apart cluster centroids; POST logs the pick as a
+        // `calibration_pick` event (T-055 picks it up at weight 2.0).
+        .route("/v1/calibrate/pairs", get(calibrate::pairs))
+        .route("/v1/calibrate/pick", post(calibrate::pick))
         .route("/v1/me", get(me::current_user))
         // T-033: called once after sign-in to copy behavioral signal
         // keyed on the anon_id cookie onto the now-known user. Body-

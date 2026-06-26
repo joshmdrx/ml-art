@@ -50,6 +50,10 @@ use uuid::Uuid;
 pub const WEIGHT_INQUIRY: f32 = 5.0;
 pub const WEIGHT_SAVE: f32 = 3.0;
 pub const WEIGHT_VIEW: f32 = 0.5;
+/// T-061 — calibrator picks. Each pick is an explicit "this over that"
+/// choice over a far-apart cluster pair, so it's a stronger signal
+/// than a passive view but weaker than a save or inquiry.
+pub const WEIGHT_CALIBRATION: f32 = 2.0;
 
 /// How far back to look for contributing events. Older events still
 /// contribute via the decay, but capping the window keeps the query
@@ -79,6 +83,7 @@ pub fn base_weight(event_name: &str) -> Option<f32> {
         "artwork_saved" => Some(WEIGHT_SAVE),
         "artwork_unsaved" => Some(-WEIGHT_SAVE),
         "artwork_viewed" => Some(WEIGHT_VIEW),
+        "calibration_pick" => Some(WEIGHT_CALIBRATION),
         _ => None,
     }
 }
@@ -177,7 +182,8 @@ pub async fn refresh_user(pool: &Pool, user_id: Uuid) -> sqlx::Result<RefreshRes
           AND e.occurred_at > now() - ($2 || ' days')::interval
           AND e.properties ? 'artwork_id'
           AND e.event_name IN (
-              'inquiry_submitted', 'artwork_saved', 'artwork_unsaved', 'artwork_viewed'
+              'inquiry_submitted', 'artwork_saved', 'artwork_unsaved',
+              'artwork_viewed', 'calibration_pick'
           )
         "#,
     )
@@ -315,6 +321,7 @@ mod tests {
         assert_eq!(base_weight("artwork_saved"), Some(3.0));
         assert_eq!(base_weight("artwork_unsaved"), Some(-3.0));
         assert_eq!(base_weight("artwork_viewed"), Some(0.5));
+        assert_eq!(base_weight("calibration_pick"), Some(2.0));
         // Tracked events with no taste-vector contribution.
         assert_eq!(base_weight("search_executed"), None);
         assert_eq!(base_weight("inquiry_started"), None);

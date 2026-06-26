@@ -347,6 +347,26 @@ async fn kickoff_ignores_anonymous_events(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn calibration_pick_feeds_taste_vector(pool: PgPool) {
+    // T-061 → T-055 wiring: a `calibration_pick` event with an
+    // `artwork_id` should drive the user's taste vector at weight 2.0,
+    // identical to any other artwork-linked event.
+    insert_event(&pool, ALICE, "calibration_pick", ARTWORK_POS_2, 0.1).await;
+
+    let result = user_profile::refresh_user(&pool, ALICE).await.unwrap();
+    assert!(result.updated, "calibration pick should drive a refresh");
+    assert_eq!(result.interaction_count, 1);
+
+    let (taste, _) = fetch_taste(&pool, ALICE).await.unwrap();
+    let v = taste.to_vec();
+    assert!(
+        (v[2] - 1.0).abs() < 1e-4,
+        "expected unit at pos 2, got v[2] = {}",
+        v[2]
+    );
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn kickoff_skips_stale_users(pool: PgPool) {
     // Alice's events are 2 days old → outside the 25h lookback. She
     // shouldn't get a refresh job. Bob's are fresh → he should.
