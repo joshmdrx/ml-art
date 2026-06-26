@@ -431,14 +431,13 @@ Pipeline lives at `ml/ml_art/neighborhoods.py`, runnable via `make neighborhoods
 - Skip if `interaction_count < 10`. Skip if user opened a previous digest within 2 days. Skip during quiet hours per user-TZ.
 - Per-kind opt-out + master kill switch from `T-068`.
 
-### `T-061` First-session taste calibrator
-**Where:** Web component on first homepage visit (anon-cookie flag); `POST /v1/me/calibrate` endpoint that seeds the anonymous taste vector.
-**Why:** Makes `T-056` "For you" useful from session one. Solves the cold-start problem where new users see generic surfaces until they've generated enough events.
-**Acceptance:**
-- Dismissable inline panel on first visit: "Help us tune what to show you — 5 quick comparisons."
-- 5 pairs sampled from far-apart cluster centroids (uses `T-057` output); user picks one per pair.
-- Each chosen artwork's embedding (weight 2.0) seeds the anonymous taste vector. Merges into user vector on sign-in via `T-033`.
-- A/B against a no-calibration cohort once events flow — measure 7-day return rate.
+### ~~`T-061` First-session taste calibrator~~ ✓ shipped 2026-06-26
+Backend at `api-search::calibrate` + frontend `CalibratePanel` on the homepage. `GET /v1/calibrate/pairs` samples 5 pairs from far-apart `kind='semantic'` cluster centroids via greedy farthest-first selection. `POST /v1/calibrate/pick` emits a `calibration_pick` event (weight 2.0 in T-055) with chosen + rejected artwork ids. Anon picks key on the `anon_id` cookie and fold into the user's taste vector at sign-in via T-033's anon-merge handler — no new schema, no separate taste-vector store. Panel auto-hides on returning visits via `localStorage["wander:calibrator"]`. 7 backend integration tests cover the math + endpoints; the frontend was verified via typecheck + lint (manual smoke-check during the next dev session).
+
+**Followups:**
+- A/B test calibrator-present vs absent once we have signed-in users — measure 7-day return rate, taste-vector cosine-stability over the first 10 events.
+- Score-based pair selection (currently greedy farthest by euclidean over the raw centroids; could weight toward visually-recognisable / featured clusters more heavily).
+- Re-trigger the panel on demand from /settings (e.g. "re-tune what we show you") once that surface exists.
 
 ### `T-062` Filter UI: size / price / medium
 **Where:** `web/src/components/FilterBar.tsx` extensions + URL params; API already accepts most of these via `api-search::search`.

@@ -3,6 +3,56 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-26 — T-061: First-session taste calibrator
+
+Cold-start UX: a homepage panel that asks new visitors to pick 1-of-2
+across 5 pairs of far-apart artworks, seeding their taste vector
+before they've had a chance to save or inquire. Composes with T-055
+(picks feed the vector at weight 2.0) and T-057 (pairs come from
+cluster centroids).
+
+Backend (`api/crates/api-search/src/calibrate.rs`):
+
+- `GET /v1/calibrate/pairs` — samples up to `PAIRS_PER_SESSION` (5)
+  pairs of artworks from `kind='semantic'` neighbourhoods. Greedy
+  farthest-first selection over the cluster centroids (`O(n²)` over
+  the corpus's ~14 clusters, trivial). Each side carries the
+  representative artwork's display data + the neighbourhood slug it
+  came from (useful for analytics on which clusters get picked).
+- `POST /v1/calibrate/pick` — emits a `calibration_pick` event with
+  the chosen + rejected artwork ids. Best-effort fire-and-forget,
+  mirroring the rest of the events surface.
+- New `EventName::CalibrationPick` variant; `WEIGHT_CALIBRATION=2.0`
+  added to T-055 (between view=0.5 and save=3.0 — reflects that
+  it's an explicit but low-context comparison).
+
+Picks live as events, not as a separate taste-vector store. Anon
+picks fold into the user's taste vector at sign-in via T-033
+anon-merge — same as every other anon event.
+
+Frontend:
+
+- New `CalibratePanel` client component. SSR fetches the pairs
+  once (falls back to empty on error). Component decides on mount
+  whether to render based on `localStorage["wander:calibrator"]`
+  (set to "done" on completion, "skip" on dismiss). Two-pane UX:
+  tap one of the side-by-side cards to advance.
+- Same-origin bridge route `web/src/app/api/calibrate/pick/route.ts`
+  so the browser's `anon_id` cookie reaches the api — matches the
+  T-050.3 events bridge pattern.
+
+Tests: 6 endpoint integration tests (empty corpus, 2-cluster minimum,
+greedy farthest pairing, session cap at 5, pick emit, malformed body)
++ 1 wiring test that a `calibration_pick` event drives T-055 refresh
+to a unit vector at the picked artwork's position. The 20 prior
+user_profile_test cases still pass with the new weight + SQL IN-list
+entry. Web verified via typecheck + lint; manual smoke is on the
+next-dev-session list.
+
+Deferred (TODO follow-ups): A/B return-rate test once we have
+signed-in users; smarter score-based pair selection; re-trigger
+surface in `/me/settings`.
+
 ## 2026-06-26 — T-055: User taste vector + nightly refresh (code ready, cron not live)
 
 The first ML personalisation engine. With events flowing (T-050) and

@@ -68,6 +68,60 @@ rewrite. No schema commitments — `kind='semantic'` is just a string.
 
 ---
 
+## 2026-06-26 — T-061: calibrator — picks-as-events, no anonymous profile store
+
+**Context:** T-056 "For you" and T-060 Discover Weekly both need an
+established taste vector to be useful, and T-055 only builds one once
+a user has accumulated saves/inquiries/views — useless for someone in
+their first session. T-061 fills that gap with a 5-pair "this or
+that" UX before they've done anything else.
+
+**Decisions:**
+
+1. **Picks live as events, not a separate anonymous taste-vector
+   store.** The TODO said "seeds the anonymous taste vector" but the
+   `user_profiles` schema FKs `user_id` into `users` — anonymous
+   profiles need either a schema migration (nullable user_id + add
+   anonymous_id), a sibling table, or a client-side store. All three
+   add infra. Events-only is the lightest path: a `calibration_pick`
+   event with `artwork_id` in `properties` feeds the same T-055
+   refresh path as a save or view. Anon picks fold into the user's
+   taste vector at sign-in via T-033 anon-merge. Pre-launch when
+   conversion isn't measurable, the tradeoff is "anon visitor who
+   never signs up loses calibration" — accepted as cheap to revisit
+   if conversion data later shows it's worth the anon-profile infra.
+
+2. **Weight 2.0 — between view and save.** A calibration pick is an
+   explicit "this over that" choice (stronger than a passive view,
+   weight 0.5) but with no context — they didn't write text, didn't
+   click through, didn't inquire (weaker than a save, weight 3.0).
+   2.0 splits the difference. Tune as engagement data arrives.
+
+3. **Greedy farthest-first pair selection, not maximum-weight
+   matching.** Max-weight matching gives the globally optimal
+   "farthest-pairing-on-average" but at `O(n³)` with the Hungarian
+   algorithm. Greedy is `O(n²)` and gives visually-distinct pairs
+   that are fine for the UX. With only ~14 clusters in prod the
+   distinction is invisible; revisit if cluster counts grow past ~50.
+
+4. **localStorage flag, not server-side "calibrated" state.** The
+   panel hides via `localStorage["wander:calibrator"] ∈ {"done",
+   "skip"}` on subsequent visits. Cross-device hand-off is a non-
+   feature pre-launch; doing it server-side would mean an extra
+   round-trip on every homepage load. Trade accepted.
+
+5. **SSR the pairs, bridge only the POST.** GET happens during the
+   page render — no client request, faster TTI for the new visitor.
+   POST goes through `/api/calibrate/pick` for the same cookie-
+   forwarding reason as `/api/events`. Matches the T-050.3 split.
+
+**Reversibility:** Very high. Server-side it's one new module +
+one EventName variant + one weight constant. Client-side it's one
+component + one route. localStorage flag is a single key. Removing
+the feature is "delete the files, remove the homepage import."
+
+---
+
 ## 2026-06-26 — T-055: user taste vector — weighted-decayed L2-normalised sum, two-stage queue fan-out
 
 **Context:** Events flowing (T-050) + cluster centroids in place
