@@ -1411,6 +1411,49 @@ export async function postEvents(body: unknown): Promise<Response> {
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// T-061 — first-session taste calibrator
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type CalibrateArtwork = {
+  artwork_id: string;
+  title: string | null;
+  artist_name: string;
+  artist_slug: string;
+  image_url: string;
+  neighborhood_slug: string;
+};
+
+export type CalibratePair = {
+  id: string;
+  left: CalibrateArtwork;
+  right: CalibrateArtwork;
+};
+
+export type CalibratePairsResponse = { pairs: CalibratePair[] };
+
+/** SSR-friendly fetch for the homepage panel. Returns an empty array
+ *  on failure rather than throwing — calibrator is an optional flourish,
+ *  not a critical surface. */
+export async function getCalibratePairs(
+  init?: RequestInit,
+): Promise<CalibratePairsResponse> {
+  const res = await apiFetch("/v1/calibrate/pairs", init);
+  if (!res.ok) {
+    return { pairs: [] };
+  }
+  return (await res.json()) as CalibratePairsResponse;
+}
+
+/** Forward a single pick from the `/api/calibrate/pick` bridge route. */
+export async function postCalibratePick(body: unknown): Promise<Response> {
+  return apiFetch("/v1/calibrate/pick", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 /** Queue a "follow this artist when I sign up" intent against the
  *  anon-id cookie. The merge-anonymous handler drains + replays after
  *  sign-in. Idempotent. Best-effort — failures are non-fatal (the user

@@ -5,12 +5,16 @@ import { SearchBar } from "@/components/SearchBar";
 import { VisualSearchUpload } from "@/components/VisualSearchUpload";
 import { ArtworkGrid } from "@/components/ArtworkGrid";
 import { NeighborhoodCard } from "@/components/NeighborhoodCard";
-import { searchArtworks, listNeighborhoods } from "@/lib/api";
+import { CalibratePanel } from "@/components/CalibratePanel";
+import { searchArtworks, listNeighborhoods, getCalibratePairs } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
 export default async function Home() {
-  // Fetch the homepage feeds in parallel.
-  const [recent, neighborhoods] = await Promise.all([
+  // Fetch the homepage feeds in parallel. Calibrator pairs SSR'd
+  // alongside the rest — the panel decides client-side whether to
+  // render based on a localStorage flag, so we don't waste cycles
+  // on returning visitors but the data's ready if they're new.
+  const [recent, neighborhoods, calibratePairs] = await Promise.all([
     searchArtworks({ sort: "newest", limit: 12 }).catch((e) => {
       reportError(e, { surface: "home", feed: "recent" });
       return { items: [], next_cursor: null };
@@ -18,6 +22,10 @@ export default async function Home() {
     listNeighborhoods().catch((e) => {
       reportError(e, { surface: "home", feed: "neighborhoods" });
       return { items: [], next_cursor: null };
+    }),
+    getCalibratePairs().catch((e) => {
+      reportError(e, { surface: "home", feed: "calibrate" });
+      return { pairs: [] };
     }),
   ]);
 
@@ -48,6 +56,12 @@ export default async function Home() {
             </Link>
           </div>
         </section>
+
+        {/* T-061 calibrator. Self-hides if the visitor has already
+            completed/skipped, or if the corpus has no semantic
+            neighbourhoods yet. Sits above the rest so it's visible
+            without scroll for new visitors. */}
+        <CalibratePanel pairs={calibratePairs.pairs} />
 
         {/* Neighborhoods */}
         {neighborhoods.items.length > 0 && (
