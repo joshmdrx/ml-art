@@ -9,14 +9,14 @@
  *     T-058 multi-select primitive).
  *
  * Lifecycle (see `docs/ui-patterns.md` → Modal behaviour):
- *   - Modal does NOT close itself on save. It calls `onSaved(s)` and
- *     lets the parent drive the next state.
- *   - For the create-then-attach-artworks flow, the parent re-opens
- *     the modal with the newly-created series as `target`. The modal
- *     detects "previous target was 'new'" via a useRef and defaults
- *     the tab to Artworks so the artist can pick membership without
- *     a second click.
- *   - Cancel / X / click-outside → `onClose()` → parent sets target null.
+ *   - Modal lifecycle (open/closed, current tab, current series) is
+ *     driven by URL params owned by the parent. The modal is a dumb
+ *     renderer of (target, tab) — it doesn't manage its own
+ *     visibility or tab state.
+ *   - Modal calls `onSaved(s)` after a successful save; parent decides
+ *     what URL state comes next (close, or advance to the new series
+ *     on the Artworks tab for the create-then-attach flow).
+ *   - Tab clicks call `onTabChange(next)`; parent updates the URL.
  *
  * Feedback (per ui-patterns):
  *   - `toast.success(...)` on create, save, delete.
@@ -25,7 +25,7 @@
  *   - `useConfirm()` for the destructive delete confirmation.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { clsx } from "clsx";
 import { toast } from "sonner";
 import {
@@ -39,10 +39,16 @@ import { useConfirm } from "@/components/ui/ConfirmDialog";
 import type { StudioArtworkSummary, StudioSeries } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
+type Tab = "details" | "artworks";
+
 interface Props {
   open: boolean;
   /** `"new"` = create mode; `StudioSeries` = edit; `null` = closed. */
   target: StudioSeries | "new" | null;
+  /** Current tab, owned by the parent (URL-driven). */
+  tab: Tab;
+  /** Called when the user clicks a tab. Parent updates the URL. */
+  onTabChange: (next: Tab) => void;
   artworks: StudioArtworkSummary[];
   artistName: string;
   onSaved: (s: StudioSeries) => void;
@@ -53,11 +59,11 @@ interface Props {
 const MAX_TITLE = 200;
 const MAX_STATEMENT = 500;
 
-type Tab = "details" | "artworks";
-
 export function SeriesEditModal({
   open,
   target,
+  tab,
+  onTabChange,
   artworks,
   onSaved,
   onDeleted,
@@ -69,7 +75,6 @@ export function SeriesEditModal({
 
   const confirm = useConfirm();
 
-  const [tab, setTab] = useState<Tab>("details");
   const [title, setTitle] = useState("");
   const [titleError, setTitleError] = useState<string | null>(null);
   const [statement, setStatement] = useState("");
@@ -78,34 +83,25 @@ export function SeriesEditModal({
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
-  // Track previous target to detect the create → edit transition that
-  // the parent triggers via `setOpen(newSeries)` after a successful
-  // create. When we see "new" → real series, default the tab to
-  // Artworks so the artist can pick membership without another click.
-  // (See `docs/ui-patterns.md` → Modal / dialog behaviour.)
-  const prevTargetRef = useRef<typeof target>(null);
-
+  // Reset form state whenever the modal opens for a different target.
+  // Tab is owned by the parent via URL params; we don't manage it
+  // locally anymore. Membership pre-check uses
+  // `StudioArtworkSummary.series_id` (T-058) so the grid opens with
+  // current members ticked without a second round-trip.
+  //
+  // The setState calls here are the load-from-external-store handshake
+  // — same shape SaveModal / CalibratePanel use. The
+  // react-hooks/set-state-in-effect rule flags them generically; in
+  // this load-on-open pattern they're the intent.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    if (!open) {
-      // Clear the ref when the modal closes so the next open starts fresh.
-      prevTargetRef.current = null;
-      return;
-    }
-    const wasFreshCreate =
-      prevTargetRef.current === "new" && existing !== null;
-    prevTargetRef.current = target;
-
-    setTab(wasFreshCreate ? "artworks" : "details");
+    if (!open) return;
     setFormError(null);
     setTitleError(null);
     if (existing) {
       setTitle(existing.title);
       setStatement(existing.statement ?? "");
       setCoverArtworkId(existing.cover_artwork_id);
-      // Pre-check artworks whose `series_id` already matches.
-      // `StudioArtworkSummary.series_id` (T-058) surfaces this so the
-      // modal opens with current membership ticked without a second
-      // round-trip.
       const members = new Set<string>();
       for (const a of artworks) {
         if (a.series_id === existing.id) {
@@ -119,7 +115,8 @@ export function SeriesEditModal({
       setCoverArtworkId(null);
       setMemberIds(new Set());
     }
-  }, [open, target, existing, artworks]);
+  }, [open, existing, artworks]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const validateTitle = useCallback((raw: string): string | null => {
     const trimmed = raw.trim();
@@ -260,13 +257,16 @@ export function SeriesEditModal({
             re-opens with the new series after create; useRef flips us
             to this tab automatically. */}
         <nav role="tablist" className="border-b border-border flex">
-          <TabButton active={tab === "details"} onClick={() => setTab("details")}>
+          <TabButton
+            active={tab === "details"}
+            onClick={() => onTabChange("details")}
+          >
             Details
           </TabButton>
           <TabButton
             active={tab === "artworks"}
             disabled={isCreate}
-            onClick={() => setTab("artworks")}
+            onClick={() => onTabChange("artworks")}
           >
             Artworks
             {existing ? ` (${existing.artwork_count})` : ""}

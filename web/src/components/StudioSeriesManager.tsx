@@ -3,20 +3,32 @@
 /**
  * T-058.2 — studio series management.
  *
- * Reads server-fetched series + artworks lists; renders a grid of
- * series cards + the "+ New series" affordance. Opens
- * `SeriesEditModal` for create (`"new"`) and edit (`<uuid>`).
+ * Modal lifecycle is driven by URL params (`?id=` + `?tab=`) rather
+ * than local state. Benefits:
+ *
+ * - Shareable links: `/studio/series?id=<uuid>&tab=artworks` opens a
+ *   specific series on the membership tab. Browser back button closes
+ *   the modal naturally.
+ * - Refresh-friendly: reload doesn't bounce you out of the modal.
+ * - Multi-step flows fall out of routing: after a create, the parent
+ *   does `router.replace("?id=<new>&tab=artworks")` and the modal
+ *   re-renders for the new series on the right tab. No useRef "did
+ *   the parent just re-open us?" detection needed.
  *
  * Optimistic local state: edits / creates / deletes update the local
  * `series` array immediately on success so the user sees the change
- * without a full refresh. `router.refresh()` runs on modal close to
- * re-sync with the server.
+ * without a full route refresh. `router.refresh()` runs on close
+ * (cleanup) to reconcile with server.
  */
 
-import { useCallback, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { SeriesEditModal } from "@/components/SeriesEditModal";
-import type { StudioArtist, StudioArtworkSummary, StudioSeries } from "@/lib/api";
+import type {
+  StudioArtist,
+  StudioArtworkSummary,
+  StudioSeries,
+} from "@/lib/api";
 
 interface Props {
   artist: StudioArtist;
@@ -24,7 +36,7 @@ interface Props {
   artworks: StudioArtworkSummary[];
 }
 
-type ModalTarget = StudioSeries | "new" | null;
+type Tab = "details" | "artworks";
 
 export function StudioSeriesManager({
   artist,
@@ -32,8 +44,52 @@ export function StudioSeriesManager({
   artworks,
 }: Props) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [series, setSeries] = useState<StudioSeries[]>(initialSeries);
-  const [open, setOpen] = useState<ModalTarget>(null);
+
+  const idParam = searchParams.get("id"); // "new" | uuid | null
+  const tabParam = searchParams.get("tab");
+  const tab: Tab = tabParam === "artworks" ? "artworks" : "details";
+
+  // Resolve `?id=<uuid>` into the actual series row from the local
+  // list. "new" is a sentinel (no row to look up). Anything else
+  // (null / unrecognised id) → modal closed.
+  const target: StudioSeries | "new" | null = useMemo(() => {
+    if (idParam === "new") return "new";
+    if (!idParam) return null;
+    return series.find((s) => s.id === idParam) ?? null;
+  }, [idParam, series]);
+
+  const openCreate = useCallback(() => {
+    router.replace("/studio/series?id=new&tab=details", { scroll: false });
+  }, [router]);
+
+  const openEdit = useCallback(
+    (id: string) => {
+      router.replace(
+        `/studio/series?id=${encodeURIComponent(id)}&tab=details`,
+        { scroll: false },
+      );
+    },
+    [router],
+  );
+
+  const setTab = useCallback(
+    (next: Tab) => {
+      if (!idParam) return;
+      router.replace(
+        `/studio/series?id=${encodeURIComponent(idParam)}&tab=${next}`,
+        { scroll: false },
+      );
+    },
+    [idParam, router],
+  );
+
+  const closeModal = useCallback(() => {
+    router.replace("/studio/series", { scroll: false });
+    // Reconcile any optimistic local state with the server on close.
+    router.refresh();
+  }, [router]);
 
   const onSaved = useCallback(
     (updated: StudioSeries) => {
@@ -44,45 +100,39 @@ export function StudioSeriesManager({
         next[idx] = updated;
         return next;
       });
-      // T-058.2 — multi-step flow: after a successful create, re-open
-      // the modal with the new series as the target so the artist can
-      // attach artworks in the same flow. The modal detects the
-      // "new" → real-series transition via useRef and auto-flips to the
-      // Artworks tab. Per docs/ui-patterns.md → "Modal / dialog
-      // behaviour": this is the explicit `setOpen(newId)` pattern, not
-      // a silent in-modal mode swap.
-      // Edit-mode saves close: the artist clicked Save to commit, not
-      // to keep editing.
-      if (open === "new") {
-        setOpen(updated);
+      // Multi-step flow: after a successful create, advance to the
+      // newly-created series on the Artworks tab so the artist can
+      // attach work in the same flow. URL-driven so the transition
+      // is a single `router.replace` — no in-modal state machine. Per
+      // docs/ui-patterns.md → Modal / dialog behaviour.
+      // Edit-mode saves close: the artist clicked Save to commit,
+      // not to keep editing.
+      if (idParam === "new") {
+        router.replace(
+          `/studio/series?id=${encodeURIComponent(updated.id)}&tab=artworks`,
+          { scroll: false },
+        );
       } else {
-        setOpen(null);
-        router.refresh();
+        closeModal();
       }
     },
-    [open, router],
+    [idParam, router, closeModal],
   );
 
   const onDeleted = useCallback(
     (id: string) => {
       setSeries((prev) => prev.filter((s) => s.id !== id));
-      setOpen(null);
-      router.refresh();
+      closeModal();
     },
-    [router],
+    [closeModal],
   );
-
-  const closeModal = useCallback(() => {
-    setOpen(null);
-    router.refresh();
-  }, [router]);
 
   return (
     <>
       <div className="flex justify-end mb-6">
         <button
           type="button"
-          onClick={() => setOpen("new")}
+          onClick={openCreate}
           className="px-4 py-2 text-sm bg-foreground text-background"
         >
           + New series
@@ -97,7 +147,7 @@ export function StudioSeriesManager({
           </p>
           <button
             type="button"
-            onClick={() => setOpen("new")}
+            onClick={openCreate}
             className="text-sm underline underline-offset-2"
           >
             Create your first series
@@ -107,15 +157,17 @@ export function StudioSeriesManager({
         <ul className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
           {series.map((s) => (
             <li key={s.id}>
-              <SeriesCard series={s} onEdit={() => setOpen(s)} />
+              <SeriesCard series={s} onEdit={() => openEdit(s.id)} />
             </li>
           ))}
         </ul>
       )}
 
       <SeriesEditModal
-        open={open !== null}
-        target={open}
+        open={target !== null}
+        target={target}
+        tab={tab}
+        onTabChange={setTab}
         artworks={artworks}
         artistName={artist.display_name}
         onSaved={onSaved}
