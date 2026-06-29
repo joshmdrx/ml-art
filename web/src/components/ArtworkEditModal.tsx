@@ -76,6 +76,13 @@ interface Props {
   artistDisplayName: string;
   open: boolean;
   target: Target;
+  /** Fired after every successful write (create / edit / image
+   *  add / remove). `closeAfter=true` only on edit-mode Save; the
+   *  parent uses it (plus the current URL `?id=`) to decide URL
+   *  transitions — see `StudioPortfolio.onSaved`. Optional so existing
+   *  callers compile; lifecycle without it is still functional but
+   *  loses the create→edit URL advance. */
+  onSaved?: (detail: StudioArtworkDetail, closeAfter?: boolean) => void;
   onClose: () => void;
 }
 
@@ -89,6 +96,7 @@ export function ArtworkEditModal({
   artistDisplayName,
   open,
   target,
+  onSaved,
   onClose,
 }: Props) {
   const [load, setLoad] = useState<LoadState>({ kind: "idle" });
@@ -96,6 +104,12 @@ export function ArtworkEditModal({
   // Effect-on-open: load the detail when `target` is a uuid, or pop
   // the create form when it's "new". Cleanup on close resets state so
   // reopening doesn't show stale data.
+  //
+  // Short-circuit: when the URL just advanced from `?id=new` to
+  // `?id=<new-uuid>` after a successful create, our local `load`
+  // already holds the just-created detail. Skip the refetch (would
+  // cause a "Loading…" flash) — the create path called the inner
+  // `onSaved` which lifted state in place.
   useEffect(() => {
     if (!open) return;
     if (target === null) return;
@@ -107,6 +121,10 @@ export function ArtworkEditModal({
       setLoad({ kind: "ready", detail: null });
       return;
     }
+    // T-058-style URL-driven lifecycle: short-circuit if local state
+    // already has this detail (avoids the refetch flash on the
+    // create-mode → edit-mode URL transition).
+    if (load.kind === "ready" && load.detail?.id === target) return;
     let cancelled = false;
     setLoad({ kind: "loading" });
     loadArtworkForEdit(target)
@@ -132,6 +150,11 @@ export function ArtworkEditModal({
     return () => {
       cancelled = true;
     };
+    // `load` is intentionally NOT a dep — this effect's job is to
+    // SET load, so re-running when it changes would loop. The
+    // short-circuit read above is a one-shot guard against the
+    // create-mode → edit-mode URL flip refetching what we just got.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, target]);
 
   function handleOpenChange(next: boolean) {
@@ -179,6 +202,10 @@ export function ArtworkEditModal({
                 } else {
                   setLoad({ kind: "ready", detail });
                 }
+                // Bubble to the parent so it can drive URL state
+                // (T-058-style: advance to `?id=<new>` on create so
+                // refresh / share / back-button work).
+                onSaved?.(detail, closeAfter);
               }}
               onDeleted={onClose}
             />

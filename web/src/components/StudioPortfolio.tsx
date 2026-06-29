@@ -10,16 +10,28 @@
  *   - "+ New artwork" button — opens the edit modal in create mode
  *
  * Edit + create both open the same `ArtworkEditModal`. The modal
- * loads details lazily when given an `id`; in create mode it starts
- * empty and creates-then-edits so the user can add an image to a
- * fresh artwork without a separate page transition.
+ * lifecycle is URL-driven via `?id=` (matches the convention
+ * established by `StudioSeriesManager`):
+ *
+ *   ?id=new                          → create mode
+ *   ?id=<uuid>                       → edit mode for that artwork
+ *   (no id)                          → modal closed
+ *
+ * Multi-step flow: after a create the parent does
+ * `router.replace("?id=<new-uuid>")` so the artist can keep editing
+ * (add image, dimensions, etc.) without a separate page transition.
+ * Shareable / refresh-friendly / back-button-closes-modal.
  */
 
-import { useState } from "react";
+import { useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { clsx } from "clsx";
 import { ArtworkEditModal } from "@/components/ArtworkEditModal";
-import type { StudioArtist, StudioArtworkSummary } from "@/lib/api";
+import type {
+  StudioArtist,
+  StudioArtworkDetail,
+  StudioArtworkSummary,
+} from "@/lib/api";
 import { formatMedium } from "@/lib/medium";
 
 type StatusFilter = "all" | "draft" | "published" | "archived";
@@ -40,15 +52,66 @@ export function StudioPortfolio({ artist, items, status }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // Modal target: `null` = closed, `"new"` = create mode, `<uuid>` = edit.
-  const [open, setOpen] = useState<string | "new" | null>(null);
+  // Modal target driven by `?id=`. `"new"` = create mode; uuid = edit.
+  const idParam = searchParams.get("id");
+  const target: string | "new" | null = idParam ?? null;
+
+  // Build a fresh URL preserving the current ?status filter — modal
+  // lifecycle transitions shouldn't reset the artist's filter view.
+  const urlWith = useCallback(
+    (params: Record<string, string | null>): string => {
+      const usp = new URLSearchParams(searchParams);
+      for (const [k, v] of Object.entries(params)) {
+        if (v == null) usp.delete(k);
+        else usp.set(k, v);
+      }
+      const qs = usp.toString();
+      return `/studio${qs ? `?${qs}` : ""}`;
+    },
+    [searchParams],
+  );
+
+  const openCreate = useCallback(() => {
+    router.replace(urlWith({ id: "new" }), { scroll: false });
+  }, [router, urlWith]);
+
+  const openEdit = useCallback(
+    (id: string) => {
+      router.replace(urlWith({ id }), { scroll: false });
+    },
+    [router, urlWith],
+  );
+
+  const closeModal = useCallback(() => {
+    router.replace(urlWith({ id: null }), { scroll: false });
+    router.refresh();
+  }, [router, urlWith]);
+
+  // ArtworkEditModal calls this after every successful write
+  // (create / edit / image add / image remove). `closeAfter` is
+  // truthy only on edit-mode Save; otherwise we keep the modal open
+  // so the artist can keep iterating. URL updates so the modal lifecycle
+  // is share/refresh-friendly.
+  const onSaved = useCallback(
+    (detail: StudioArtworkDetail, closeAfter?: boolean) => {
+      if (closeAfter) {
+        closeModal();
+        return;
+      }
+      // Falsy closeAfter happens in two cases:
+      //   (a) just-finished create — URL is `?id=new`, advance to the
+      //       new id so refresh / share / back-button work correctly.
+      //   (b) in-modal image add/remove on an existing series — URL
+      //       already reflects this id, no nav needed.
+      if (target === "new") {
+        router.replace(urlWith({ id: detail.id }), { scroll: false });
+      }
+    },
+    [target, router, urlWith, closeModal],
+  );
 
   function setStatus(next: StatusFilter) {
-    const usp = new URLSearchParams(searchParams);
-    if (next === "all") usp.delete("status");
-    else usp.set("status", next);
-    const qs = usp.toString();
-    router.push(`/studio${qs ? `?${qs}` : ""}`);
+    router.push(urlWith({ status: next === "all" ? null : next }));
   }
 
   return (
@@ -75,7 +138,7 @@ export function StudioPortfolio({ artist, items, status }: Props) {
         </div>
         <button
           type="button"
-          onClick={() => setOpen("new")}
+          onClick={openCreate}
           className="px-4 py-2 text-sm bg-foreground text-background"
         >
           + New artwork
@@ -83,12 +146,12 @@ export function StudioPortfolio({ artist, items, status }: Props) {
       </div>
 
       {items.length === 0 ? (
-        <EmptyState status={status} onNew={() => setOpen("new")} />
+        <EmptyState status={status} onNew={openCreate} />
       ) : (
         <ul className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
           {items.map((a) => (
             <li key={a.id}>
-              <ArtworkCard artwork={a} onEdit={() => setOpen(a.id)} />
+              <ArtworkCard artwork={a} onEdit={() => openEdit(a.id)} />
             </li>
           ))}
         </ul>
@@ -96,12 +159,10 @@ export function StudioPortfolio({ artist, items, status }: Props) {
 
       <ArtworkEditModal
         artistDisplayName={artist.display_name}
-        open={open !== null}
-        target={open}
-        onClose={() => {
-          setOpen(null);
-          router.refresh();
-        }}
+        open={target !== null}
+        target={target}
+        onSaved={onSaved}
+        onClose={closeModal}
       />
     </>
   );
