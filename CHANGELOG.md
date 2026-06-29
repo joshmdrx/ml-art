@@ -53,6 +53,27 @@ Deferred (TODO follow-ups): A/B return-rate test once we have
 signed-in users; smarter score-based pair selection; re-trigger
 surface in `/me/settings`.
 
+## 2026-06-29 — Studio modals: URL-driven lifecycle
+
+Refactored `SeriesEditModal` (T-058.2) and `ArtworkEditModal` so the
+modal's lifecycle — open/closed state, current tab, current target —
+lives in URL params (`?id=` + `?tab=`) rather than `useState`.
+
+What this unlocks:
+
+- Shareable links: `/studio?id=<uuid>` or `/studio/series?id=<uuid>&tab=artworks`
+- Refresh-friendly: reloading mid-edit stays in the modal
+- Browser back closes the modal naturally
+- Multi-step create-then-edit flows become a `router.replace` from
+  `?id=new` to `?id=<new-uuid>` — no in-modal state machine
+
+`docs/ui-patterns.md` now has a "Multi-step modals — drive lifecycle
+from URL params" section; full rationale in `decisions.md` 2026-06-29.
+
+This is the new convention for any modal with a multi-step flow.
+Simple one-shot modals (confirms, save-to-collection, anonymous
+inquiry) stay on local state — URL overhead isn't worth it there.
+
 ## 2026-06-29 — T-058: Series concept for artists
 
 Behance-style project grouping. Artists curate their own works into

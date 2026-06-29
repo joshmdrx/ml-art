@@ -115,6 +115,62 @@ quick mnemonic: AlertDialog *blocks* the page until the user picks
 one of N options; Dialog is a generic modal that can be dismissed by
 clicking outside or hitting Escape. Confirms are AlertDialogs.
 
+### Multi-step modals — drive lifecycle from URL params
+
+For modals that need a multi-step flow (e.g. create-then-attach
+artworks, create-then-add-image), drive the lifecycle (open/closed,
+current step/tab, current target) from URL params rather than from
+`useState`. Established by `SeriesEditModal` (T-058.2) and
+`ArtworkEditModal`.
+
+**URL shape:**
+
+| Surface | URL example |
+|---|---|
+| Studio artwork edit | `/studio?id=<uuid>` |
+| Studio artwork create | `/studio?id=new` |
+| Studio series edit, on Artworks tab | `/studio/series?id=<uuid>&tab=artworks` |
+| Modal closed | no `?id=` |
+
+**What you get for free:**
+
+- **Shareable links.** Paste-a-teammate-the-URL works.
+- **Refresh-friendly.** Reloading mid-edit stays in the modal.
+- **Browser back closes the modal.** No custom keybindings needed.
+- **Multi-step flows are a `router.replace`**, not an in-modal state
+  machine — after a create, the parent advances `?id=new` →
+  `?id=<new-uuid>` (and `&tab=artworks` for series). Modal re-renders
+  with the new target. No `useRef` "did the parent just re-open us?"
+  detection.
+
+**Parent owns the URL; modal is dumb.** The parent passes `target`,
+`tab`, `onTabChange`, `onSaved`, `onClose` as props. The modal calls
+them on lifecycle events; the parent translates to `router.replace`
+calls. Modal never closes itself.
+
+**Implementation notes:**
+
+- Use `router.replace(...)` with `{ scroll: false }` for in-modal
+  transitions — `router.push` bloats history with intermediate
+  states that aren't worth back-button stops.
+- Preserve other params (status filters etc.) via a small `urlWith`
+  helper that copies the current `searchParams` and applies a patch.
+  See `StudioPortfolio.tsx` for the canonical shape.
+- If the modal does an in-memory state lift (e.g. the just-created
+  detail) before the URL catches up, short-circuit the load effect:
+  `if (load.kind === "ready" && load.detail?.id === target) return;`
+  Avoids a "Loading…" flash on the URL flip.
+- Mutually-exclusive save paths: `closeAfter=true` → close (parent
+  clears `?id=`); `closeAfter=false` → URL-advance / state-lift
+  (parent advances `?id=<new>` if previously on `?id=new`, no-op
+  otherwise). Don't fire both from the same handler — produces
+  double `router.replace` calls.
+
+**When NOT to use this pattern:** simple one-shot modals (yes/no
+confirms, save-to-collection picker, anonymous inquiry form). The
+URL state is overhead without payoff when the modal is a fire-and-
+forget interaction.
+
 ---
 
 ## Enforcement

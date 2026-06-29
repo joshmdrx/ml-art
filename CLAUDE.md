@@ -66,6 +66,11 @@ modes that produced PRs we had to redo:
   success + `toast.success("…")` from sonner. Multi-step flows
   (create → add detail) re-open via `setOpen(newId)` from the parent
   with an explicit one-line comment.
+- **Multi-step modals running on `useState`.** Drive lifecycle from
+  URL params (`?id=` / `?tab=`) instead — see `docs/ui-patterns.md`
+  → "Multi-step modals". `SeriesEditModal` + `ArtworkEditModal` are
+  the canonical examples; copy their parent's `urlWith` helper + the
+  `closeAfter`-vs-URL-advance dispatch shape.
 - **Bare `TODO:` / `FIXME` in code.** Every inline TODO references a
   ticket: `// TODO(T-077): …`. Pre-commit rejects bare ones.
 - **Production migrations.** `scripts/migrate.sh` is **local-only**

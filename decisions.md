@@ -122,6 +122,70 @@ the feature is "delete the files, remove the homepage import."
 
 ---
 
+## 2026-06-29 — Studio modals: URL-driven lifecycle for multi-step flows
+
+**Context:** T-058's `SeriesEditModal` had a multi-step
+create-then-attach-artworks flow that I first built with local
+`useState` + a `useRef`-based "did the parent just re-open us?"
+detection. It broke twice: tab wouldn't flip after create; later, an
+edit-mode Save left the modal open because two paths to `closeModal`
+were firing in the same tick and racing. Both bugs went away when we
+moved the modal's lifecycle (open/closed, current tab, current
+series) into the URL as `?id=` + `?tab=` and let the parent drive
+state transitions via `router.replace`.
+
+Ported `ArtworkEditModal` to the same shape immediately after for
+consistency.
+
+**Decisions:**
+
+1. **URL params are the source of truth for multi-step modal
+   state.** Multi-step here means *the modal lifecycle has
+   transitions the user can think of as distinct stages* — create →
+   edit-the-thing-you-just-made; details-tab → artworks-tab; etc.
+   These map naturally onto URL state because the steps are real
+   user-visible states. Useful side-effects (shareable links,
+   refresh-friendly, back-button closes the modal) come for free.
+
+2. **Parent owns the URL; modal is dumb.** Modal receives `target`,
+   `tab`, `onTabChange`, `onSaved`, `onClose` as props and calls them
+   on events. Parent translates events to `router.replace`. Modal
+   never closes itself — that previous design produced races between
+   the modal's local state and the parent's URL state.
+
+3. **`router.replace`, not `router.push`, for in-modal
+   transitions.** Pushing every intra-modal step bloats history; the
+   back-button stops should be "modal closed" vs "modal open with
+   target X" — not "tab 1 → tab 2 → tab 3 → tab 1". Replace keeps
+   the URL accurate without flooding history.
+
+4. **Preserve other params via a `urlWith` helper.** Modal lifecycle
+   transitions shouldn't reset the artist's `?status=draft` filter.
+   The helper copies the current `searchParams` and applies a sparse
+   patch (set / delete keys). Canonical implementation in
+   `StudioPortfolio.tsx`.
+
+5. **Mutually-exclusive save paths.** `closeAfter=true` →
+   `onClose()` only (close path). `closeAfter=false` → `onSaved()`
+   only (URL-advance / state-lift path). The first iteration fired
+   both for `closeAfter=true`, producing a double `router.replace`
+   that visibly raced. Fix: single dispatch from a single source.
+
+6. **In-modal state-lift short-circuit on URL flip.** When the URL
+   advances from `?id=new` to `?id=<new-uuid>` after a create, the
+   modal already has the just-created detail in memory. The load
+   effect short-circuits if `load.detail?.id === target` — avoids
+   a "Loading…" flash from a wasteful refetch.
+
+**When NOT to use:** simple one-shot modals (yes/no confirms via
+`useConfirm`, anonymous inquiry form, save-to-collection picker).
+URL state overhead is real; reserve it for surfaces where the
+sharable / refresh-friendly behaviour is worth it.
+
+**Documented in:** `docs/ui-patterns.md` → "Multi-step modals — drive lifecycle from URL params".
+
+---
+
 ## 2026-06-29 — T-058: series — one series per artwork, multi-select over drag
 
 **Context:** Artists work in series — projects, themes, year-cohorts —
