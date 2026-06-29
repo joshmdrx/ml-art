@@ -191,21 +191,19 @@ export function ArtworkEditModal({
               detail={load.detail}
               artistDisplayName={artistDisplayName}
               onSaved={(detail, closeAfter) => {
-                // T-071 — edit saves close the modal; create saves +
-                // in-modal image edits lift state in place so the
-                // artist can keep editing the freshly-created row
-                // (image upload section, dimensions, etc.). A toast
-                // fires from the form either way so the user sees
-                // the action succeeded.
+                // Two paths, mutually exclusive:
+                //  - closeAfter=true (edit Save): close the modal.
+                //    `onClose` drives the URL clear in the parent.
+                //  - closeAfter=false (create / image add/remove):
+                //    lift state in place so the artist keeps editing,
+                //    and bubble `onSaved` so the parent can advance
+                //    `?id=new` → `?id=<new-uuid>` (no-op for images).
                 if (closeAfter) {
                   onClose();
                 } else {
                   setLoad({ kind: "ready", detail });
+                  onSaved?.(detail, false);
                 }
-                // Bubble to the parent so it can drive URL state
-                // (T-058-style: advance to `?id=<new>` on create so
-                // refresh / share / back-button work).
-                onSaved?.(detail, closeAfter);
               }}
               onDeleted={onClose}
             />
