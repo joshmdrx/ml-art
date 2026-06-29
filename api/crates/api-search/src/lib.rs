@@ -13,6 +13,7 @@ pub mod me;
 pub mod meta;
 pub mod neighborhoods;
 pub mod onboarding;
+pub mod recommendations;
 pub mod search;
 pub mod search_map;
 mod serde_helpers;
@@ -99,6 +100,16 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         // `calibration_pick` event (T-055 picks it up at weight 2.0).
         .route("/v1/calibrate/pairs", get(calibrate::pairs))
         .route("/v1/calibrate/pick", post(calibrate::pick))
+        // T-056.1 personalised retrieval. Requires sign-in. Returns
+        // top-K artworks by nearest-to-`user_profiles.taste_embedding`
+        // via HNSW, with a random shuffle on the candidate pool for
+        // serendipity. Eligible iff `interaction_count >= 5` and the
+        // taste vector is set; otherwise returns an empty `items` and
+        // `eligible: false` so the web layer can render a fallback row.
+        .route(
+            "/v1/me/recommendations/for-you",
+            get(recommendations::for_you),
+        )
         .route("/v1/me", get(me::current_user))
         // T-033: called once after sign-in to copy behavioral signal
         // keyed on the anon_id cookie onto the now-known user. Body-
