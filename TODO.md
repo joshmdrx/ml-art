@@ -145,21 +145,18 @@ if the item was dropped, with a one-line reason.
 
 **Deferred:** the `events` writer doesn't exist yet (T-016 partitioning track) so the events_merged count is always 0 today. The merge code is already in place so it'll start working when events writes land.
 
-### `T-014` Dev login-as-artist (partly obsolete now)
-**State:** real Clerk auth works; for testing the *artist studio* we may still want a way to assume a specific artist without signing up with their email. Defer until studio lands; possibly fold into `T-031` (web test-mode bypass).
-
 ---
 
 ## Later (large pieces of v1)
 
-### `T-011` Artist studio (`/studio/*` endpoints + pages)
-- ✅ **Phase 1 (landed):** artwork CRUD API + `/v1/studio/me`, ownership-by-artist boundary
-- ✅ **Phase 2 (landed):** `/v1/studio/settings` + `/studio/settings` page + public-surface `ar.status='active'` filter
-- ✅ **Phase 3 (landed):** `/studio` portfolio page — grid with status filter pills (All / Drafts / Published), create+edit modal w/ image management, delete with confirmation. LLM-assisted intake is `T-012`
-- ✅ **Phase 4a (landed 2026-06-01):** `GET /v1/studio/inquiries` + `/studio/inquiries` inbox page with status filter (All / Pending / Delivered). 9 Rust integration tests.
-- ✅ **Phase 4b (landed 2026-06-09):** reply-from-inbox + auto-mark-as-read. Migration `0013_inquiry_replies.sql` (new table + `inquiries.read_at`). Three endpoints: `GET` extended with replies + read_at; `POST .../reply`; `POST .../read`. New `JobEvent::InquirySendReply` + handler + `templates::artist_reply` (Resend). Web: client-side `<InquiryInbox>` with per-card reply form, optimistic append, auto-fire mark-as-read on view. 7 new integration tests (16 inbox total).
-  - **Deferred:** `/studio/analytics` stub (full analytics blocked on events-table writes — separate gap). Inbound replies from the inquirer back to the artist (needs an inbound-email webhook).
-- ✅ **Phase 5 (landed 2026-06-09):** Bulk image upload. `<input multiple>` + `onFilesSelected` in `<ArtworkEditModal>`. Per-file validate, drop bad with a per-file note, batch cap 20. Sequential upload through the existing `uploadArtworkImage`. "Uploading N of M" caption + multi-line error block. No server changes.
+### ~~`T-011` Artist studio (`/studio/*` endpoints + pages)~~ ✓ shipped (all 5 phases)
+- ✅ **Phase 1:** artwork CRUD API + `/v1/studio/me`, ownership-by-artist boundary
+- ✅ **Phase 2:** `/v1/studio/settings` + `/studio/settings` page + public-surface `ar.status='active'` filter
+- ✅ **Phase 3:** `/studio` portfolio page — grid with status filter pills (All / Drafts / Published), create+edit modal w/ image management, delete with confirmation. LLM-assisted intake is `T-012`
+- ✅ **Phase 4a (2026-06-01):** `GET /v1/studio/inquiries` + `/studio/inquiries` inbox page with status filter (All / Pending / Delivered). 9 Rust integration tests.
+- ✅ **Phase 4b (2026-06-09):** reply-from-inbox + auto-mark-as-read. Migration `0013_inquiry_replies.sql` (new table + `inquiries.read_at`). Three endpoints: `GET` extended with replies + read_at; `POST .../reply`; `POST .../read`. New `JobEvent::InquirySendReply` + handler + `templates::artist_reply` (Resend). Web: client-side `<InquiryInbox>` with per-card reply form, optimistic append, auto-fire mark-as-read on view. 7 new integration tests (16 inbox total).
+  - **Deferred (now tracked elsewhere):** `/studio/analytics` stub (will pull from the events writer that T-050 shipped). Inbound artist-to-inquirer replies shipped via `T-054`.
+- ✅ **Phase 5 (2026-06-09):** Bulk image upload. `<input multiple>` + `onFilesSelected` in `<ArtworkEditModal>`. Per-file validate, drop bad with a per-file note, batch cap 20. Sequential upload through the existing `uploadArtworkImage`. "Uploading N of M" caption + multi-line error block. No server changes.
 
 ### `T-012` Onboarding flow `/onboarding`
 - ✅ **Phase 1 (landed 2026-05-28):** `POST /v1/onboarding/start` (mint artist + link `user_id`, slug w/ collision suffix) and `POST /v1/onboarding/complete` (`pending → active`, idempotent). Five-step wizard at `/onboarding` (identity → profile → artworks → locations → review) reusing existing studio mutations. `/studio` + `/studio/settings` redirect signed-in non-artists into the wizard. 10 Rust integration tests + 6 slugify unit tests + 1 Playwright spec.
@@ -182,14 +179,6 @@ if the item was dropped, with a one-line reason.
 - AWS WAF rate-based rule (or CloudFront viewer-request function w/ KeyValueStore) at ~1000 req / 5 min / IP in front of the Lambda Function URL
 - Logs forwarded to CloudWatch for visibility on what's being shed
 - Sized loosely so legit bursty traffic isn't shed — this is the volumetric tier, not the per-user tier
-
-### `T-035` Vercel edge rate limit on write surfaces
-**Where:** `web/middleware.ts` (extend) + Vercel KV
-**Why:** the Next.js frontdoor sees public traffic before the API. Cheap to add a per-IP burst guard on `/search` and on the inquiry/save server-action paths so abuse can't tie up Vercel server functions or our DB connection pool.
-**Acceptance:**
-- Vercel KV (or in-edge `next-safe-action`-style counter) at ~30/min/IP for `/search?*` page hits
-- Same for the inquiry server action and save server action
-- Skipped when `process.env.RATE_LIMIT_DISABLED === 'true'` for local dev
 
 ---
 
@@ -525,15 +514,15 @@ Backend at `api-search::calibrate` + frontend `CalibratePanel` on the homepage. 
 - Score-based pair selection (currently greedy farthest by euclidean over the raw centroids; could weight toward visually-recognisable / featured clusters more heavily).
 - Re-trigger the panel on demand from /settings (e.g. "re-tune what we show you") once that surface exists.
 
-### `T-062` Filter UI: size / price / medium
-**Where:** `web/src/components/FilterBar.tsx` extensions + URL params; API already accepts most of these via `api-search::search`.
-**Why:** Schema + API are mostly there. "Something small under £500" is a real query we silently can't serve. Keep the visual restraint — this isn't a marketplace.
+### `T-062` Filter UI: price range slider
+**Where:** `web/src/components/FilterBar.tsx` + URL params; API already supports `price_min`/`price_max` via `api-search::search`.
+**Why:** "Something small under £500" is a real query we silently can't serve from the UI today. Schema + API have always been there; the only remaining gap is the slider component.
 **Acceptance:**
-- Price range slider (currency-aware via `lib/format.ts`).
-- Dimension band: S / M / L preset + custom range in cm. Depends on `T-070` (artists need a way to enter physical dims first).
-- Medium multi-select (uses existing taxonomy).
-- All URL-driven via the established `useUrlState` pattern.
-- API-side gaps closed where present (currently `medium=` is a single-value param).
+- Currency-aware range slider via `lib/format.ts`.
+- URL-driven via the established `useUrlState` pattern (matches the existing size/medium/availability chips).
+- Mobile-friendly touch handles.
+
+**Scope reduced 2026-06-29** — original ticket covered size + price + medium. Size shipped via `T-070`, medium multi-select shipped via `T-073`. Only price remains.
 
 **Open gap on medium:** the `medium=` filter today is a preset enum that doesn't match what artists actually type. Artists publish free-text (`oil on linen`, `gouache and ink on cotton`) while users filter against a fixed list (`Painting`, `Print`, `Photography`). Either:
 - (a) normalise artist input at save time against a controlled taxonomy (typeahead with free-text fallback into "Other"), or
@@ -671,16 +660,16 @@ T-057 / T-061 will need a stable medium taxonomy anyway for taste-vector groupin
 - CI: hook into the existing E2E workflow (`.github/workflows/e2e.yml`).
 - **Acceptance gate for shipping any future change to FollowButton / merge_anonymous / unsubscribe routes / OG generators:** these specs must pass.
 
-### `T-017` Search facet counts
-- Spec'd but currently returns nothing. Costs per-search COUNT queries; needs precomputation or approximation at scale.
+### `T-017` Search facet counts — deferred indefinitely
+- Spec'd but the endpoint currently returns empty `FacetCounts`. Real implementation would mean per-search COUNT queries (expensive) or precomputed/approximated buckets. No user has asked for it. Reconsider when (a) we have enough corpus for buckets to be informative, AND (b) someone says "I wish I could see how many works of each medium there are."
 
 ### `T-018` Query embedding cache TTL job
 - `query_cache.cleanup` scheduled job, daily
 - `DELETE WHERE last_used_at < now() - interval '30 days'`
 
-### `T-019` Voyage multimodal embedder
-- Second `Embedder` impl for A/B
-- Trigger: only if there's a compelling reason to compare against Jina
+### `T-019` Voyage multimodal embedder — deferred indefinitely
+- Second `Embedder` impl for A/B against Jina
+- Trigger: only if Jina retrieval quality becomes a measurable bottleneck. No current signal it's the limiting factor. Don't pick this up speculatively.
 
 ### ~~`T-037` Cursor pagination on `/v1/search`~~ — shipped 2026-06-08; 2026-06-09 lifted to URL-driven
 
