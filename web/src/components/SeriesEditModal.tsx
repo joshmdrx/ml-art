@@ -8,29 +8,34 @@
  *   - **Artworks** — checkbox grid for membership management (the
  *     T-058 multi-select primitive).
  *
- * Create mode: starts on "Details" with empty fields; submit creates
- * the series, then flips to "Artworks" so the user can attach work
- * in the same flow.
+ * Lifecycle (see `docs/ui-patterns.md` → Modal behaviour):
+ *   - Modal does NOT close itself on save. It calls `onSaved(s)` and
+ *     lets the parent drive the next state.
+ *   - For the create-then-attach-artworks flow, the parent re-opens
+ *     the modal with the newly-created series as `target`. The modal
+ *     detects "previous target was 'new'" via a useRef and defaults
+ *     the tab to Artworks so the artist can pick membership without
+ *     a second click.
+ *   - Cancel / X / click-outside → `onClose()` → parent sets target null.
  *
- * Edit mode: loads fresh from `target` prop (the latest `StudioSeries`
- * from the parent list), shows current membership pre-checked, lets
- * the user retitle / re-statement / re-cover / re-membership /
- * delete.
- *
- * The checkbox grid uses the artist's full artwork list (passed in by
- * the page so we don't re-fetch on open) and renders the
- * `series_id === target.id` artworks pre-checked. Save calls
- * `setSeriesArtworks` which replaces the membership atomically.
+ * Feedback (per ui-patterns):
+ *   - `toast.success(...)` on create, save, delete.
+ *   - Inline alert banner for form-level errors (network / 500).
+ *   - `<FieldError>` for field-level validation (title required, etc.).
+ *   - `useConfirm()` for the destructive delete confirmation.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { clsx } from "clsx";
+import { toast } from "sonner";
 import {
   createSeries,
   deleteSeries,
   patchSeries,
   saveSeriesArtworks,
 } from "@/app/actions/series";
+import { FieldError } from "@/components/ui/FieldError";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 import type { StudioArtworkSummary, StudioSeries } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
@@ -54,63 +59,56 @@ export function SeriesEditModal({
   open,
   target,
   artworks,
-  artistName,
   onSaved,
   onDeleted,
   onClose,
 }: Props) {
-  // After a successful create, we self-promote into edit mode without
-  // closing the modal — the parent still owns `target` and doesn't know
-  // to upgrade "new" to the new id, so we shadow it with `justCreated`.
-  // Lets the Artworks tab unlock + the user pick membership in the
-  // same flow they used to create the series.
-  const [justCreated, setJustCreated] = useState<StudioSeries | null>(null);
   const existing: StudioSeries | null =
-    justCreated ?? (target && target !== "new" ? target : null);
+    target && target !== "new" ? target : null;
   const isCreate = existing === null;
+
+  const confirm = useConfirm();
 
   const [tab, setTab] = useState<Tab>("details");
   const [title, setTitle] = useState("");
+  const [titleError, setTitleError] = useState<string | null>(null);
   const [statement, setStatement] = useState("");
   const [coverArtworkId, setCoverArtworkId] = useState<string | null>(null);
   const [memberIds, setMemberIds] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
-  // Reset state on open. (`open` toggles per modal lifecycle; target
-  // shape changes between create and edit per click.) The setState
-  // calls here are the load-from-external-store handshake — same
-  // pattern as CalibratePanel / SaveModal. react-hooks/set-state-in-
-  // effect flags them generically; here they're the intent.
-  /* eslint-disable react-hooks/set-state-in-effect */
+  // Track previous target to detect the create → edit transition that
+  // the parent triggers via `setOpen(newSeries)` after a successful
+  // create. When we see "new" → real series, default the tab to
+  // Artworks so the artist can pick membership without another click.
+  // (See `docs/ui-patterns.md` → Modal / dialog behaviour.)
+  const prevTargetRef = useRef<typeof target>(null);
+
   useEffect(() => {
-    if (!open) return;
-    // Reset the create-mode self-promotion on each open. Without this,
-    // an artist closing the modal then re-opening "+ New series" would
-    // see the previously-created series's id still active.
-    setJustCreated(null);
-    setTab("details");
-    setError(null);
-    setConfirmDelete(false);
-    // Compute initial form state from the parent's `target` directly
-    // — NOT from the derived `existing`, which also tracks
-    // `justCreated`. Keying on `existing` would re-fire this effect
-    // after a successful create-mode self-promotion and immediately
-    // wipe the just-created state, sending us back to a blank Details
-    // tab. The parent's target only changes on open / close.
-    const initial: StudioSeries | null =
-      target && target !== "new" ? target : null;
-    if (initial) {
-      setTitle(initial.title);
-      setStatement(initial.statement ?? "");
-      setCoverArtworkId(initial.cover_artwork_id);
-      // Pre-check artworks whose `series_id` already matches this
-      // series — `StudioArtworkSummary.series_id` (T-058) surfaces it
-      // server-side so the modal opens with current membership ticked.
+    if (!open) {
+      // Clear the ref when the modal closes so the next open starts fresh.
+      prevTargetRef.current = null;
+      return;
+    }
+    const wasFreshCreate =
+      prevTargetRef.current === "new" && existing !== null;
+    prevTargetRef.current = target;
+
+    setTab(wasFreshCreate ? "artworks" : "details");
+    setFormError(null);
+    setTitleError(null);
+    if (existing) {
+      setTitle(existing.title);
+      setStatement(existing.statement ?? "");
+      setCoverArtworkId(existing.cover_artwork_id);
+      // Pre-check artworks whose `series_id` already matches.
+      // `StudioArtworkSummary.series_id` (T-058) surfaces this so the
+      // modal opens with current membership ticked without a second
+      // round-trip.
       const members = new Set<string>();
       for (const a of artworks) {
-        if (a.series_id === initial.id) {
+        if (a.series_id === existing.id) {
           members.add(a.id);
         }
       }
@@ -121,59 +119,56 @@ export function SeriesEditModal({
       setCoverArtworkId(null);
       setMemberIds(new Set());
     }
-  }, [open, target, artworks]);
-  /* eslint-enable react-hooks/set-state-in-effect */
+  }, [open, target, existing, artworks]);
+
+  const validateTitle = useCallback((raw: string): string | null => {
+    const trimmed = raw.trim();
+    if (!trimmed) return "Title is required.";
+    if (trimmed.length > MAX_TITLE) {
+      return `Title is too long (max ${MAX_TITLE} characters).`;
+    }
+    return null;
+  }, []);
 
   const onSubmitDetails = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
       if (saving) return;
-      const trimmed = title.trim();
-      if (!trimmed) {
-        setError("Title is required.");
-        return;
-      }
-      if (trimmed.length > MAX_TITLE) {
-        setError(`Title is too long (max ${MAX_TITLE} characters).`);
-        return;
-      }
+
+      const titleErr = validateTitle(title);
+      setTitleError(titleErr);
+      if (titleErr) return;
       if (statement.length > MAX_STATEMENT) {
-        setError(`Statement is too long (max ${MAX_STATEMENT} characters).`);
+        setFormError(
+          `Statement is too long (max ${MAX_STATEMENT} characters).`,
+        );
         return;
       }
+
       setSaving(true);
-      setError(null);
+      setFormError(null);
       try {
         const body = {
-          title: trimmed,
+          title: title.trim(),
           statement: statement.trim() === "" ? null : statement.trim(),
           cover_artwork_id: coverArtworkId,
         };
-        const wasCreate = isCreate;
         const saved = existing
           ? await patchSeries(existing.id, body)
           : await createSeries(body);
+        toast.success(isCreate ? "Series created" : "Saved");
+        // Parent decides what happens next. Create → re-opens with the
+        // new series as target (flips us into edit mode + Artworks tab
+        // via the prevTargetRef detection above). Edit → closes.
         onSaved(saved);
-        if (wasCreate) {
-          // Self-promote into edit mode for the newly-created series
-          // and flip to the Artworks tab so the artist can attach
-          // works in the same flow. The parent still has
-          // `target === "new"`; the modal's local `justCreated` shadows
-          // it so `existing`, `isCreate`, and the Artworks tab's
-          // `disabled` state all flip correctly.
-          setJustCreated(saved);
-          setTab("artworks");
-        } else {
-          onClose();
-        }
-      } catch (e) {
-        if ((e as Error).message === "conflict") {
-          setError(
+      } catch (err) {
+        if ((err as Error).message === "conflict") {
+          setFormError(
             "A series with that title already exists — try a different title.",
           );
         } else {
-          reportError(e, { surface: "series-edit", action: "save-details" });
-          setError("Save failed. Try again.");
+          reportError(err, { surface: "series-edit", action: "save-details" });
+          setFormError("Save failed. Try again.");
         }
       } finally {
         setSaving(false);
@@ -186,44 +181,52 @@ export function SeriesEditModal({
       coverArtworkId,
       existing,
       isCreate,
+      validateTitle,
       onSaved,
-      onClose,
     ],
   );
 
   const onSubmitArtworks = useCallback(async () => {
-    if (!existing) return;
-    if (saving) return;
+    if (!existing || saving) return;
     setSaving(true);
-    setError(null);
+    setFormError(null);
     try {
       const ack = await saveSeriesArtworks(existing.id, Array.from(memberIds));
-      // Update the parent's view of artwork_count so the card re-renders.
+      toast.success(
+        ack.artwork_count === 1
+          ? "1 work in series"
+          : `${ack.artwork_count} works in series`,
+      );
       onSaved({ ...existing, artwork_count: ack.artwork_count });
-      onClose();
-    } catch (e) {
-      reportError(e, { surface: "series-edit", action: "save-artworks" });
-      setError("Couldn't update membership. Try again.");
+    } catch (err) {
+      reportError(err, { surface: "series-edit", action: "save-artworks" });
+      setFormError("Couldn't update membership. Try again.");
     } finally {
       setSaving(false);
     }
-  }, [existing, memberIds, saving, onSaved, onClose]);
+  }, [existing, memberIds, saving, onSaved]);
 
   const onDelete = useCallback(async () => {
-    if (!existing) return;
-    if (saving) return;
+    if (!existing || saving) return;
+    const proceed = await confirm({
+      title: `Delete “${existing.title}”?`,
+      description: "This can't be undone. Member artworks are kept; they just stop belonging to a series.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!proceed) return;
     setSaving(true);
-    setError(null);
+    setFormError(null);
     try {
       await deleteSeries(existing.id);
+      toast.success("Series deleted");
       onDeleted(existing.id);
-      onClose();
-    } catch (e) {
-      reportError(e, { surface: "series-edit", action: "delete" });
-      setError("Delete failed. Try again.");
+    } catch (err) {
+      reportError(err, { surface: "series-edit", action: "delete" });
+      setFormError("Delete failed. Try again.");
       setSaving(false);
     }
-  }, [existing, saving, onDeleted, onClose]);
+  }, [existing, saving, confirm, onDeleted]);
 
   if (!open) return null;
 
@@ -252,13 +255,12 @@ export function SeriesEditModal({
           </button>
         </header>
 
-        {/* Tabs — Artworks tab is disabled in create mode until the
-            series has an id to assign membership against. */}
+        {/* Tabs — Artworks tab is disabled in create mode (we don't
+            have an id to assign membership against yet). Parent
+            re-opens with the new series after create; useRef flips us
+            to this tab automatically. */}
         <nav role="tablist" className="border-b border-border flex">
-          <TabButton
-            active={tab === "details"}
-            onClick={() => setTab("details")}
-          >
+          <TabButton active={tab === "details"} onClick={() => setTab("details")}>
             Details
           </TabButton>
           <TabButton
@@ -271,26 +273,30 @@ export function SeriesEditModal({
           </TabButton>
         </nav>
 
-        {error && (
-          <div className="p-3 mx-4 mt-4 border border-foreground bg-surface text-sm">
-            {error}
+        {formError && (
+          <div
+            role="alert"
+            className="p-3 mx-4 mt-4 border border-foreground bg-surface text-sm"
+          >
+            {formError}
           </div>
         )}
 
         {tab === "details" ? (
           <DetailsTab
             title={title}
-            setTitle={setTitle}
+            setTitle={(v) => {
+              setTitle(v);
+              if (titleError) setTitleError(validateTitle(v));
+            }}
+            titleError={titleError}
             statement={statement}
             setStatement={setStatement}
             coverArtworkId={coverArtworkId}
             setCoverArtworkId={setCoverArtworkId}
             artworks={artworks}
-            artistName={artistName}
             saving={saving}
             isCreate={isCreate}
-            confirmDelete={confirmDelete}
-            setConfirmDelete={setConfirmDelete}
             onSubmit={onSubmitDetails}
             onDelete={existing ? onDelete : null}
             onClose={onClose}
@@ -348,6 +354,7 @@ function TabButton({
 function DetailsTab({
   title,
   setTitle,
+  titleError,
   statement,
   setStatement,
   coverArtworkId,
@@ -355,30 +362,26 @@ function DetailsTab({
   artworks,
   saving,
   isCreate,
-  confirmDelete,
-  setConfirmDelete,
   onSubmit,
   onDelete,
   onClose,
 }: {
   title: string;
   setTitle: (v: string) => void;
+  titleError: string | null;
   statement: string;
   setStatement: (v: string) => void;
   coverArtworkId: string | null;
   setCoverArtworkId: (v: string | null) => void;
   artworks: StudioArtworkSummary[];
-  artistName: string;
   saving: boolean;
   isCreate: boolean;
-  confirmDelete: boolean;
-  setConfirmDelete: (v: boolean) => void;
   onSubmit: (e: React.FormEvent) => void;
   onDelete: (() => void) | null;
   onClose: () => void;
 }) {
   return (
-    <form onSubmit={onSubmit} className="p-4 space-y-4">
+    <form onSubmit={onSubmit} className="p-4 space-y-4" noValidate>
       <div>
         <label htmlFor="series-title" className="block text-sm mb-1">
           Title
@@ -386,19 +389,22 @@ function DetailsTab({
         <input
           id="series-title"
           type="text"
-          required
-          maxLength={MAX_TITLE}
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           className="w-full border border-border bg-surface px-3 py-2"
           placeholder="e.g. Quiet Mornings"
+          aria-invalid={titleError != null}
+          aria-describedby={titleError ? "series-title-error" : undefined}
         />
+        <FieldError message={titleError} />
       </div>
 
       <div>
         <label htmlFor="series-statement" className="block text-sm mb-1">
           Statement{" "}
-          <span className="text-xs text-muted">(optional, max {MAX_STATEMENT})</span>
+          <span className="text-xs text-muted">
+            (optional, max {MAX_STATEMENT})
+          </span>
         </label>
         <textarea
           id="series-statement"
@@ -440,36 +446,15 @@ function DetailsTab({
 
       <div className="flex items-center justify-between pt-4 border-t border-border">
         <div>
-          {onDelete && !confirmDelete && (
+          {onDelete && (
             <button
               type="button"
-              onClick={() => setConfirmDelete(true)}
+              onClick={onDelete}
               disabled={saving}
               className="text-sm text-muted hover:text-foreground"
             >
               Delete series
             </button>
-          )}
-          {onDelete && confirmDelete && (
-            <div className="flex items-center gap-2 text-sm">
-              <span>Delete this series?</span>
-              <button
-                type="button"
-                onClick={onDelete}
-                disabled={saving}
-                className="px-2 py-1 border border-foreground bg-foreground text-background"
-              >
-                Yes, delete
-              </button>
-              <button
-                type="button"
-                onClick={() => setConfirmDelete(false)}
-                disabled={saving}
-                className="text-muted hover:text-foreground"
-              >
-                Cancel
-              </button>
-            </div>
           )}
         </div>
         <div className="flex items-center gap-3">
@@ -483,7 +468,7 @@ function DetailsTab({
           </button>
           <button
             type="submit"
-            disabled={saving || title.trim() === ""}
+            disabled={saving}
             className="px-4 py-2 text-sm bg-foreground text-background disabled:opacity-50"
           >
             {saving ? "Saving…" : isCreate ? "Create" : "Save"}

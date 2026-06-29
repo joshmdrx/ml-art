@@ -35,19 +35,42 @@ export function StudioSeriesManager({
   const [series, setSeries] = useState<StudioSeries[]>(initialSeries);
   const [open, setOpen] = useState<ModalTarget>(null);
 
-  const onSaved = useCallback((updated: StudioSeries) => {
-    setSeries((prev) => {
-      const idx = prev.findIndex((s) => s.id === updated.id);
-      if (idx === -1) return [updated, ...prev];
-      const next = prev.slice();
-      next[idx] = updated;
-      return next;
-    });
-  }, []);
+  const onSaved = useCallback(
+    (updated: StudioSeries) => {
+      setSeries((prev) => {
+        const idx = prev.findIndex((s) => s.id === updated.id);
+        if (idx === -1) return [updated, ...prev];
+        const next = prev.slice();
+        next[idx] = updated;
+        return next;
+      });
+      // T-058.2 — multi-step flow: after a successful create, re-open
+      // the modal with the new series as the target so the artist can
+      // attach artworks in the same flow. The modal detects the
+      // "new" → real-series transition via useRef and auto-flips to the
+      // Artworks tab. Per docs/ui-patterns.md → "Modal / dialog
+      // behaviour": this is the explicit `setOpen(newId)` pattern, not
+      // a silent in-modal mode swap.
+      // Edit-mode saves close: the artist clicked Save to commit, not
+      // to keep editing.
+      if (open === "new") {
+        setOpen(updated);
+      } else {
+        setOpen(null);
+        router.refresh();
+      }
+    },
+    [open, router],
+  );
 
-  const onDeleted = useCallback((id: string) => {
-    setSeries((prev) => prev.filter((s) => s.id !== id));
-  }, []);
+  const onDeleted = useCallback(
+    (id: string) => {
+      setSeries((prev) => prev.filter((s) => s.id !== id));
+      setOpen(null);
+      router.refresh();
+    },
+    [router],
+  );
 
   const closeModal = useCallback(() => {
     setOpen(null);
