@@ -128,12 +128,12 @@ export function FilterBar({ availableFilters, basePath }: FilterBarProps) {
 
       {availableFilters.includes("price") && (
         <PillMenu
-          label={
-            currentPriceToken
-              ? `Price: ${PRICE_BUCKETS.find((b) => b.token === currentPriceToken)?.label}`
-              : "Price"
+          label={priceLabel(currentPriceToken, priceMin, priceMax)}
+          active={
+            Boolean(currentPriceToken) ||
+            priceMin !== undefined ||
+            priceMax !== undefined
           }
-          active={Boolean(currentPriceToken)}
           onClear={() =>
             push({ price: null, price_min: null, price_max: null })
           }
@@ -154,6 +154,28 @@ export function FilterBar({ availableFilters, basePath }: FilterBarProps) {
               {b.label}
             </DropdownMenu.Item>
           ))}
+          <DropdownMenu.Separator className="my-1 border-t border-border" />
+          {/* T-062 — custom range. Inputs are in major units ($500),
+              converted to minor (50000) when submitted to match the
+              existing bucket scale. Submitting clears `price` (the
+              bucket token) so the label switches to the custom range. */}
+          <CustomPriceRange
+            initialMin={priceMin}
+            initialMax={priceMax}
+            onSubmit={(minMajor, maxMajor) => {
+              push({
+                price: null,
+                price_min:
+                  minMajor != null
+                    ? Math.round(minMajor * 100).toString()
+                    : null,
+                price_max:
+                  maxMajor != null
+                    ? Math.round(maxMajor * 100).toString()
+                    : null,
+              });
+            }}
+          />
         </PillMenu>
       )}
 
@@ -304,6 +326,107 @@ function PillMenu({
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
   );
+}
+
+/** T-062 — custom min/max price inputs inside the price dropdown.
+ *  Values are in major units ($500, not 50000 cents) — the parent
+ *  converts to minor units when submitting to the URL. Submitting
+ *  with both fields blank clears the custom range. */
+function CustomPriceRange({
+  initialMin,
+  initialMax,
+  onSubmit,
+}: {
+  initialMin: number | undefined;
+  initialMax: number | undefined;
+  onSubmit: (minMajor: number | null, maxMajor: number | null) => void;
+}) {
+  const [minDraft, setMinDraft] = useState<string>(
+    initialMin != null ? String(initialMin / 100) : "",
+  );
+  const [maxDraft, setMaxDraft] = useState<string>(
+    initialMax != null ? String(initialMax / 100) : "",
+  );
+
+  const apply = () => {
+    const parse = (s: string): number | null => {
+      const trimmed = s.trim();
+      if (trimmed === "") return null;
+      const n = Number(trimmed);
+      if (!Number.isFinite(n) || n < 0) return null;
+      return n;
+    };
+    onSubmit(parse(minDraft), parse(maxDraft));
+  };
+
+  return (
+    <div
+      className="px-3 py-2"
+      // Stop click + keydown from bubbling to the DropdownMenu, which
+      // would otherwise close on each interaction.
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+    >
+      <p className="text-xs text-muted mb-1.5">Custom range</p>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          apply();
+        }}
+        className="flex items-center gap-1"
+      >
+        <input
+          type="number"
+          inputMode="numeric"
+          min={0}
+          step={1}
+          value={minDraft}
+          onChange={(e) => setMinDraft(e.target.value)}
+          placeholder="Min"
+          aria-label="Minimum price"
+          className="w-20 px-2 py-1 text-sm border border-border bg-background focus:outline-none focus:border-foreground"
+        />
+        <span className="text-muted">–</span>
+        <input
+          type="number"
+          inputMode="numeric"
+          min={0}
+          step={1}
+          value={maxDraft}
+          onChange={(e) => setMaxDraft(e.target.value)}
+          placeholder="Max"
+          aria-label="Maximum price"
+          className="w-20 px-2 py-1 text-sm border border-border bg-background focus:outline-none focus:border-foreground"
+        />
+        <button
+          type="submit"
+          className="ml-1 px-2 py-1 text-xs border border-foreground bg-foreground text-background"
+        >
+          Apply
+        </button>
+      </form>
+    </div>
+  );
+}
+
+/** Build the price pill's label, handling preset buckets + custom
+ *  ranges + the empty default. */
+function priceLabel(
+  token: string | undefined,
+  priceMin: number | undefined,
+  priceMax: number | undefined,
+): string {
+  if (token) {
+    const bucket = PRICE_BUCKETS.find((b) => b.token === token);
+    if (bucket) return `Price: ${bucket.label}`;
+  }
+  const hasMin = priceMin !== undefined;
+  const hasMax = priceMax !== undefined;
+  if (!hasMin && !hasMax) return "Price";
+  const fmt = (cents: number) => `$${Math.round(cents / 100).toLocaleString()}`;
+  if (hasMin && hasMax) return `Price: ${fmt(priceMin!)}–${fmt(priceMax!)}`;
+  if (hasMin) return `Price: ${fmt(priceMin!)}+`;
+  return `Price: under ${fmt(priceMax!)}`;
 }
 
 /** Free-text location input — distinct from the dropdown pills because
