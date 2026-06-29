@@ -26,13 +26,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { clsx } from "clsx";
 import {
-  createStudioSeries,
-  deleteStudioSeries,
-  patchStudioSeries,
-  setSeriesArtworks,
-  type StudioArtworkSummary,
-  type StudioSeries,
-} from "@/lib/api";
+  createSeries,
+  deleteSeries,
+  patchSeries,
+  saveSeriesArtworks,
+} from "@/app/actions/series";
+import type { StudioArtworkSummary, StudioSeries } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
 interface Props {
@@ -132,8 +131,8 @@ export function SeriesEditModal({
           cover_artwork_id: coverArtworkId,
         };
         const saved = existing
-          ? await patchStudioSeries(existing.id, body)
-          : await createStudioSeries(body);
+          ? await patchSeries(existing.id, body)
+          : await createSeries(body);
         onSaved(saved);
         if (isCreate) {
           // Switch to the artworks tab so the user can pick membership
@@ -177,7 +176,7 @@ export function SeriesEditModal({
     setSaving(true);
     setError(null);
     try {
-      const ack = await setSeriesArtworks(existing.id, Array.from(memberIds));
+      const ack = await saveSeriesArtworks(existing.id, Array.from(memberIds));
       // Update the parent's view of artwork_count so the card re-renders.
       onSaved({ ...existing, artwork_count: ack.artwork_count });
       onClose();
@@ -195,7 +194,7 @@ export function SeriesEditModal({
     setSaving(true);
     setError(null);
     try {
-      await deleteStudioSeries(existing.id);
+      await deleteSeries(existing.id);
       onDeleted(existing.id);
       onClose();
     } catch (e) {
