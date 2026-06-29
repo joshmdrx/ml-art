@@ -385,15 +385,19 @@ The digest filter is `artworks.published_at > GREATEST(follows.created_at, now()
 - `modifier_applied` / `visual_search_uploaded` — no `artwork_id` in `properties`; would need a modifier-vector lookup / upload-embedding fetch.
 - Anonymous user profiles — `user_profiles.user_id` FKs into `users` so pre-signin taste lives implicitly in events until T-033 anon-merge links it. Natural home for an anon-taste store is T-061 (calibrator).
 
-### `T-056` Personalised search re-rank + "For you" row
-**Where:** `api-search::search.rs` adds a `taste_ranked` CTE; new `/v1/me/recommendations/for-you` endpoint; homepage row.
-**Why:** First user-visible payoff of `T-055`. Personalised retrieval is the bridge from "good search" to "comes back daily."
-**Acceptance:**
-- `search.rs` extends the RRF fusion with a third channel: `taste_ranked` = nearest artworks to `user_profiles.taste_embedding` via HNSW. Blended alongside `semantic_ranked` + `text_ranked`. Skipped when `interaction_count < 10`.
-- `GET /v1/me/recommendations/for-you` returns top-K by sim-to-taste with a small jitter (random rank ±5 on top 50) for serendipity.
-- Homepage shows "For you" row when `interaction_count ≥ 10`; otherwise the current curated/featured row.
-- Mode flag `?personalize=off` for debugging on both API + page.
-- Per-request log line `personalise=on user=<id> alpha=…` for diagnosis.
+### ~~`T-056` Personalised search re-rank + "For you" row~~ ✓ shipped 2026-06-29
+Three sub-commits closing the first user-visible payoff of T-055:
+
+- **T-056.1** — `GET /v1/me/recommendations/for-you`. Top-K nearest by HNSW cosine to `user_profiles.taste_embedding`, candidate pool 50 → random shuffle → return 12. Eligibility: signed-in + `interaction_count >= 5` + vector set. Below the gate the endpoint returns `{eligible:false, items:[]}` so the web layer can fall back cleanly.
+- **T-056.2** — Homepage "For you" row swaps in for eligible users; "Recently added" stays the fallback. SSR fetch is skipped entirely for anonymous callers.
+- **T-056.3** — RRF blend with a third `taste_ranked` channel in `/v1/search`. **Off by default** until we have data to A/B against. Operator switch: `SEARCH_PERSONALIZE_ENABLED` env. Per-request override: `?personalize=on|off`. Same eligibility gate. Per-request log line when active.
+
+Threshold deliberately lowered from the spec's `>= 10` to `>= 5` — a completed T-061 calibrator session alone unlocks personalisation. Important for the cold-start story.
+
+**Open follow-ups before flipping `SEARCH_PERSONALIZE_ENABLED=true`:**
+- Cohort assignment + experiment harness (today the toggle is global; we'd want a user-id hash → on/off split for proper A/B).
+- Result-quality eval — pick N queries, score top-K results with/without taste, eyeball drift. Don't ship default-on until this passes.
+- Decide on jitter for `/v1/me/recommendations/for-you` — currently `ORDER BY random()` over the top-50; consider replacing with a deterministic-per-user-per-day shuffle so the row is stable across page reloads on the same day.
 
 ### ~~`T-057` Algorithmic neighbourhoods (HDBSCAN + Claude label)~~ ✓ shipped 2026-06-26
 Pipeline lives at `ml/ml_art/neighborhoods.py`, runnable via `make neighborhoods-build`. HDBSCAN with `cluster_selection_method='leaf'`, `min_cluster_size=15`, `min_samples=2`, euclidean over L2-normalised embeddings — tuned after the initial `eom`/30 default produced one 856-artwork mega-bucket. Claude (Sonnet 4.6) labels each cluster with 5 centroid-nearest sample images; result persisted as `kind='semantic'`, top 3 clusters by size become `is_featured`. Pure-rebuild semantics (drops + re-inserts every run; no Hungarian-matching yet since no real bookmarks pre-launch). Curated set untouched — coexists by `kind` discriminator. Groq + Llama 4 Scout wired as a fallback/iteration provider behind `--provider groq`; baked off, Claude clearly wins on evocative register (`decisions.md` 2026-06-26). First prod build seeded 14 neighbourhoods from ~2000 eligible artworks.

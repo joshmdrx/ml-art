@@ -122,6 +122,72 @@ the feature is "delete the files, remove the homepage import."
 
 ---
 
+## 2026-06-29 — T-056: personalised re-rank — RRF third channel, default-off, taste only tilts
+
+**Context:** Events flow (T-050), taste vectors compute (T-055),
+clusters seed the cold start (T-057 + T-061). T-056 is where users
+actually see the difference — a personalised "For you" row on the
+homepage and a taste-tilted search ranking. Three sub-commits, each
+with its own design call.
+
+**Decisions:**
+
+1. **Lowered `MIN_INTERACTION_COUNT` from the spec's 10 to 5.** The
+   TODO threshold was a guess; what matters is the cold-start UX. A
+   finished T-061 calibrator session = 5 picks, so the threshold-5
+   choice means "asking the user 5 questions on first visit is
+   enough to unlock personalisation." That's a tight product loop.
+   Threshold-10 would require 5 *more* events after the calibrator,
+   which most users won't have generated in their first session.
+
+2. **RRF blend default-off — feature is dark until A/B-ready.** The
+   risk profile of T-056.3 is materially different from T-056.1/.2.
+   The endpoint + homepage row are additive surfaces (eligible
+   users get a new row, no one else sees a change). The RRF blend
+   changes search ordering for every signed-in eligible user on every
+   query — silent quality regressions are the failure mode and they're
+   hard to spot. So we ship the code, build the toggle, and don't
+   flip it until we have an evaluation harness. Operator switch
+   (`SEARCH_PERSONALIZE_ENABLED` env) + per-request override
+   (`?personalize=on|off`) give us the levers without redeploying.
+
+3. **Taste is a TILT, not a CHANNEL on equal footing.** The WHERE
+   clause keeps `(k.id IS NOT NULL OR s.id IS NOT NULL)` — a result
+   must hit keyword OR semantic to be a candidate, then taste tilts
+   the ranking among those candidates. Without this, an abstract-
+   expressionism enthusiast searching "watercolour landscape" might
+   see abstract expressionism creep into the top results just because
+   it matches their taste. Bad UX. The "blended alongside" wording in
+   the TODO is rendered as "added to the score, doesn't expand the
+   candidate set."
+
+4. **Empty-CTE pattern over conditional SQL.** When taste is off, the
+   `taste_ranked` CTE is `SELECT NULL::uuid AS id, NULL::bigint AS rk
+   WHERE false`. The final SELECT joins it unconditionally and the
+   `COALESCE(1.0/(60 + t.rk), 0)` evaluates to 0. Default-off path is
+   byte-identical to pre-T-056.3 search SQL. Mirrors the existing
+   `semantic_ranked` empty-CTE pattern used when there's no semantic
+   anchor — one less special case to reason about.
+
+5. **Random shuffle in SQL for `for-you`, not deterministic-per-day.**
+   The spec says "small jitter (random rank ±5 on top 50)" — we
+   implemented as `ORDER BY random() LIMIT 12` over the top-50.
+   Slightly stronger than ±5 but cleaner. The trade is that the row
+   shuffles every page-reload on the same day, which might feel
+   chaotic. Noted as a follow-up: swap for a `md5(id || user_id ||
+   current_date)` shuffle if return-rate data suggests stability >
+   freshness.
+
+6. **Optional `AuthedUser` extractor, not required.** Search must
+   stay open to anonymous callers. Making the extractor optional via
+   `auth: Option<AuthedUser>` (rather than threading auth through the
+   handler explicitly) lets the existing extractor handle the JWT
+   parsing — no new code paths.
+
+**Reversibility:** Very high. T-056.1 + .2 are additive surfaces; deleting them is `git revert`. T-056.3's default-off behaviour means flipping the env back to false (or just leaving it false) reverts to pre-change ranking. The empty-CTE pattern means there's no schema migration or job-queue change to roll back.
+
+---
+
 ## 2026-06-26 — T-055: user taste vector — weighted-decayed L2-normalised sum, two-stage queue fan-out
 
 **Context:** Events flowing (T-050) + cluster centroids in place

@@ -53,6 +53,91 @@ Deferred (TODO follow-ups): A/B return-rate test once we have
 signed-in users; smarter score-based pair selection; re-trigger
 surface in `/me/settings`.
 
+## 2026-06-29 — T-056: Personalised re-rank + "For you" row (RRF blend off by default)
+
+First user-visible payoff of the T-050 → T-055 → T-057 → T-061 chain.
+Three sub-commits shipped together; deployed; default-off so prod
+behaviour is unchanged until the operator flips the switch.
+
+### T-056.1 — `/v1/me/recommendations/for-you` endpoint
+
+New module `api-search::recommendations`. Returns top-K artworks
+nearest to `user_profiles.taste_embedding` via the HNSW cosine
+index already on `artwork_embeddings`. Candidate pool 50 → random
+shuffle → return 12. Filters out drafts, deleted, inactive artists
+(same predicates as `/v1/search`).
+
+Eligibility: signed-in + `interaction_count >= MIN_INTERACTION_COUNT`
+(5) + vector set. Below the gate, returns `{eligible:false, items:[]}`
+— the web layer reads the boolean to decide whether to render the
+"For you" row or fall back to a default surface.
+
+The 5-threshold matches T-056.1 + T-061: a completed calibrator
+session alone unlocks personalisation. That's the right product
+story ("we asked, you told us, here's what we got").
+
+### T-056.2 — Homepage row
+
+`page.tsx` fetches `getForYou()` alongside the existing feeds when
+the caller has a Clerk session (skipped otherwise). When
+`eligible:true && items.length > 0`, the "Recently added" section
+swaps for "For you" with a small "Tuned from what you've told us
+so far." subhead. Same grid component either way.
+
+Failures fall back to `{eligible:false, items:[]}` so a transient
+api blip doesn't break the homepage — "Recently added" still
+renders.
+
+### T-056.3 — Search RRF blend
+
+Adds a third channel to `/v1/search`'s Reciprocal Rank Fusion:
+`taste_ranked = ROW_NUMBER OVER (ORDER BY ae.embedding <=>
+user_taste_vector)`. Same shape as the existing `semantic_ranked`
+CTE; same `LIMIT 200` candidate pool; same RRF constant `k=60`.
+
+The score formula extends to
+
+    rrf_score = Σ 1/(60 + rank) over { keyword, semantic, taste }
+
+so the taste channel **tilts** ordering without overriding query
+intent. The `WHERE k.id IS NOT NULL OR s.id IS NOT NULL` filter
+stays in place — a taste-only match never surfaces an artwork
+that didn't hit keyword OR semantic, which would let unrelated
+items leak in.
+
+**Three gates control activation:**
+
+1. **Operator default**: `Config::search_personalize_enabled` (env
+   `SEARCH_PERSONALIZE_ENABLED`). False today.
+2. **Per-request override**: `?personalize=on|off`. Wins over the
+   default. Useful for A/B + debugging.
+3. **Eligibility**: same as T-056.1.
+
+When any gate fails, the `taste_ranked` CTE is an empty placeholder
+and the `COALESCE(1.0/(k + t.rk), 0)` short-circuits to zero. The
+default-off path is byte-identical to pre-T-056.3 search SQL.
+
+Per-request log line fires only when the taste channel is active:
+
+    INFO personalize=on user_id=Some(...) rrf_k=60
+         "search with personalisation"
+
+Tests: 7 new toggle tests (default-off w/ anon, default-off
+signed-in, ?personalize=on, ?personalize=off overrides on,
+below-threshold, anonymous-caller-noop, default-on flow) + 28
+existing search tests unchanged + the 14 user_profile_test + 6
+calibrate_test + 8 recommendations_test all pass.
+
+### Open follow-ups before flipping `SEARCH_PERSONALIZE_ENABLED=true`
+
+- Cohort assignment + experiment harness for proper A/B (today
+  the toggle is global; want a user-id hash → on/off split).
+- Result-quality eval — score top-K with/without taste on N
+  representative queries; eyeball drift; don't ship default-on
+  until this passes.
+- `?personalize=` toggle UI — a debug link in the search results
+  footer for testers + ourselves, lazy follow-up.
+
 ## 2026-06-26 — T-055: User taste vector + nightly refresh (code ready, cron not live)
 
 The first ML personalisation engine. With events flowing (T-050) and
