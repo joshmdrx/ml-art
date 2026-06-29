@@ -99,6 +99,16 @@ pub struct SearchParams {
     #[serde(default)]
     pub size: Option<String>,
 
+    /// T-056.3 — opt the request in/out of the personalised RRF blend.
+    /// `on` forces the taste channel on (subject to the user being
+    /// eligible — signed-in + `interaction_count >= 5` + taste vector
+    /// present). `off` forces it off even when the operator default
+    /// is on. Absent → fall through to `Config::search_personalize_enabled`.
+    /// Useful for A/B + debugging; the web layer can also flip it from
+    /// a `/search?personalize=off` link.
+    #[serde(default)]
+    pub personalize: Option<String>,
+
     // Sort + pagination
     #[serde(default)]
     pub sort: Option<SortOrder>,
@@ -120,6 +130,7 @@ pub async fn handle(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SearchParams>,
     OptionalAnonId(anon_id): OptionalAnonId,
+    auth: Option<crate::extractors::AuthedUser>,
     headers: HeaderMap,
 ) -> Result<Json<Paginated<ArtworkSummary>>, ApiError> {
     let limit = params.limit.clamp(1, 48);
@@ -272,6 +283,61 @@ pub async fn handle(
     let has_text = params.q.as_deref().is_some_and(|q| !q.trim().is_empty());
     let has_visual_anchor = params.image_upload_id.is_some() || params.seed_artwork_id.is_some();
 
+    // T-056.3 — decide whether the taste channel joins this request's
+    // RRF blend. Three gates ALL must hold:
+    //
+    //   1. Operator-enabled OR caller-explicit-opt-in.
+    //      `Config::search_personalize_enabled` is the global default;
+    //      `?personalize=on` overrides false→true. `?personalize=off`
+    //      overrides true→false.
+    //   2. Signed-in caller. Anonymous events feed the user's taste
+    //      vector on sign-in via T-033, but pre-signin we don't have a
+    //      user record to look the vector up against.
+    //   3. The user is eligible: a taste vector is set AND
+    //      `interaction_count >= MIN_INTERACTION_COUNT` (5 — the
+    //      threshold a finished T-061 calibrator session clears).
+    //
+    // Gate 1 is the kill switch; gates 2 + 3 are the natural ones.
+    let personalize_pref = match params.personalize.as_deref() {
+        Some("on") => Some(true),
+        Some("off") => Some(false),
+        _ => None,
+    };
+    let personalize_active = personalize_pref.unwrap_or(state.cfg.search_personalize_enabled);
+    let user_id = auth.as_ref().map(|crate::extractors::AuthedUser(u)| u.id);
+
+    // Taste-channel lookup is gated to the hybrid path (has_text OR
+    // visual anchor); the no-query browse path never blends taste, so
+    // no need to pay for the SQL hop there.
+    let taste_vec: Option<Vector> =
+        match (personalize_active, has_text || has_visual_anchor, user_id) {
+            (true, true, Some(uid)) => {
+                let row: Option<(Option<Vector>, i32)> = sqlx::query_as(
+                    "SELECT taste_embedding, interaction_count \
+                 FROM user_profiles WHERE user_id = $1",
+                )
+                .bind(uid)
+                .fetch_optional(&state.pool)
+                .await?;
+                match row {
+                    Some((Some(v), c)) if c >= crate::recommendations::MIN_INTERACTION_COUNT => {
+                        Some(v)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+
+    if taste_vec.is_some() {
+        tracing::info!(
+            personalize = "on",
+            user_id = ?user_id,
+            rrf_k = RRF_K,
+            "search with personalisation"
+        );
+    }
+
     // Fetch limit+1 so we can detect whether a next page exists
     // without a separate COUNT query. If we got back limit+1 rows,
     // drop the sentinel and issue a cursor pointing to the next
@@ -281,6 +347,7 @@ pub async fn handle(
             &state,
             &params,
             semantic_anchor.as_ref(),
+            taste_vec.as_ref(),
             sort,
             limit,
             offset,
@@ -332,10 +399,15 @@ pub async fn handle(
 // Hybrid path
 // ─────────────────────────────────────────────────────────────────────────────
 
+// T-056.3 — `taste_vec` when Some adds a `taste_ranked` channel to the
+// RRF fusion via the same shape `semantic_ranked` uses. Empty CTE when
+// None so the COALESCE-with-0 in the rrf_score short-circuits cleanly
+// and existing queries are unchanged.
 async fn run_hybrid(
     state: &AppState,
     params: &SearchParams,
     query_vec: Option<&Vector>,
+    taste_vec: Option<&Vector>,
     sort: SortOrder,
     limit: i64,
     offset: i64,
@@ -373,6 +445,31 @@ async fn run_hybrid(
             .to_string(),
     };
 
+    // T-056.3 — taste channel. Mirrors the semantic CTE shape so the
+    // final SELECT can blend all three uniformly. Empty CTE when not
+    // active (off by default; gated by Config + `?personalize=` query).
+    let taste_cte = match taste_vec {
+        Some(v) => {
+            let idx = next.bind(&mut args, v.clone())?;
+            format!(
+                "taste_ranked AS (
+                    SELECT ae.artwork_id AS id,
+                           ROW_NUMBER() OVER (ORDER BY ae.embedding <=> ${idx}) AS rk
+                    FROM artwork_embeddings ae
+                    WHERE ae.model_name = ${m} AND ae.model_version = ${mv}
+                    ORDER BY ae.embedding <=> ${idx}
+                    LIMIT ${cp}
+                )",
+                m = model_name_idx,
+                mv = model_version_idx,
+                cp = candidate_pool_idx,
+            )
+        }
+        None => {
+            "taste_ranked AS (SELECT NULL::uuid AS id, NULL::bigint AS rk WHERE false)".to_string()
+        }
+    };
+
     let (filters_sql, _) = build_filters(params, &mut next, &mut args)?;
     let order_sql = build_order(sort);
     // Fetch `limit + 1` so the caller can detect whether a next
@@ -394,7 +491,8 @@ async fn run_hybrid(
               AND a.search_tsv @@ plainto_tsquery('english', ${q_idx})
             LIMIT ${cp}
         ),
-        {semantic_cte}
+        {semantic_cte},
+        {taste_cte}
         SELECT
             a.id,
             a.title,
@@ -406,7 +504,8 @@ async fn run_hybrid(
             a.currency,
             a.availability,
             (COALESCE(1.0/({rrf_k} + k.rk), 0)
-              + COALESCE(1.0/({rrf_k} + s.rk), 0))::float8 AS rrf_score
+              + COALESCE(1.0/({rrf_k} + s.rk), 0)
+              + COALESCE(1.0/({rrf_k} + t.rk), 0))::float8 AS rrf_score
         FROM artworks a
         JOIN artists ar ON ar.id = a.artist_id
         LEFT JOIN artwork_images ai
@@ -415,6 +514,7 @@ async fn run_hybrid(
               AND ai.moderation_status = 'approved'
         LEFT JOIN keyword_ranked  k ON k.id = a.id
         LEFT JOIN semantic_ranked s ON s.id = a.id
+        LEFT JOIN taste_ranked    t ON t.id = a.id
         WHERE a.deleted_at IS NULL
           AND a.status = 'published'
           AND ar.deleted_at IS NULL

@@ -73,6 +73,13 @@ pub struct Config {
     /// to `/v1/webhooks/email/inbound`. The webhook is closed unless
     /// this is set AND the header matches. Required in prod.
     pub inbound_email_secret: Option<String>,
+    /// T-056.3 — default-on switch for the personalised search blend.
+    /// When `false` (default), `/v1/search` only adds the taste channel
+    /// to the RRF fusion if the caller explicitly opts in with
+    /// `?personalize=on`. When `true`, eligible signed-in users get
+    /// personalised results unless they pass `?personalize=off`.
+    /// Pre-cohort A/B; flipping this is the operator-side kill switch.
+    pub search_personalize_enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +161,9 @@ impl Config {
             reply_email_domain: env::var("REPLY_EMAIL_DOMAIN")
                 .unwrap_or_else(|_| "reply.localhost".to_string()),
             inbound_email_secret: env::var("INBOUND_EMAIL_SECRET").ok(),
+            search_personalize_enabled: env::var("SEARCH_PERSONALIZE_ENABLED")
+                .map(|s| s == "true")
+                .unwrap_or(false),
         };
 
         // Production sanity checks. Prevent footguns from a missing secret in prod.
@@ -202,6 +212,9 @@ impl Config {
             jobs_queue_url: None,
             reply_email_domain: "reply.test.example.com".to_string(),
             inbound_email_secret: Some("test-inbound-secret".to_string()),
+            // Off in tests by default — the T-056.3 toggle tests explicitly
+            // flip this on or pass ?personalize=on.
+            search_personalize_enabled: false,
         }
     }
 }
