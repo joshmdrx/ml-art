@@ -453,6 +453,22 @@ Threshold deliberately lowered from the spec's `>= 10` to `>= 5` — a completed
 
 **Depends on:** `T-056.3` ✓ shipped. Trigger is enough real users (≥ ~50 signed-in actives in any given week) to make A/B statistically informative.
 
+### `T-079` Multi-image artworks in semantic search — review when first complaint lands
+**Where:** `core::artwork_embeddings` write path + `artwork_embeddings` table PK + `search.rs` semantic CTE.
+**Why:** Today an artwork has exactly one row in `artwork_embeddings` keyed on `(artwork_id, model_name, model_version)`. The studio upload pipeline only embeds the **primary** image (`studio/artworks.rs:637` — `if is_primary && state.embedder.enabled()`). Non-primary images are stored in S3 and shown in the artwork gallery, but contribute zero signal to semantic search, similar-artworks, taste-vector matching, or cluster centroids. Invisible today (WikiArt seed has 1 image per artwork); will start mattering once real artists upload multi-angle / multi-view / multi-colourway pieces.
+
+**Three approaches when this becomes worth fixing:**
+- **MAX-over-images.** Extend the PK to `(artwork_id, image_id, model_name, model_version)`; at query time `GROUP BY artwork_id MIN(distance)`. Best quality — sculpture-from-5-angles becomes findable from any angle. 5× storage + 5× HNSW candidates per scan.
+- **MEAN-over-images.** Keep one row per artwork; recompute as `AVG(per-image embeddings)`. No PK change. Smooth aggregate vibe; an outlier detail shot muddies the centroid.
+- **Status quo + studio nudge.** No code change. Add a "this image drives how you appear in search — pick your best one" hint on the primary-image picker.
+
+**Acceptance for the eventual fix:**
+- Decide based on a real complaint, not speculation. Until then, ship the studio nudge so artists at least know which image counts.
+- Whichever approach lands needs to update: the studio write path (embed all vs just primary), the search SQL (GROUP BY or AVG), the similar-artworks endpoint, the T-055 taste-vector JOIN (currently keys on `(artwork_id, model_name, model_version)`), and the T-057 cluster build (averages embeddings per cluster).
+- Add a one-off backfill to write the new shape over the existing corpus.
+
+**Trigger:** First real complaint that "my piece doesn't show up when I search for X angle / Y colour" that can be traced to this. Or routine audit shows ≥ ~10% of artworks have non-primary images and we're getting silent retrieval misses.
+
 ### ~~`T-057` Algorithmic neighbourhoods (HDBSCAN + Claude label)~~ ✓ shipped 2026-06-26
 Pipeline lives at `ml/ml_art/neighborhoods.py`, runnable via `make neighborhoods-build`. HDBSCAN with `cluster_selection_method='leaf'`, `min_cluster_size=15`, `min_samples=2`, euclidean over L2-normalised embeddings — tuned after the initial `eom`/30 default produced one 856-artwork mega-bucket. Claude (Sonnet 4.6) labels each cluster with 5 centroid-nearest sample images; result persisted as `kind='semantic'`, top 3 clusters by size become `is_featured`. Pure-rebuild semantics (drops + re-inserts every run; no Hungarian-matching yet since no real bookmarks pre-launch). Curated set untouched — coexists by `kind` discriminator. Groq + Llama 4 Scout wired as a fallback/iteration provider behind `--provider groq`; baked off, Claude clearly wins on evocative register (`decisions.md` 2026-06-26). First prod build seeded 14 neighbourhoods from ~2000 eligible artworks.
 
