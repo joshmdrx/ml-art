@@ -102,7 +102,11 @@ async fn refresh_with_single_save_points_at_that_artwork(pool: PgPool) {
 
     let (taste, count) = fetch_taste(&pool, ALICE).await.unwrap();
     let v = taste.to_vec();
-    assert!((v[0] - 1.0).abs() < 1e-4, "v[0] should be ~1.0, got {}", v[0]);
+    assert!(
+        (v[0] - 1.0).abs() < 1e-4,
+        "v[0] should be ~1.0, got {}",
+        v[0]
+    );
     assert_eq!(count, 1);
 }
 

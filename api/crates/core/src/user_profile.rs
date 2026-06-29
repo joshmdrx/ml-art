@@ -326,7 +326,7 @@ mod tests {
         assert_eq!(base_weight("search_executed"), None);
         assert_eq!(base_weight("inquiry_started"), None);
         assert_eq!(base_weight("artist_followed"), None); // deferred
-        // Unknown names — defensively treated as non-contributing.
+                                                          // Unknown names — defensively treated as non-contributing.
         assert_eq!(base_weight("totally_made_up_event"), None);
     }
 
@@ -369,7 +369,11 @@ mod tests {
                 days_old: now,
             },
         ]);
-        assert!(r.is_none(), "save then unsave should net to zero, got {:?}", r);
+        assert!(
+            r.is_none(),
+            "save then unsave should net to zero, got {:?}",
+            r
+        );
     }
 
     #[test]

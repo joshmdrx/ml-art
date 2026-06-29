@@ -28,7 +28,10 @@ jobs:
       - name: Create venv + install dev deps
         run: |
           uv venv
-          uv pip install -e ".[dev]"
+          # Install dev + neighborhoods extras — the T-057 test module
+          # imports `hdbscan` at collection time, so without the extras
+          # pytest errors before running anything.
+          uv pip install -e ".[dev,neighborhoods]"
 
       - name: Run pytest
         run: uv run pytest

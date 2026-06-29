@@ -87,9 +87,7 @@ struct NeighborhoodCandidate {
     representative_artwork_ids: Vec<Uuid>,
 }
 
-pub async fn pairs(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<PairsResponse>, ApiError> {
+pub async fn pairs(State(state): State<Arc<AppState>>) -> Result<Json<PairsResponse>, ApiError> {
     // Pull semantic neighbourhoods with a populated centroid + at
     // least one representative artwork. Featured / larger clusters
     // first — those are the broadest visual neighborhoods and the
@@ -119,7 +117,12 @@ pub async fn pairs(
     // display data in one query.
     let needed_ids: Vec<Uuid> = selected
         .iter()
-        .flat_map(|(l, r)| [candidates[*l].representative_artwork_ids[0], candidates[*r].representative_artwork_ids[0]])
+        .flat_map(|(l, r)| {
+            [
+                candidates[*l].representative_artwork_ids[0],
+                candidates[*r].representative_artwork_ids[0],
+            ]
+        })
         .collect();
 
     let display = fetch_artwork_display(&state, &needed_ids).await?;
@@ -154,10 +157,7 @@ pub async fn pairs(
 /// approximation already produces visually-distinct pairs. Wraps
 /// indices into `candidates` so callers don't need to clone the
 /// Vector data.
-fn greedy_far_apart(
-    candidates: &[NeighborhoodCandidate],
-    wanted: usize,
-) -> Vec<(usize, usize)> {
+fn greedy_far_apart(candidates: &[NeighborhoodCandidate], wanted: usize) -> Vec<(usize, usize)> {
     if candidates.len() < 2 {
         return Vec::new();
     }

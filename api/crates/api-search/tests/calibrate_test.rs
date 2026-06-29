@@ -8,11 +8,11 @@
 mod common;
 
 use api_search::calibrate::PairsResponse;
-use common::{app_keyword_only, MIGRATOR};
 use axum::{
     body::{to_bytes, Body},
     http::{Request, StatusCode},
 };
+use common::{app_keyword_only, MIGRATOR};
 use serde_json::Value;
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -77,7 +77,10 @@ async fn get_pairs(pool: PgPool) -> (StatusCode, PairsResponse) {
     let status = resp.status();
     let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
     let body: PairsResponse = serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-        panic!("decode pairs (status {status}): {e}\nbody: {}", String::from_utf8_lossy(&bytes))
+        panic!(
+            "decode pairs (status {status}): {e}\nbody: {}",
+            String::from_utf8_lossy(&bytes)
+        )
     });
     (status, body)
 }
@@ -99,7 +102,10 @@ async fn pairs_returns_empty_when_no_semantic_neighborhoods(pool: PgPool) {
 async fn pairs_returns_one_pair_when_only_two_neighborhoods(pool: PgPool) {
     insert_semantic_neighborhoods(
         &pool,
-        &[("alpha", ARTWORK_POS_0, 0.0), ("omega", ARTWORK_POS_4, 10.0)],
+        &[
+            ("alpha", ARTWORK_POS_0, 0.0),
+            ("omega", ARTWORK_POS_4, 10.0),
+        ],
     )
     .await;
     let (status, body) = get_pairs(pool).await;
@@ -138,7 +144,10 @@ async fn pairs_picks_farthest_partner_greedily(pool: PgPool) {
     assert_eq!(body.pairs.len(), 2);
 
     let first = &body.pairs[0];
-    let first_slugs = [&first.left.neighborhood_slug, &first.right.neighborhood_slug];
+    let first_slugs = [
+        &first.left.neighborhood_slug,
+        &first.right.neighborhood_slug,
+    ];
     assert!(
         first_slugs.iter().any(|s| s.as_str() == "nearorigin"),
         "pivot lost: {:?}",
@@ -160,9 +169,18 @@ async fn pairs_caps_at_pairs_per_session(pool: PgPool) {
     // artwork. In real prod each cluster has its own representative.
     let slugs: Vec<String> = (0..12).map(|i| format!("cluster-{i}")).collect();
     let arts = [
-        ARTWORK_POS_0, ARTWORK_POS_1, ARTWORK_POS_2, ARTWORK_POS_3, ARTWORK_POS_4,
-        ARTWORK_POS_0, ARTWORK_POS_1, ARTWORK_POS_2, ARTWORK_POS_3, ARTWORK_POS_4,
-        ARTWORK_POS_0, ARTWORK_POS_1,
+        ARTWORK_POS_0,
+        ARTWORK_POS_1,
+        ARTWORK_POS_2,
+        ARTWORK_POS_3,
+        ARTWORK_POS_4,
+        ARTWORK_POS_0,
+        ARTWORK_POS_1,
+        ARTWORK_POS_2,
+        ARTWORK_POS_3,
+        ARTWORK_POS_4,
+        ARTWORK_POS_0,
+        ARTWORK_POS_1,
     ];
     let entries: Vec<(&str, Uuid, f32)> = (0..12)
         .map(|i| (slugs[i].as_str(), arts[i], i as f32))
