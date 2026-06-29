@@ -122,6 +122,75 @@ the feature is "delete the files, remove the homepage import."
 
 ---
 
+## 2026-06-29 — T-058: series — one series per artwork, multi-select over drag
+
+**Context:** Artists work in series — projects, themes, year-cohorts —
+and the flat grid we ship today is hostile to how they actually
+present their practice. T-058 adds the data model + studio UI +
+public surface for grouping works under shareable series headers.
+
+**Decisions:**
+
+1. **One series per artwork (FK), not many-to-many.** Spec called for
+   this and we kept it. The trade is real but small: an artwork that
+   genuinely belongs to two series (e.g. "Quiet Mornings" and a
+   gallery's curated retrospective) can't sit in both. Migration
+   path if this becomes a problem is a junction table; the public
+   API shape would change minimally (`series` array vs single).
+   For now, single-FK keeps the data model tractable and lets the
+   artwork PATCH expose `series_id` as a one-line three-state field.
+
+2. **Per-artist unique slug, not globally unique.** Two artists can
+   both have a "blue-period" series. URLs are namespaced
+   (`/artists/:artist-slug/series/:series-slug`) so there's no
+   collision in the wild. Collisions within an artist surface as
+   409; we let the artist re-title rather than auto-suffix (`-2`).
+   Cleaner from the artist's perspective — they pick the name they
+   want, the system confirms.
+
+3. **Multi-select checkbox grid over drag-to-assign.** The TODO
+   originally suggested drag-to-assign; in design I traded it for a
+   checkbox grid in the series-edit modal. Reasons: (a) one-direction
+   mental model (manage from the series side) vs drag's two-way
+   ambiguity, (b) bulk operations are first-class via the
+   `PUT /:id/artworks` endpoint that replaces membership atomically,
+   (c) drag UX is harder to build well — a half-built drag is worse
+   than a complete checkbox grid. The per-artwork dropdown
+   (deferred) handles the inverse "this one work belongs to series
+   X" path.
+
+4. **Empty series studio-only.** Hidden from the public list + the
+   detail endpoint returns 404 for them. Lets artists prepare a
+   series (title, statement, cover) before any works are assigned
+   without that empty-state leaking publicly.
+
+5. **No NFKD unicode fold on slugify.** Café → "caf-visions" rather
+   than "cafe-visions"; mirrors the same call we made on T-061's
+   calibrator. Avoids a new dep for a marginal UX win — artist can
+   manually edit if they care.
+
+6. **Cover image = picker from own works, not separate upload.**
+   Avoids the upload pipeline + S3 path + moderation flow for what
+   is just a representative image. Null falls back to the first
+   member's primary image so empty/uninitialised series still have
+   a visual identity.
+
+7. **Soft-delete on series, hard-clear on member artworks.** When
+   an artist deletes a series, the `series.deleted_at` flips but
+   the FK doesn't cascade — we explicitly clear `artworks.series_id`
+   in the same transaction. Artworks survive intact, just
+   un-series'd. Matches the spirit of the FK's `ON DELETE SET NULL`
+   for the hard-delete path while keeping the soft-delete option for
+   recovery if we want it later.
+
+**Reversibility:** Very high. The migration is additive (new table +
+nullable column); rolling back is a `DROP TABLE series; ALTER TABLE
+artworks DROP COLUMN series_id`. The studio + public surfaces are
+new pages — no existing flows changed. The artwork DTO gained a
+`series_id` field which is nullable; old clients ignore it.
+
+---
+
 ## 2026-06-29 — T-056: personalised re-rank — RRF third channel, default-off, taste only tilts
 
 **Context:** Events flow (T-050), taste vectors compute (T-055),

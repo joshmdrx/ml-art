@@ -53,6 +53,87 @@ Deferred (TODO follow-ups): A/B return-rate test once we have
 signed-in users; smarter score-based pair selection; re-trigger
 surface in `/me/settings`.
 
+## 2026-06-29 — T-058: Series concept for artists
+
+Behance-style project grouping. Artists curate their own works into
+series via the studio; public visitors see a series toggle on the
+artist page + shareable per-series URLs.
+
+### T-058.1 — Schema + backend
+
+`db/migrations/0022_series.sql`:
+- `series` table: per-artist-unique slug, title, statement, optional
+  cover_artwork_id (ON DELETE SET NULL), timestamps + soft delete.
+- `artworks.series_id` FK with ON DELETE SET NULL — deleting a series
+  un-series's its artworks rather than orphan-deleting them.
+- Per-artist unique slug index: two artists can both have a
+  "blue-period" series.
+
+New `ApiError::Conflict(String)` variant — 409 for slug duplicates.
+
+Studio CRUD at `/v1/studio/series/*` (list, create, detail, patch,
+delete) + `PUT /:id/artworks` for atomic bulk membership replace
+(the multi-select primitive). Public reads at
+`/v1/artists/:slug/series` (hides empty) and
+`/v1/artists/:slug/series/:series_slug` (404s for empty). Studio
+artwork PATCH accepts `series_id` for single-artwork assignment.
+
+8 integration tests cover the load-bearing behaviour.
+
+### T-058.2 — Studio UI
+
+New `/studio/series` page + nav link. `StudioSeriesManager` card
+grid; `SeriesEditModal` with two tabs:
+- **Details** — title, 500-char statement, cover artwork picker.
+- **Artworks** — the multi-select checkbox grid. Pre-checks current
+  members; submit replaces membership atomically via the bulk
+  endpoint.
+
+Create-mode lands on Details with empty fields, then auto-flips to
+the Artworks tab after first save so the user can attach work in
+the same flow.
+
+Backend extension to support pre-check: `StudioArtworkSummary.series_id`
+now surfaces in the studio artwork DTO. Lets the modal tick the
+right artworks on open without a second SQL hit.
+
+### T-058.3 — Public artist-page integration
+
+`?view=series` query param on `/artists/:slug` flips the works grid
+to a series grid. Toggle pills appear only when the artist has ≥1
+populated series — solo artists see the existing flat works grid
+unchanged.
+
+New `/artists/:slug/series/:series-slug` public page: cover +
+statement + member artworks grid + crumb back to the artist.
+404s for empty / non-existent series (matches the api).
+
+### Design notes
+
+- One series per artwork (FK, not many-to-many). Simpler model;
+  one-direction conflict resolution. If polyhierarchy becomes a
+  need, it's a junction-table migration.
+- Slugs unique per artist; 409 on collision rather than auto-suffix.
+  Artist re-titles if there's a clash.
+- Empty series studio-only — hidden from public reads.
+- Cover artwork picker (from artist's own works), null fallback to
+  first member's primary image.
+- Multi-select checkbox grid over drag-to-assign. One mental model;
+  pairs with the per-artwork dropdown (deferred) for the inverse.
+- No NFKD unicode fold on slug — keeps deps minimal; artist can edit.
+
+### Deferred follow-ups
+
+- `ArtworkFull.series` + "More from this series" cross-link on the
+  artwork detail page. The public series detail page already exists;
+  this is the inbound cross-link.
+- Per-artwork series dropdown in `ArtworkEditModal`. Bulk multi-
+  select covers the primary management path.
+- Manual ordering (series on the artist page, artworks within a
+  series). `created_at DESC` default for now.
+- `/v1/series/:id` direct-by-id read. Public surface is artist-
+  namespaced; the bare id path isn't called by the UI.
+
 ## 2026-06-29 — T-056: Personalised re-rank + "For you" row (RRF blend off by default)
 
 First user-visible payoff of the T-050 → T-055 → T-057 → T-061 chain.

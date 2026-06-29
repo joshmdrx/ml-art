@@ -474,15 +474,27 @@ Pipeline lives at `ml/ml_art/neighborhoods.py`, runnable via `make neighborhoods
 
 **Follow-up: productionise the build schedule once real artists are onboarding.** While the corpus is static WikiArt-seed it's fine to rebuild ad-hoc; once real artists start adding work the cluster shapes will drift and we'll want a weekly rebuild. Recommended path is GitHub Actions cron (`0 6 * * 1`) shelling out to `make neighborhoods-build`, repo secrets for `DATABASE_URL` + `ANTHROPIC_API_KEY`. Rejected: porting to Rust + the jobs queue — the Python `hdbscan` package is the canonical implementation and the Rust reimplementations have smaller test surface; offline batch ML doesn't need to share infra with online services. See `decisions.md` 2026-06-26 for the labelling provider bake-off; the scheduling decision will get its own entry when we wire it up.
 
-### `T-058` Series concept for artists
-**Where:** New migration (`series` table + `artworks.series_id` FK); studio UI; artist-page "View by series" layout option.
-**Why:** Behance-style "project format." Real artists work in series; the current flat-grid portfolio is hostile to how artists present their practice. Series also becomes a clusterable / recommendable entity.
-**Acceptance:**
-- Migration: `series (id, artist_id, slug, title, statement, cover_artwork_id?, created_at, updated_at)` + `artworks.series_id uuid REFERENCES series(id) ON DELETE SET NULL`.
-- Studio: new "Series" tab with CRUD; drag-to-assign existing artworks; cover-image picker.
-- Artist page: optional "View by series" toggle that groups artworks under series headers.
-- API: `GET /v1/artists/:slug/series`, `GET /v1/series/:id`.
-- Artwork detail surfaces "More from this series" when `series_id` is set.
+### ~~`T-058` Series concept for artists~~ ✓ shipped 2026-06-29
+
+Three sub-commits closing the feature end-to-end:
+
+- **T-058.1** — Schema + backend. New `series` table (per-artist-unique slug, statement, cover_artwork_id), `artworks.series_id` FK (ON DELETE SET NULL). `core::error::ApiError::Conflict` variant for 409s. Studio CRUD endpoints under `/v1/studio/series/*` including a bulk-replace `PUT /:id/artworks` for the multi-select primitive. Public reads at `/v1/artists/:slug/series` (hides empty) and `/v1/artists/:slug/series/:series_slug` (404s for empty). Studio artwork PATCH accepts `series_id`. 8 integration tests.
+- **T-058.2** — Studio UI. New `/studio/series` page + nav link. `StudioSeriesManager` card grid; `SeriesEditModal` with two tabs (Details / Artworks) — the Artworks tab is the **multi-select checkbox grid** that powers atomic membership replace. Backend extension: `StudioArtworkSummary.series_id` so the modal pre-checks current members on open.
+- **T-058.3** — Public artist-page integration. `?view=series` toggle on `/artists/:slug` (only renders when artist has ≥1 series). Public series detail page at `/artists/:slug/series/:series-slug` with cover + statement + artwork grid. Crumb back to the artist.
+
+**Design choices** (full record in `decisions.md` 2026-06-29):
+- One series per artwork (FK, not many-to-many) — simpler schema, dropdown UX, single-direction conflict resolution.
+- Slugs unique per artist; 409 on collision rather than auto-suffix.
+- Empty series studio-only — hidden from public lists + detail.
+- No NFKD unicode fold in slug — keeps deps minimal; artist can manually edit.
+- Multi-select checkbox grid over drag-to-assign — one mental model (manage from series side); the per-artwork dropdown handles the inverse direction.
+
+**Deferred follow-ups:**
+- **`ArtworkFull.series` on the public artwork DTO + "More from this series" cross-link on the artwork detail page.** Surfaces the series-as-cross-link from each artwork; the public series detail page already exists.
+- **Per-artwork series dropdown in `ArtworkEditModal`.** Single-artwork series-set/clear from the artwork edit modal. Bulk multi-select covers the primary management workflow; this is a quality-of-life add.
+- **Drag-to-assign.** Defer indefinitely; the multi-select grid is the better-tested mental model.
+- **Manual ordering** of series on the artist page + artworks within a series. Default `created_at desc` for now; artists with narrative-driven sequences will want this eventually.
+- **`/v1/series/:id` direct read** (the original TODO spec). Public reads currently go through the artist namespace; the bare id path is rejected for now since it'd compete with the artist namespace and isn't called by the UI.
 
 ### `T-059` Saved searches + alerts
 **Where:** Migration (`saved_searches`); `core::user_searches`; weekly cron-enqueued job re-running each saved query.

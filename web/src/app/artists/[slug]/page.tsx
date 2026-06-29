@@ -1,11 +1,13 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
+import { clsx } from "clsx";
 import { TopNav } from "@/components/TopNav";
 import { ArtworkGrid } from "@/components/ArtworkGrid";
 import { ArtistLocationsMap } from "@/components/ArtistLocationsMap";
 import { BackToSearchLink } from "@/components/BackToSearchLink";
 import { FollowButton } from "@/components/FollowButton";
-import { getArtist } from "@/lib/api";
+import { getArtist, listArtistSeries, type PublicSeries } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
 /**
@@ -22,6 +24,7 @@ import { reportError } from "@/lib/reportError";
  */
 
 type Params = Promise<{ slug: string }>;
+type Search = Promise<{ view?: string }>;
 
 export async function generateMetadata({
   params,
@@ -38,13 +41,30 @@ export async function generateMetadata({
   };
 }
 
-export default async function ArtistPage({ params }: { params: Params }) {
+export default async function ArtistPage({
+  params,
+  searchParams,
+}: {
+  params: Params;
+  searchParams: Search;
+}) {
   const { slug } = await params;
+  const sp = await searchParams;
+  const view: "works" | "series" = sp.view === "series" ? "series" : "works";
 
-  const data = await getArtist(slug).catch((e) => {
-    reportError(e, { surface: "artist-detail", slug });
-    return null;
-  });
+  // T-058.3 — fetch series alongside the artist so we know whether to
+  // show the Works/Series toggle even on the default "works" view.
+  // Empty list → toggle is hidden entirely.
+  const [data, seriesList] = await Promise.all([
+    getArtist(slug).catch((e) => {
+      reportError(e, { surface: "artist-detail", slug });
+      return null;
+    }),
+    listArtistSeries(slug).catch((e) => {
+      reportError(e, { surface: "artist-detail-series", slug });
+      return { items: [] };
+    }),
+  ]);
   if (!data) notFound();
 
   // `locations` defaults to [] so a stale API build (no `locations`
@@ -52,6 +72,8 @@ export default async function ArtistPage({ params }: { params: Params }) {
   // tolerates the empty list by rendering nothing.
   const { artist, artworks } = data;
   const locations = data.locations ?? [];
+  const series = seriesList.items;
+  const hasSeries = series.length > 0;
 
   // Order socials deterministically for display. Empty object → []
   const socials = Object.entries(artist.socials ?? {}).filter(
@@ -147,13 +169,20 @@ export default async function ArtistPage({ params }: { params: Params }) {
           </section>
         )}
 
-        {/* Works */}
+        {/* Works / Series — view toggle when the artist has at least
+            one published series; otherwise the Works grid renders alone. */}
         <section>
           <div className="flex items-baseline justify-between mb-6">
-            <h2 className="font-serif text-xl">Works</h2>
-            {/* Filter tabs (All / Available) deferred until availability is real */}
+            <h2 className="font-serif text-xl">
+              {view === "series" ? "Series" : "Works"}
+            </h2>
+            {hasSeries && (
+              <ViewToggle currentView={view} artistSlug={slug} />
+            )}
           </div>
-          {artworks.items.length === 0 ? (
+          {view === "series" ? (
+            <SeriesGrid series={series} artistSlug={slug} />
+          ) : artworks.items.length === 0 ? (
             <p className="text-muted text-sm">
               This artist hasn’t published any work yet.
             </p>
@@ -167,5 +196,107 @@ export default async function ArtistPage({ params }: { params: Params }) {
         </p>
       </main>
     </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T-058.3 — series view helpers (server components)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ViewToggle({
+  currentView,
+  artistSlug,
+}: {
+  currentView: "works" | "series";
+  artistSlug: string;
+}) {
+  return (
+    <div className="flex gap-2 text-sm">
+      <Link
+        href={`/artists/${artistSlug}`}
+        className={clsx(
+          "px-3 py-1.5 border",
+          currentView === "works"
+            ? "border-foreground bg-foreground text-background"
+            : "border-border bg-surface hover:bg-background",
+        )}
+      >
+        Works
+      </Link>
+      <Link
+        href={`/artists/${artistSlug}?view=series`}
+        className={clsx(
+          "px-3 py-1.5 border",
+          currentView === "series"
+            ? "border-foreground bg-foreground text-background"
+            : "border-border bg-surface hover:bg-background",
+        )}
+      >
+        Series
+      </Link>
+    </div>
+  );
+}
+
+function SeriesGrid({
+  series,
+  artistSlug,
+}: {
+  series: PublicSeries[];
+  artistSlug: string;
+}) {
+  if (series.length === 0) {
+    return (
+      <p className="text-muted text-sm">
+        No series yet — switch back to{" "}
+        <Link
+          href={`/artists/${artistSlug}`}
+          className="underline hover:text-foreground"
+        >
+          Works
+        </Link>{" "}
+        to see this artist&apos;s pieces.
+      </p>
+    );
+  }
+  return (
+    <ul className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
+      {series.map((s) => (
+        <li key={s.id}>
+          <Link
+            href={`/artists/${artistSlug}/series/${s.slug}`}
+            className="block bg-surface border border-border hover:opacity-95"
+          >
+            <div className="relative aspect-square bg-background overflow-hidden">
+              {s.cover_image_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={s.cover_image_url}
+                  alt={s.title}
+                  loading="lazy"
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-muted text-xs">
+                  No cover image
+                </div>
+              )}
+            </div>
+            <div className="p-3">
+              <h3 className="font-serif text-base line-clamp-1">{s.title}</h3>
+              <p className="text-xs text-muted mt-1">
+                {s.artwork_count}{" "}
+                {s.artwork_count === 1 ? "work" : "works"}
+              </p>
+              {s.statement && (
+                <p className="text-sm text-muted mt-2 line-clamp-2">
+                  {s.statement}
+                </p>
+              )}
+            </div>
+          </Link>
+        </li>
+      ))}
+    </ul>
   );
 }
