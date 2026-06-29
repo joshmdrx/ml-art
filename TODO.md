@@ -399,6 +399,60 @@ Threshold deliberately lowered from the spec's `>= 10` to `>= 5` — a completed
 - Result-quality eval — pick N queries, score top-K results with/without taste, eyeball drift. Don't ship default-on until this passes.
 - Decide on jitter for `/v1/me/recommendations/for-you` — currently `ORDER BY random()` over the top-50; consider replacing with a deterministic-per-user-per-day shuffle so the row is stable across page reloads on the same day.
 
+### `T-076` End-to-end personalisation validation
+**Where:** Manual + (optionally) automated tests against staging or prod with a real Clerk signup. Some can also run locally.
+**Why:** We have integration tests on the API + handler surfaces, but no E2E walk-through of the full anon → signed-in → personalised loop. Most failure modes (a broken Clerk webhook, a missed JWT scope on the for-you endpoint, an issue with the bridge route's cookie forwarding) only show up when the whole chain runs together. Worth doing once before the first real user, then converting the steps into an automated playwright check (T-069 already exists for the broader retention loop).
+
+**Walk-through script (one user, ~5 min):**
+1. Visit homepage in a private window — confirm calibrator panel renders, 5 pairs visible, images load.
+2. Pick through all 5 pairs. Confirm "Thanks" banner shows. SQL check:
+   ```sql
+   SELECT event_name, anonymous_id IS NOT NULL AS has_anon, user_id IS NOT NULL AS has_user
+   FROM events WHERE event_name='calibration_pick';
+   ```
+   → 5 rows, all `has_anon=t / has_user=f`.
+3. Sign up (Clerk dev test email). Confirm redirect back to homepage. `AnonymousMergeBridge` fires automatically.
+4. Re-run the SQL above — all 5 rows should now have `has_user=t` (T-033 anon-merge linked them).
+5. Trigger the per-user refresh manually:
+   ```bash
+   USER_ID=$(psql "$DATABASE_URL" -tA -c "SELECT id FROM users ORDER BY created_at DESC LIMIT 1")
+   cargo run -p jobs-worker -- --enqueue "{\"kind\":\"user_profile_refresh\",\"payload\":{\"user_id\":\"$USER_ID\"}}"
+   ```
+   (Needs `jobs-worker` running in another terminal locally; on prod the deployed Lambda picks it up from SQS.)
+6. SQL check: `user_profiles` row exists with `taste_embedding IS NOT NULL`, `interaction_count = 5`, `profile_updated_at = recent`.
+7. Reload homepage — confirm **"For you" row** appears in place of "Recently added", with artworks visually adjacent to the picks.
+8. Toggle the RRF blend on for the session: visit `/search?q=anything&personalize=on` while signed in. Confirm 200 + reasonable results. Inspect api logs for `personalize=on user_id=Some(...) rrf_k=60` line.
+9. Negative case: pass `?personalize=off` on the same URL → no log line, results match the default-off (config) shape.
+
+**Acceptance:** A new user walking through steps 1-9 sees the expected state at each checkpoint. Bug log if any. Then convert into a playwright script under `e2e/` and chain it from CI on a nightly cadence (separate ticket if it grows).
+
+**Depends on:** `T-061` ✓ shipped, `T-033` ✓ shipped, `T-055` ✓ shipped, `T-056` ✓ shipped. Unblocked today.
+
+### `T-077` Activate the personalisation crons
+**Where:** Schedule the two ML batch jobs that are currently dormant. EventBridge → SQS in prod; cron-poller in dev (or just rely on a daily `make` target).
+**Why:** T-055.2 (taste-vector refresh kickoff) and T-057's `neighborhoods-build` are both code-complete but **not scheduled**. Pre-launch with no users, scheduling them is dead weight — the events table is empty and the cluster shapes don't drift. Once real artists are onboarding AND we have ≥1 signed-up consumer user, both need to run on a cadence.
+
+**Trigger condition:** the first 5-10 real artists are publishing AND we have at least one consumer user who's completed a calibrator + done some real engagement. Until then, manual one-off runs are fine.
+
+**Acceptance:**
+- **`user_profile_refresh_kickoff`** — daily at, say, 03:00 UTC. EventBridge rule → SQS message with `{"kind":"user_profile_refresh_kickoff","payload":{}}`. Existing handler scans for users active in the last 25h, fans out one `UserProfileRefresh` per. CloudWatch metric on `enqueued` count for sanity (alarm if 0 for two days running once we expect non-zero).
+- **`neighborhoods-build`** — weekly at, say, Monday 06:00 UTC. GitHub Actions cron preferred (decision in `decisions.md` 2026-06-26 — Python `hdbscan` is the canonical implementation). Repo secrets carry `DATABASE_URL` + `ANTHROPIC_API_KEY`. Slack hook on failure (or rely on Actions UI red badges).
+- Documented in `decisions.md` with the per-job decision context (cadence rationale, why EventBridge + SQS vs Actions, etc.).
+
+**Depends on:** `T-055.2` ✓ shipped, `T-057` ✓ shipped. Trigger is external (artists onboarding).
+
+### `T-078` RRF blend production rollout
+**Where:** Cohort harness + eval suite + finally flipping `SEARCH_PERSONALIZE_ENABLED=true` in the api Lambda env.
+**Why:** T-056.3 shipped default-off — the code path is dark in prod. Activating it for everyone at once is the highest-risk move on the search surface. We need (a) a way to measure what changed, and (b) a controlled rollout.
+
+**Acceptance:**
+- **Eval harness.** Define ~20 representative queries (mix of broad like "landscape", narrow like "watercolour boats", and emotional like "calm interior"). Build a `make search-eval` target that hits both `/v1/search?q=X` and `/v1/search?q=X&personalize=on` for a fixed seeded user, dumps top-K JSON side-by-side. Initial pass is eyeball-only; later add a numeric proxy (e.g. how many top-12 results overlap, how much rank shifts).
+- **Cohort assignment.** Hash the user_id to a 0..99 bucket; opt buckets in by config (`SEARCH_PERSONALIZE_COHORT_BUCKETS=0-9` = 10% rollout). The search handler resolves the cohort at request time when `?personalize=` is absent. Document in `decisions.md`. Cheaper than the obvious "set a `users.personalize` column" — flips in a single env var without migrations.
+- **Telemetry.** When the blend activates, emit a `search_personalized` event (T-050 surface) with `{cohort, rrf_k, has_text, has_visual_anchor}` so we can later join to downstream `inquiry_submitted` / `artwork_saved` events and measure conversion lift per cohort.
+- **Rollout plan:** 10% → eyeball + check error rate / latency for a week → 50% → another week → 100% → flip default-on. Each step is one env var change + restart.
+
+**Depends on:** `T-056.3` ✓ shipped. Trigger is enough real users (≥ ~50 signed-in actives in any given week) to make A/B statistically informative.
+
 ### ~~`T-057` Algorithmic neighbourhoods (HDBSCAN + Claude label)~~ ✓ shipped 2026-06-26
 Pipeline lives at `ml/ml_art/neighborhoods.py`, runnable via `make neighborhoods-build`. HDBSCAN with `cluster_selection_method='leaf'`, `min_cluster_size=15`, `min_samples=2`, euclidean over L2-normalised embeddings — tuned after the initial `eom`/30 default produced one 856-artwork mega-bucket. Claude (Sonnet 4.6) labels each cluster with 5 centroid-nearest sample images; result persisted as `kind='semantic'`, top 3 clusters by size become `is_featured`. Pure-rebuild semantics (drops + re-inserts every run; no Hungarian-matching yet since no real bookmarks pre-launch). Curated set untouched — coexists by `kind` discriminator. Groq + Llama 4 Scout wired as a fallback/iteration provider behind `--provider groq`; baked off, Claude clearly wins on evocative register (`decisions.md` 2026-06-26). First prod build seeded 14 neighbourhoods from ~2000 eligible artworks.
 
