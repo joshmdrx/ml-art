@@ -67,6 +67,11 @@ pub struct StudioArtworkSummary {
     /// Primary image URL if one exists, otherwise `None`. Drafts can be
     /// imageless (artist is still writing copy).
     pub primary_image_url: Option<String>,
+    /// T-058 — current series membership. `None` means the artwork
+    /// isn't in any series. Lets the studio series-edit modal pre-check
+    /// the right artworks in its membership grid without a second SQL
+    /// hit per modal open.
+    pub series_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub published_at: Option<DateTime<Utc>>,
@@ -129,6 +134,7 @@ pub async fn list(
             a.id, a.title, a.status, a.medium, a.medium_category,
             a.price_cents, a.currency, a.availability,
             ai.s3_key AS primary_s3_key,
+            a.series_id,
             a.created_at, a.updated_at, a.published_at
         FROM artworks a
         LEFT JOIN artwork_images ai
@@ -246,6 +252,7 @@ pub async fn create(
             id, title, status, medium, medium_category,
             price_cents, currency, availability,
             NULL::text AS primary_s3_key,
+            series_id,
             created_at, updated_at, published_at
         "#,
     )
@@ -283,6 +290,7 @@ pub async fn detail(
             a.id, a.title, a.status, a.medium, a.medium_category,
             a.price_cents, a.currency, a.availability,
             a.description, a.year_created, a.dimensions, a.external_url,
+            a.series_id,
             a.created_at, a.updated_at, a.published_at
         FROM artworks a
         WHERE a.id = $1
@@ -480,6 +488,7 @@ pub async fn patch(
             price_cents, currency, availability,
             (SELECT s3_key FROM artwork_images
               WHERE artwork_id = artworks.id AND is_primary) AS primary_s3_key,
+            series_id,
             created_at, updated_at, published_at
         "#,
     )
@@ -798,6 +807,7 @@ struct ArtworkRow {
     currency: String,
     availability: String,
     primary_s3_key: Option<String>,
+    series_id: Option<Uuid>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     published_at: Option<DateTime<Utc>>,
@@ -815,6 +825,7 @@ impl ArtworkRow {
             currency: self.currency,
             availability: self.availability,
             primary_image_url: self.primary_s3_key.map(|k| url_for_s3_key(&k)),
+            series_id: self.series_id,
             created_at: self.created_at,
             updated_at: self.updated_at,
             published_at: self.published_at,
@@ -836,6 +847,7 @@ struct ArtworkDetailRow {
     year_created: Option<i32>,
     dimensions: Option<serde_json::Value>,
     external_url: Option<String>,
+    series_id: Option<Uuid>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     published_at: Option<DateTime<Utc>>,
@@ -857,6 +869,7 @@ impl ArtworkDetailRow {
                 currency: self.currency,
                 availability: self.availability,
                 primary_image_url,
+                series_id: self.series_id,
                 created_at: self.created_at,
                 updated_at: self.updated_at,
                 published_at: self.published_at,

@@ -93,6 +93,12 @@ export default async function StudioPage({
           </div>
           <nav className="flex items-center gap-4">
             <Link
+              href="/studio/series"
+              className="text-sm underline underline-offset-2 text-muted hover:text-foreground"
+            >
+              Series →
+            </Link>
+            <Link
               href="/studio/inquiries"
               className="text-sm underline underline-offset-2 text-muted hover:text-foreground"
             >

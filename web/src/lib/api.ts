@@ -282,6 +282,10 @@ export interface StudioArtworkSummary {
   currency: string;
   availability: Availability;
   primary_image_url: string | null;
+  /** T-058 — current series membership; null means "not in any series".
+   *  Lets the series-edit modal pre-check the right artworks in its
+   *  membership grid without a second round-trip. */
+  series_id: string | null;
   created_at: string;
   updated_at: string;
   published_at: string | null;
@@ -418,6 +422,10 @@ export interface PatchArtworkBody {
   availability?: Availability;
   external_url?: string | null;
   status?: "draft" | "published" | "archived";
+  /** T-058 — series membership for this single artwork. `null` clears,
+   * value sets, omitted leaves alone. Must be a series the calling
+   * artist owns; otherwise the server returns 400. */
+  series_id?: string | null;
 }
 
 export interface SearchParams {
@@ -1477,6 +1485,206 @@ export async function getForYou(init?: RequestInit): Promise<ForYouResponse> {
   } catch {
     return { items: [], eligible: false };
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T-058 — series (studio CRUD + public reads)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Studio-side view of a series. Includes the editable fields the
+ *  public shape hides (`cover_artwork_id` + timestamps). */
+export interface StudioSeries {
+  id: string;
+  slug: string;
+  title: string;
+  statement: string | null;
+  cover_artwork_id: string | null;
+  cover_image_url: string | null;
+  artwork_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateSeriesBody {
+  title: string;
+  statement?: string | null;
+  cover_artwork_id?: string | null;
+}
+
+export interface PatchSeriesBody {
+  /** Setting title also re-derives the slug — a collision returns 409. */
+  title?: string;
+  statement?: string | null;
+  cover_artwork_id?: string | null;
+}
+
+export interface SeriesMembershipAck {
+  added: number;
+  removed: number;
+  artwork_count: number;
+}
+
+/** Public-side summary; same shape as `core::models::SeriesSummary`. */
+export interface PublicSeries {
+  id: string;
+  slug: string;
+  title: string;
+  statement: string | null;
+  cover_image_url: string | null;
+  artwork_count: number;
+}
+
+export interface PublicSeriesDetail {
+  series: PublicSeries;
+  artist: ArtistSummaryLite;
+  artworks: Paginated<ArtworkSummary>;
+}
+
+/** Subset of the public ArtistSummary we render on the series detail
+ *  page — the heavy `representative_image_urls` field is empty in this
+ *  context (the series's own artworks fill the grid). */
+export interface ArtistSummaryLite {
+  id: string;
+  slug: string;
+  display_name: string;
+  location: string | null;
+  city: string | null;
+  country: string | null;
+  representative_image_urls: string[];
+}
+
+export async function listStudioSeries(
+  init?: RequestInit,
+): Promise<{ items: StudioSeries[] } | null> {
+  const res = await apiFetch("/v1/studio/series", init);
+  if (res.status === 401 || res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`studio/series ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as { items: StudioSeries[] };
+}
+
+export async function getStudioSeries(
+  id: string,
+  init?: RequestInit,
+): Promise<StudioSeries | null> {
+  const res = await apiFetch(
+    `/v1/studio/series/${encodeURIComponent(id)}`,
+    init,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`studio/series/:id ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as StudioSeries;
+}
+
+export async function createStudioSeries(
+  body: CreateSeriesBody,
+): Promise<StudioSeries> {
+  const res = await apiFetch("/v1/studio/series", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 409) {
+    throw new Error("conflict");
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`studio/series ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as StudioSeries;
+}
+
+export async function patchStudioSeries(
+  id: string,
+  body: PatchSeriesBody,
+): Promise<StudioSeries> {
+  const res = await apiFetch(`/v1/studio/series/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 409) {
+    throw new Error("conflict");
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`studio/series/:id ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as StudioSeries;
+}
+
+export async function deleteStudioSeries(id: string): Promise<void> {
+  const res = await apiFetch(`/v1/studio/series/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 204) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `studio/series/:id DELETE ${res.status}: ${text || res.statusText}`,
+    );
+  }
+}
+
+/** Bulk-set series membership. Replaces in one transaction: artworks
+ *  in `artwork_ids` get assigned; artworks currently in this series but
+ *  NOT in the list get cleared. */
+export async function setSeriesArtworks(
+  id: string,
+  artwork_ids: string[],
+): Promise<SeriesMembershipAck> {
+  const res = await apiFetch(
+    `/v1/studio/series/${encodeURIComponent(id)}/artworks`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ artwork_ids }),
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `studio/series/:id/artworks ${res.status}: ${text || res.statusText}`,
+    );
+  }
+  return (await res.json()) as SeriesMembershipAck;
+}
+
+export async function listArtistSeries(
+  artistSlug: string,
+  init?: RequestInit,
+): Promise<{ items: PublicSeries[] }> {
+  const res = await apiFetch(
+    `/v1/artists/${encodeURIComponent(artistSlug)}/series`,
+    init,
+  );
+  if (!res.ok) {
+    return { items: [] };
+  }
+  return (await res.json()) as { items: PublicSeries[] };
+}
+
+export async function getArtistSeriesDetail(
+  artistSlug: string,
+  seriesSlug: string,
+  init?: RequestInit,
+): Promise<PublicSeriesDetail | null> {
+  const res = await apiFetch(
+    `/v1/artists/${encodeURIComponent(artistSlug)}/series/${encodeURIComponent(seriesSlug)}`,
+    init,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `artist series detail ${res.status}: ${text || res.statusText}`,
+    );
+  }
+  return (await res.json()) as PublicSeriesDetail;
 }
 
 /** Queue a "follow this artist when I sign up" intent against the
