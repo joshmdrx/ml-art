@@ -367,6 +367,14 @@ pub struct PatchArtwork {
     /// `draft` stamps `published_at = now()` (handled in SQL via COALESCE).
     #[serde(default)]
     pub status: Option<String>,
+    /// T-058 — assign / clear series membership. `null` clears,
+    /// value sets, absent leaves alone. Must be a series owned by
+    /// the caller; otherwise 400.
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_double_option"
+    )]
+    pub series_id: Option<Option<Uuid>>,
 }
 
 pub async fn patch(
@@ -423,6 +431,23 @@ pub async fn patch(
         _ => None,
     };
 
+    // T-058 — series_id: validate ownership before the UPDATE (so a
+    // bad id 400s up front rather than violating the FK at write time).
+    if let Some(Some(series_id)) = body.series_id {
+        let owns: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM series WHERE id = $1 AND artist_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(series_id)
+        .bind(artist_id)
+        .fetch_optional(&state.pool)
+        .await?;
+        if owns.is_none() {
+            return Err(ApiError::BadRequest(
+                "series_id: not a series owned by you".into(),
+            ));
+        }
+    }
+
     // Bool-flag-per-Option<Option<_>> pattern lets the caller explicitly
     // set a field to NULL by passing JSON `null`, vs not touching it by
     // omitting the key. Same shape as `me/collections::patch`.
@@ -440,6 +465,7 @@ pub async fn patch(
             availability    = COALESCE($18, availability),
             external_url    = CASE WHEN $19::boolean THEN $20 ELSE external_url END,
             status          = COALESCE($21, status),
+            series_id       = CASE WHEN $22::boolean THEN $23::uuid ELSE series_id END,
             published_at    = CASE
                                   WHEN $21 = 'published' AND published_at IS NULL
                                   THEN now()
@@ -478,6 +504,8 @@ pub async fn patch(
     .bind(body.external_url.is_some())
     .bind(body.external_url.flatten())
     .bind(body.status.as_deref())
+    .bind(body.series_id.is_some())
+    .bind(body.series_id.flatten())
     .fetch_optional(&state.pool)
     .await?;
 

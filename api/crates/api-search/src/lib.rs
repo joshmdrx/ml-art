@@ -17,6 +17,7 @@ pub mod recommendations;
 pub mod search;
 pub mod search_map;
 mod serde_helpers;
+pub mod series;
 pub mod studio;
 pub mod uploads;
 pub mod webhooks;
@@ -91,6 +92,11 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         // no rate-limit layer since it's a static, light call.
         .route("/v1/search/map/cities", get(map_cities::handle))
         .route("/v1/artists/:slug", get(artist::handle))
+        // T-058 public series reads. The list endpoint hides empty
+        // series; the detail returns 404 if the series doesn't exist
+        // for the artist OR has no published artworks.
+        .route("/v1/artists/:slug/series", get(series::list))
+        .route("/v1/artists/:slug/series/:series_slug", get(series::detail))
         .route("/v1/artworks/:id", get(artwork::detail))
         .route("/v1/artworks/:id/similar", get(artwork::similar))
         .route("/v1/neighborhoods", get(neighborhoods::index))
@@ -217,6 +223,24 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route(
             "/v1/studio/settings",
             axum::routing::patch(studio::settings::patch),
+        )
+        // ── Studio series (T-058). Artist-curated groupings of their
+        // own works. Multi-select membership via PUT (replace
+        // semantics). Single-artwork series assignment also possible
+        // via the artwork PATCH endpoint.
+        .route(
+            "/v1/studio/series",
+            get(studio::series::list).post(studio::series::create),
+        )
+        .route(
+            "/v1/studio/series/:id",
+            get(studio::series::detail)
+                .patch(studio::series::patch)
+                .delete(studio::series::delete),
+        )
+        .route(
+            "/v1/studio/series/:id/artworks",
+            axum::routing::put(studio::series::set_artworks),
         )
         // ── Studio inquiries inbox (T-011 Phase 4 + 4b). List the
         // calling artist's inquiries; reply to one; bulk-mark a batch

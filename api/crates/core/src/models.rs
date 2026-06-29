@@ -227,6 +227,47 @@ pub struct NeighborhoodDetail {
     pub artworks: Paginated<ArtworkSummary>,
 }
 
+/// T-058 — artist-curated grouping of their own works. Public read shape;
+/// what the artist page renders when `?view=series` is on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeriesSummary {
+    pub id: Uuid,
+    pub slug: String,
+    pub title: String,
+    pub statement: Option<String>,
+    /// Resolved from the series's `cover_artwork_id` → primary image
+    /// URL. Falls back to the first member artwork's primary image
+    /// when `cover_artwork_id` is null. `None` when the series has no
+    /// artworks (only possible in studio views — empty series are
+    /// hidden from public reads).
+    pub cover_image_url: Option<String>,
+    pub artwork_count: i32,
+}
+
+/// Composite response for `/v1/artists/:slug/series/:series-slug`:
+/// header + first page of member artworks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeriesDetail {
+    pub series: SeriesSummary,
+    pub artist: ArtistSummary,
+    pub artworks: Paginated<ArtworkSummary>,
+}
+
+/// Studio-side view of a series — includes editable fields the public
+/// shape hides. Used by `/v1/studio/series/*`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeriesStudio {
+    pub id: Uuid,
+    pub slug: String,
+    pub title: String,
+    pub statement: Option<String>,
+    pub cover_artwork_id: Option<Uuid>,
+    pub cover_image_url: Option<String>,
+    pub artwork_count: i32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[allow(dead_code)]
 fn _ts_check() -> Option<DateTime<Utc>> {
     None

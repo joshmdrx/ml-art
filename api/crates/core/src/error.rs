@@ -17,6 +17,12 @@ pub enum ApiError {
     #[error("forbidden")]
     Forbidden,
 
+    /// State conflict — duplicate slug, version mismatch, etc.
+    /// Renders as 409. T-058 series CRUD uses this for per-artist
+    /// duplicate-slug attempts.
+    #[error("conflict: {0}")]
+    Conflict(String),
+
     /// Carries the soonest the caller may retry, in seconds. Surfaced via
     /// the `Retry-After` response header so clients can back off without
     /// guessing. Set by the rate-limit middleware in `core::middleware`.
@@ -37,6 +43,7 @@ impl ApiError {
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::Forbidden => StatusCode::FORBIDDEN,
             ApiError::NotFound => StatusCode::NOT_FOUND,
+            ApiError::Conflict(_) => StatusCode::CONFLICT,
             ApiError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             ApiError::Internal(_) | ApiError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -48,6 +55,7 @@ impl ApiError {
             ApiError::Unauthorized => "Unauthorized",
             ApiError::Forbidden => "Forbidden",
             ApiError::NotFound => "Not Found",
+            ApiError::Conflict(_) => "Conflict",
             ApiError::RateLimited { .. } => "Too Many Requests",
             ApiError::Internal(_) | ApiError::Database(_) => "Internal Server Error",
         }
