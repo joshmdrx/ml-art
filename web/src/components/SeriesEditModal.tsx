@@ -59,8 +59,15 @@ export function SeriesEditModal({
   onDeleted,
   onClose,
 }: Props) {
-  const isCreate = target === "new";
-  const existing = target && target !== "new" ? target : null;
+  // After a successful create, we self-promote into edit mode without
+  // closing the modal — the parent still owns `target` and doesn't know
+  // to upgrade "new" to the new id, so we shadow it with `justCreated`.
+  // Lets the Artworks tab unlock + the user pick membership in the
+  // same flow they used to create the series.
+  const [justCreated, setJustCreated] = useState<StudioSeries | null>(null);
+  const existing: StudioSeries | null =
+    justCreated ?? (target && target !== "new" ? target : null);
+  const isCreate = existing === null;
 
   const [tab, setTab] = useState<Tab>("details");
   const [title, setTitle] = useState("");
@@ -79,19 +86,31 @@ export function SeriesEditModal({
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!open) return;
+    // Reset the create-mode self-promotion on each open. Without this,
+    // an artist closing the modal then re-opening "+ New series" would
+    // see the previously-created series's id still active.
+    setJustCreated(null);
     setTab("details");
     setError(null);
     setConfirmDelete(false);
-    if (existing) {
-      setTitle(existing.title);
-      setStatement(existing.statement ?? "");
-      setCoverArtworkId(existing.cover_artwork_id);
+    // Compute initial form state from the parent's `target` directly
+    // — NOT from the derived `existing`, which also tracks
+    // `justCreated`. Keying on `existing` would re-fire this effect
+    // after a successful create-mode self-promotion and immediately
+    // wipe the just-created state, sending us back to a blank Details
+    // tab. The parent's target only changes on open / close.
+    const initial: StudioSeries | null =
+      target && target !== "new" ? target : null;
+    if (initial) {
+      setTitle(initial.title);
+      setStatement(initial.statement ?? "");
+      setCoverArtworkId(initial.cover_artwork_id);
       // Pre-check artworks whose `series_id` already matches this
       // series — `StudioArtworkSummary.series_id` (T-058) surfaces it
       // server-side so the modal opens with current membership ticked.
       const members = new Set<string>();
       for (const a of artworks) {
-        if (a.series_id === existing.id) {
+        if (a.series_id === initial.id) {
           members.add(a.id);
         }
       }
@@ -102,7 +121,7 @@ export function SeriesEditModal({
       setCoverArtworkId(null);
       setMemberIds(new Set());
     }
-  }, [open, existing, artworks]);
+  }, [open, target, artworks]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const onSubmitDetails = useCallback(
@@ -130,18 +149,20 @@ export function SeriesEditModal({
           statement: statement.trim() === "" ? null : statement.trim(),
           cover_artwork_id: coverArtworkId,
         };
+        const wasCreate = isCreate;
         const saved = existing
           ? await patchSeries(existing.id, body)
           : await createSeries(body);
         onSaved(saved);
-        if (isCreate) {
-          // Switch to the artworks tab so the user can pick membership
-          // without losing momentum.
+        if (wasCreate) {
+          // Self-promote into edit mode for the newly-created series
+          // and flip to the Artworks tab so the artist can attach
+          // works in the same flow. The parent still has
+          // `target === "new"`; the modal's local `justCreated` shadows
+          // it so `existing`, `isCreate`, and the Artworks tab's
+          // `disabled` state all flip correctly.
+          setJustCreated(saved);
           setTab("artworks");
-          // Replace target so subsequent saves go via PATCH. The parent
-          // closes the modal on its own router refresh; ours stays
-          // open here so the artworks tab keeps the just-created id.
-          // (Achieved via the `onSaved` callback updating local state.)
         } else {
           onClose();
         }
