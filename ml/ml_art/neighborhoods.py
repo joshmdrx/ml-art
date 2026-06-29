@@ -227,14 +227,21 @@ def persist(conn: psycopg.Connection, labelled: list[LabelledCluster]) -> None:
             rep_ids = [r.id for r in reps]
             is_featured = idx < FEATURED_COUNT
 
+            # Write the cluster centroid alongside the row — T-061's
+            # calibrator filters on `cluster_centroid IS NOT NULL`,
+            # and so will any future similarity-based surface. We
+            # already have the centroid in memory; the cost of writing
+            # it is ~4KB per row.
             cur.execute(
                 """
                 INSERT INTO neighborhoods (
                     slug, name, description, kind,
                     representative_artwork_ids, artwork_count,
-                    is_featured, display_order
+                    is_featured, display_order,
+                    cluster_centroid
                 ) VALUES (%s, %s, %s, 'semantic',
-                          %s::uuid[], %s, %s, %s)
+                          %s::uuid[], %s, %s, %s,
+                          %s::vector)
                 RETURNING id
                 """,
                 (
@@ -245,6 +252,10 @@ def persist(conn: psycopg.Connection, labelled: list[LabelledCluster]) -> None:
                     lc.cluster.size,
                     is_featured,
                     idx,
+                    # Pass as a literal "[v1,v2,...]" string so psycopg
+                    # routes it through the vector cast above without
+                    # needing the pgvector psycopg adapter registered.
+                    "[" + ",".join(f"{x:.6f}" for x in lc.cluster.centroid) + "]",
                 ),
             )
             (neighborhood_id,) = cur.fetchone()
