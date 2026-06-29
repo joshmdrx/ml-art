@@ -1454,6 +1454,31 @@ export async function postCalibratePick(body: unknown): Promise<Response> {
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// T-056 — personalised recommendations
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type ForYouResponse = {
+  items: ArtworkSummary[];
+  /** True when the user clears `interaction_count >= 5` and has a taste
+   *  vector. False is the cold-start case; the homepage falls back to
+   *  the default surface in that case. */
+  eligible: boolean;
+};
+
+/** SSR-friendly fetch for the homepage "For you" row. Falls back to
+ *  `{eligible: false, items: []}` on any failure so a transient blip
+ *  doesn't break the page — the fallback row still renders. */
+export async function getForYou(init?: RequestInit): Promise<ForYouResponse> {
+  try {
+    const res = await apiFetch("/v1/me/recommendations/for-you", init);
+    if (!res.ok) return { items: [], eligible: false };
+    return (await res.json()) as ForYouResponse;
+  } catch {
+    return { items: [], eligible: false };
+  }
+}
+
 /** Queue a "follow this artist when I sign up" intent against the
  *  anon-id cookie. The merge-anonymous handler drains + replays after
  *  sign-in. Idempotent. Best-effort — failures are non-fatal (the user
