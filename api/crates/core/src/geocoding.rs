@@ -328,6 +328,59 @@ pub async fn geocode_and_update(
     Ok(())
 }
 
+/// T-081 — venue-side parallel to `geocode_and_update`. Reads the
+/// venue's address, calls the geocoder, writes the result back.
+/// Idempotent (no-op when the row is deleted between enqueue and run).
+pub async fn geocode_and_update_venue(
+    client: &GeocodingClient,
+    pool: &Pool,
+    venue_id: Uuid,
+) -> Result<(), GeocodeError> {
+    let row: Option<(Option<String>,)> = sqlx::query_as(
+        r#"SELECT address FROM venues
+           WHERE id = $1 AND deleted_at IS NULL"#,
+    )
+    .bind(venue_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some((Some(address),)) = row else {
+        debug!(%venue_id, "venue row gone or address NULL before geocode ran");
+        return Ok(());
+    };
+
+    match client.geocode_address(&address).await? {
+        Some(g) => {
+            sqlx::query(
+                r#"UPDATE venues
+                   SET lat = $2, lng = $3, city = $4, country = $5,
+                       geocoded_at = $6, updated_at = $6
+                   WHERE id = $1"#,
+            )
+            .bind(venue_id)
+            .bind(g.lat)
+            .bind(g.lng)
+            .bind(g.city)
+            .bind(g.country)
+            .bind(Utc::now())
+            .execute(pool)
+            .await?;
+        }
+        None => {
+            sqlx::query(
+                r#"UPDATE venues
+                   SET geocoded_at = $2, updated_at = $2
+                   WHERE id = $1"#,
+            )
+            .bind(venue_id)
+            .bind(Utc::now())
+            .execute(pool)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────

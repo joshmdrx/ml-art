@@ -21,6 +21,7 @@ mod serde_helpers;
 pub mod series;
 pub mod studio;
 pub mod uploads;
+pub mod venues;
 pub mod webhooks;
 
 use axum::{
@@ -307,6 +308,42 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         )
         // T-083.5 — read-only audit log viewer.
         .route("/v1/admin/audit-log", get(admin::audit_log::list))
+        // ── Venues (T-081). Studio side: the venue owner manages
+        // their listings + invites artworks. Artist side: pending-
+        // invitation inbox + accept / decline. Public side: index
+        // + per-venue detail.
+        .route(
+            "/v1/studio/venues",
+            get(venues::list_own).post(venues::create),
+        )
+        .route(
+            "/v1/studio/venues/:id",
+            get(venues::detail_own)
+                .patch(venues::patch)
+                .delete(venues::delete),
+        )
+        .route(
+            "/v1/studio/venues/:venue_id/artworks",
+            get(venues::list_venue_artworks),
+        )
+        .route(
+            "/v1/studio/venues/:venue_id/artworks/:artwork_id",
+            post(venues::invite_artwork).delete(venues::uninvite_artwork),
+        )
+        .route(
+            "/v1/studio/venue-requests",
+            get(venues::list_venue_requests),
+        )
+        .route(
+            "/v1/studio/venue-requests/:venue_id/:artwork_id/accept",
+            post(venues::accept_request),
+        )
+        .route(
+            "/v1/studio/venue-requests/:venue_id/:artwork_id/decline",
+            post(venues::decline_request),
+        )
+        .route("/v1/venues", get(venues::public_list))
+        .route("/v1/venues/:slug", get(venues::public_detail))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         // CORS: browser-direct calls from the Next dev server / future web
