@@ -453,6 +453,11 @@ export interface SearchParams {
    * shifts the anchor along its δ-vector at α=0.8 server-side.
    * Requires `image_upload_id` *or* `seed_artwork_id`. T-010 Phase C. */
   modifiers?: string;
+  /** T-082 — free-form "refine with text" bias. Adds a fourth RRF
+   * channel server-side. Only fires when a primary signal (q OR
+   * image_upload_id OR seed_artwork_id) is also set; otherwise the
+   * server silently drops it. Soft-capped at 500 chars. */
+  refine?: string;
   /** Opaque cursor from a prior response's `next_cursor`. T-037. */
   cursor?: string;
 }

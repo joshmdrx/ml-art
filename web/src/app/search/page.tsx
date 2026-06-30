@@ -3,6 +3,7 @@ import { TopNav } from "@/components/TopNav";
 import { ArtworkGrid } from "@/components/ArtworkGrid";
 import { FilterBar } from "@/components/FilterBar";
 import { ModifierBar } from "@/components/ModifierBar";
+import { RefineBar } from "@/components/RefineBar";
 import { SearchSplitView } from "@/components/SearchSplitView";
 import {
   getArtwork,
@@ -56,6 +57,10 @@ type Search = {
   seed_artwork_id?: string;
   /** Comma-separated modifier names. Server rejects unknown values. */
   modifiers?: string;
+  /** T-082 — free-form refine bias text. Only fires server-side when
+   * a primary signal (q OR image_upload_id OR seed_artwork_id) is set;
+   * the UI gates the affordance on the same condition. */
+  refine?: string;
   /** Surfaced by `actions/visualSearch::uploadAndStartVisualSearch`
    * when the upload itself failed. */
   upload_error?: string;
@@ -117,6 +122,7 @@ export default async function SearchPage({
     image_upload_id: sp.image_upload_id?.trim() || undefined,
     seed_artwork_id: sp.seed_artwork_id?.trim() || undefined,
     modifiers: sp.modifiers?.trim() || undefined,
+    refine: sp.refine?.trim() || undefined,
     limit: GRID_PAGE_LIMIT,
   };
 
@@ -302,6 +308,12 @@ export default async function SearchPage({
         {visualMode && modifiers.length > 0 && (
           <ModifierBar modifiers={modifiers} />
         )}
+
+        {/* T-082 — refine-with-text. Gated on having a primary signal
+            (q OR visual anchor); RefineBar self-checks via searchParams.
+            Sits below modifiers because it's the parallel concept for
+            free-form ranking biases. */}
+        <RefineBar />
 
         <FilterBar
           availableFilters={["medium", "price", "size", "availability", "location"]}
