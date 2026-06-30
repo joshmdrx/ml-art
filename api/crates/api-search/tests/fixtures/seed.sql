@@ -102,13 +102,20 @@ WHERE fx.code = a.currency AND a.price_cents IS NOT NULL;
 -- ─────────────────────────────────────────────────────────────────────────────
 
 INSERT INTO artwork_images (
-    artwork_id, s3_key, width, height, is_primary, display_order, moderation_status
+    id, artwork_id, s3_key, width, height, is_primary, display_order,
+    moderation_status, moderation_reason
 ) VALUES
-  ('bbb11111-1111-1111-1111-111111111111', 'test/alice/1.jpg', 1200, 900, true, 0, 'approved'),
-  ('bbb22222-2222-2222-2222-222222222222', 'test/alice/2.jpg', 1200, 900, true, 0, 'approved'),
-  ('bbb33333-3333-3333-3333-333333333333', 'test/bruno/1.jpg',  900, 1200, true, 0, 'approved'),
-  ('bbb44444-4444-4444-4444-444444444444', 'test/bruno/2.jpg',  900, 1200, true, 0, 'approved'),
-  ('bbb55555-5555-5555-5555-555555555555', 'test/carmen/1.jpg', 1000, 1000, true, 0, 'approved');
+  (gen_random_uuid(), 'bbb11111-1111-1111-1111-111111111111', 'test/alice/1.jpg', 1200,  900, true, 0, 'approved', NULL),
+  (gen_random_uuid(), 'bbb22222-2222-2222-2222-222222222222', 'test/alice/2.jpg', 1200,  900, true, 0, 'approved', NULL),
+  (gen_random_uuid(), 'bbb33333-3333-3333-3333-333333333333', 'test/bruno/1.jpg',  900, 1200, true, 0, 'approved', NULL),
+  (gen_random_uuid(), 'bbb44444-4444-4444-4444-444444444444', 'test/bruno/2.jpg',  900, 1200, true, 0, 'approved', NULL),
+  (gen_random_uuid(), 'bbb55555-5555-5555-5555-555555555555', 'test/carmen/1.jpg', 1000, 1000, true, 0, 'approved', NULL),
+  -- T-083.3 — rejected image for admin override tests. Pinned id so
+  -- the tests can target it without joining. is_primary=false so it
+  -- doesn't collide with the existing primary on bbb55555.
+  ('eee11111-1111-1111-1111-111111111111',
+   'bbb55555-5555-5555-5555-555555555555',
+   'test/carmen/rejected.jpg', 800, 800, false, 1, 'rejected', 'EXPLICIT_NUDITY');
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Embeddings (1024-dim, 1.0 at distinct positions so similarities are well-defined)

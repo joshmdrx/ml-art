@@ -15,6 +15,7 @@
 import { revalidatePath } from "next/cache";
 import {
   adminArtistTransition,
+  adminImageOverride,
   type AdminArtistTransition,
 } from "@/lib/api";
 
@@ -26,6 +27,15 @@ export async function transitionArtist(
   // After a transition the admin's queue view + the public artist page
   // both need to reflect the new status.
   revalidatePath("/admin/artists");
+  revalidatePath("/admin");
+  return result;
+}
+
+export async function overrideImageRejection(
+  id: string,
+): Promise<{ id: string; moderation_status: string }> {
+  const result = await adminImageOverride(id);
+  revalidatePath("/admin/images");
   revalidatePath("/admin");
   return result;
 }

@@ -297,6 +297,14 @@ pub fn build_app(state: Arc<AppState>) -> Router {
             "/v1/admin/artists/:id/unpause",
             post(admin::artists::unpause),
         )
+        // T-083.3 — image moderation override queue. Auto-moderator
+        // (T-008) writes `moderation_status='rejected'` rows; the
+        // admin reviews them here and can flip back to approved.
+        .route("/v1/admin/images", get(admin::images::list))
+        .route(
+            "/v1/admin/images/:id/override",
+            post(admin::images::override_approve),
+        )
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         // CORS: browser-direct calls from the Next dev server / future web

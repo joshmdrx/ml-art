@@ -1099,6 +1099,57 @@ export async function adminArtistTransition(
   return (await res.json()) as { id: string; status: string };
 }
 
+/** T-083.3 — admin image-moderation queue row. `url` is the
+ * CDN-served path built by the Rust handler so the web side doesn't
+ * need to know the bucket layout. */
+export interface AdminImageItem {
+  id: string;
+  artwork_id: string;
+  artwork_title: string | null;
+  artist_id: string;
+  artist_slug: string;
+  artist_display_name: string;
+  s3_key: string;
+  url: string;
+  moderation_status: string;
+  moderation_reason: string | null;
+  is_primary: boolean;
+  created_at: string;
+}
+
+export async function listAdminImages(
+  opts: { status?: string; cursor?: string },
+  init?: RequestInit,
+): Promise<Paginated<AdminImageItem>> {
+  const usp = new URLSearchParams();
+  if (opts.status) usp.set("status", opts.status);
+  if (opts.cursor) usp.set("cursor", opts.cursor);
+  const qs = usp.toString();
+  const res = await apiFetch(`/v1/admin/images${qs ? `?${qs}` : ""}`, init);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`admin/images ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as Paginated<AdminImageItem>;
+}
+
+export async function adminImageOverride(
+  id: string,
+  init?: RequestInit,
+): Promise<{ id: string; moderation_status: string }> {
+  const res = await apiFetch(
+    `/v1/admin/images/${encodeURIComponent(id)}/override`,
+    { ...init, method: "POST" },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `admin/images/override ${res.status}: ${text || res.statusText}`,
+    );
+  }
+  return (await res.json()) as { id: string; moderation_status: string };
+}
+
 /** Patch the current artist's settings. Body keys are optional; only
  * include the fields you intend to change. Returns the updated artist. */
 export async function updateStudioSettings(

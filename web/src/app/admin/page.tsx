@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { TopNav } from "@/components/TopNav";
-import { listAdminArtists } from "@/lib/api";
+import { listAdminArtists, listAdminImages } from "@/lib/api";
 
 export const metadata: Metadata = {
   title: "Admin — Wander",
@@ -19,13 +19,15 @@ export default async function AdminIndexPage() {
   // Cheap fan-out for the queue counts. Each call is paginated at
   // 24; we only need the first page to detect non-empty, so the cost
   // is bounded.
-  const [pending, paused] = await Promise.all([
+  const [pending, paused, rejectedImages] = await Promise.all([
     listAdminArtists({ status: "pending" }).catch(() => null),
     listAdminArtists({ status: "paused" }).catch(() => null),
+    listAdminImages({ status: "rejected" }).catch(() => null),
   ]);
 
   const pendingCount = pending?.items.length ?? 0;
   const pausedCount = paused?.items.length ?? 0;
+  const rejectedImageCount = rejectedImages?.items.length ?? 0;
 
   return (
     <>
@@ -53,6 +55,13 @@ export default async function AdminIndexPage() {
             description="Active accounts taken offline for review."
             count={pausedCount}
             countLabel="paused"
+          />
+          <AdminTile
+            href="/admin/images"
+            title="Image moderation"
+            description="Auto-moderator rejections awaiting human review."
+            count={rejectedImageCount}
+            countLabel="rejected"
           />
         </section>
       </main>

@@ -244,3 +244,107 @@ async fn admin_approve_unknown_artist_is_404(pool: PgPool) {
     let (status, _) = send_authed(app, "POST", &uri, ADMIN_BEARER, None).await;
     assert_eq!(status, 404);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T-083.3 — image moderation override queue
+// ─────────────────────────────────────────────────────────────────────────────
+
+const REJECTED_IMAGE: &str = "eee11111-1111-1111-1111-111111111111";
+
+#[derive(Deserialize, Debug)]
+struct ImageListPage {
+    items: Vec<AdminImageItem>,
+}
+
+#[derive(Deserialize, Debug)]
+struct AdminImageItem {
+    id: String,
+    moderation_status: String,
+    moderation_reason: Option<String>,
+    artist_slug: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct ImageStatusRow {
+    id: String,
+    moderation_status: String,
+    moderation_reason: Option<String>,
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn admin_images_list_requires_admin(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+    let (status, _) = send_authed(app, "GET", "/v1/admin/images", ALICE_BEARER, None).await;
+    assert_eq!(status, 403);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn admin_images_list_defaults_to_rejected(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+    let (status, page): (_, ImageListPage) =
+        get_json_authed(app, "/v1/admin/images", ADMIN_BEARER).await;
+    assert_eq!(status, 200);
+    assert_eq!(page.items.len(), 1);
+    let it = &page.items[0];
+    assert_eq!(it.id, REJECTED_IMAGE);
+    assert_eq!(it.moderation_status, "rejected");
+    assert_eq!(it.moderation_reason.as_deref(), Some("EXPLICIT_NUDITY"));
+    assert_eq!(it.artist_slug, "carmen-test");
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn admin_image_override_flips_status_and_clears_reason(pool: PgPool) {
+    let app = app_with_test_auth(pool.clone());
+    let uri = format!("/v1/admin/images/{REJECTED_IMAGE}/override");
+    let (status, bytes) = send_authed(app, "POST", &uri, ADMIN_BEARER, None).await;
+    assert_eq!(status, 200);
+    let row: ImageStatusRow = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(row.moderation_status, "approved");
+    assert!(row.moderation_reason.is_none());
+
+    // Audit row written, target_kind=image.
+    let (action, target_kind): (String, String) = sqlx::query_as(
+        "SELECT action, target_kind FROM admin_audit_log
+         WHERE target_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(uuid::Uuid::parse_str(REJECTED_IMAGE).unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(action, "image.override_approve");
+    assert_eq!(target_kind, "image");
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn admin_image_override_already_approved_is_noop(pool: PgPool) {
+    // Pick the existing approved primary image on alice's Blue Morning.
+    // It's `approved` in the seed, so override is the no-op branch.
+    let id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM artwork_images WHERE artwork_id = $1 AND is_primary = true")
+            .bind(uuid::Uuid::parse_str("bbb11111-1111-1111-1111-111111111111").unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let app = app_with_test_auth(pool.clone());
+    let uri = format!("/v1/admin/images/{id}/override");
+    let (status, _) = send_authed(app, "POST", &uri, ADMIN_BEARER, None).await;
+    assert_eq!(status, 200);
+
+    let audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint FROM admin_audit_log WHERE target_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audit_count, 0);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn admin_image_override_unknown_image_is_404(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+    let uri = format!("/v1/admin/images/{UNKNOWN_ARTIST}/override"); // any unknown uuid
+    let (status, _) = send_authed(app, "POST", &uri, ADMIN_BEARER, None).await;
+    assert_eq!(status, 404);
+}
