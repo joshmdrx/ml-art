@@ -17,6 +17,78 @@ Format:
 
 ---
 
+## 2026-06-30 — T-082: refine-with-text — fourth RRF channel, not anchor mutation
+
+**Context:** Visual search has carried two ranking-modifier primitives
+since T-010:
+- The anchor vector itself (one of: `q` text embed, `image_upload_id`,
+  `seed_artwork_id`) drives the semantic channel.
+- Fixed-vocabulary modifiers (moodier / warmer / quieter / …) shift
+  the anchor at α=0.8 via precomputed δ-vectors anchored on WikiArt.
+
+Both serve "I want results biased toward X." Neither covers "I want
+results like this image **but more abstract**" where X is open-ended —
+the user has a phrase, not a δ in our fixed registry.
+
+**Decided:** Add a fourth RRF channel `refine_ranked` parallel to
+keyword + semantic + taste. `?refine=TEXT` embeds via Jina (same path
+as `?q=`), the resulting vector contributes a `ROW_NUMBER() OVER
+(ORDER BY embedding <=> refine_vec)` ranking, blended into rrf_score
+via the same `1/(60+rk)` shape.
+
+Refine **joins the candidate-contribution clause**
+(`k.id IS NOT NULL OR s.id IS NOT NULL OR r.id IS NOT NULL`), unlike
+taste which only re-ranks. The user typing "abstract" wants us to
+pull abstract works in *even if the visual anchor missed them* —
+that's the whole point of refine. Taste is "given these candidates,
+rank by what I like"; refine is "consider these too, then rank."
+
+Refine is silently dropped when no primary signal is set (no q, no
+image_upload_id, no seed_artwork_id). Promoting refine into the
+keyword channel in that case would be technically possible but
+behaviour-confusing: `?refine=cats` would silently become `?q=cats`
+with no explanation. Better to no-op so the URL contract is honest.
+
+**Alternatives:**
+
+- **Pre-blend refine into the anchor at some α** (like modifiers).
+  Rejected: refine is *additive* preference, not a *shift* in style.
+  Modifiers' WikiArt-validated δ-vectors are calibrated for shifting
+  along an axis; arbitrary free-form text isn't. Pre-blending would
+  also lose the per-channel ranking guarantee RRF provides — a single
+  weak refine signal would corrupt the strong visual anchor.
+- **Boost the keyword channel for terms in refine.** Rejected:
+  refine is semantic, not lexical. "Abstract" the concept and
+  "abstract" the substring are different signals; refine wants the
+  former, the keyword channel offers the latter.
+- **Replace the fixed-vocabulary modifiers entirely.** Rejected:
+  modifiers are one-click quick deltas with well-tested behaviour;
+  refine is the free-form sibling for cases modifiers don't cover.
+  Different ergonomics, both have value. Keeping both also gives us
+  a place to land "common refines" as new fixed modifiers later
+  without breaking either path.
+- **Compose refine over modifiers (δ-vector form).** Rejected: no
+  closed-form way to compute a δ-vector from arbitrary text without
+  a reference anchor (modifiers' deltas are calibrated against
+  WikiArt centroids — free-form text has no equivalent calibration).
+
+**Why:** RRF fuses ranked lists without requiring weight tuning across
+heterogeneous signals — that's its whole pitch. Adding a fourth
+channel costs one CTE + one term in the fusion expression, naturally
+calibrated by `k=60`. The semantic + taste channels already proved
+the shape; refine is the third repetition of the same pattern.
+
+A defensive 500-char cap guards against malicious callers spending
+our Jina budget on long inputs; one embed per request, same as the
+existing `q=` and modifier paths.
+
+**Reversibility:** Medium. The channel itself is one CTE — removing
+it is mechanical. The user-facing URL contract `?refine=…` is the
+sticky part: deprecating it would be a breaking change for any
+bookmarked URLs.
+
+---
+
 ## 2026-06-25 — T-057: algorithmic neighbourhoods — HDBSCAN over normalised CLIP, evocative Claude labels, pure-rebuild persistence
 
 **Context:** `/neighborhoods` was populated by a single hand-curated

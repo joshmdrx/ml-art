@@ -514,7 +514,15 @@ Threshold deliberately lowered from the spec's `>= 10` to `>= 5` — a completed
 - Venue-level events / "this work on display until X date".
 - Venue follow / notifications (parallel to artist follow).
 
-### `T-082` Refine-with-text on visual search
+### ~~`T-082` Refine-with-text on visual search~~ ✓ shipped 2026-06-30
+
+Three sub-commits closing the feature end-to-end:
+
+- **T-082.1** — Backend. `refine_ranked` CTE in `search.rs`'s `run_hybrid`, fourth RRF channel alongside keyword + semantic + taste. Joins the candidate-contribution clause (refine can pull in works the visual anchor missed) and adds `1/(60+rk)` to rrf_score. Only fires when a primary signal is also set (q / image_upload_id / seed_artwork_id); refine alone is silently dropped. Defensive 500-char input cap. 5 integration tests.
+- **T-082.2** — Web UI. New `RefineBar` component between `ModifierBar` and `FilterBar`. Collapsed "+ Add refinement" → text input + Apply → active chip with × to clear. URL-driven via `?refine=…`. UI gates on primary-signal presence so the affordance never lies.
+- **T-082.3** — Docs. `decisions.md` 2026-06-30 captures the alternatives (pre-blend into anchor, keyword boost, replace fixed modifiers, δ-vector compose) and why a 4th RRF channel is the right shape. `CHANGELOG.md` entry. `search_executed` event gains a `refine` property for funnel analytics.
+
+**Original scope (kept for archaeology):**
 **Where:** `api-search::search` (new `refine_ranked` CTE); `web/src/components/FilterBar.tsx` or a sibling refine control; URL param `?refine=...`.
 **Why:** Visual search today is: "this image as the anchor + optional fixed-vocabulary modifiers (moodier / warmer / etc)." The modifiers cover a fixed delta vocabulary; they don't help when a user wants to say "this painting but more abstract" or "this sculpture but in stone." Free-form refine text adds an open-ended channel without dropping the visual anchor.
 

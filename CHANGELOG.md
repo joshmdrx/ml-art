@@ -3,6 +3,54 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-30 — T-082: Refine-with-text on /search
+
+Free-form ranking bias for visual + text search. The fixed-vocabulary
+modifiers (moodier / warmer / quieter / …) cover known deltas; refine
+covers everything else — "like this image but more abstract," "this
+painting but in a quieter palette." Composes with all three primary
+signals: text query, image upload, seed artwork.
+
+Backend (`api/crates/api-search/src/search.rs`):
+
+- New `?refine=TEXT` query param on `/v1/search`. Embedded via
+  `Embedder::embed_text` (same Jina path + cache as `?q=`).
+- New `refine_ranked` CTE inside `run_hybrid`, mirroring the shape of
+  `semantic_ranked` / `taste_ranked`. Contributes
+  `1.0/(60 + r.rk)` to the rrf_score and joins the
+  candidate-contribution clause (`k.id IS NOT NULL OR s.id IS NOT NULL
+  OR r.id IS NOT NULL`) so refine can pull in works the visual anchor
+  missed.
+- Only fires when a primary signal (q / image_upload_id /
+  seed_artwork_id) is also set; refine alone is silently dropped
+  rather than promoted into the keyword channel.
+- Defensive 500-char cap on the input — one Jina embed per request,
+  same cost shape as `?q=`. Over-cap → 400.
+- Per-request log line when active. `search_executed` event gains a
+  `refine` property for funnel analytics.
+- 5 new integration tests (no-primary no-op, q+refine fires, oversized
+  rejection, disabled-embedder graceful, empty-string ignored).
+
+Web (`web/src/components/RefineBar.tsx` + `app/search/page.tsx` +
+`lib/api.ts`):
+
+- New `RefineBar` component sits between `ModifierBar` and `FilterBar`.
+  Collapsed by default ("+ Add refinement"); click expands into a
+  text input + Apply button. Active refine shows as a chip with the
+  text + × to clear.
+- URL-driven via `?refine=…`, matches the rest of /search.
+- UI mirrors the backend's primary-signal gate — the bar doesn't
+  render if there's no q / image_upload_id / seed_artwork_id, so the
+  affordance never promises something the backend would silently
+  drop.
+- 500-char client cap is defence-in-depth, not the only validation.
+
+Why a separate channel rather than mixing refine into the anchor:
+RRF gives natural calibration across heterogeneous ranking signals
+without weight tuning. A 4th channel composes cleanly; pre-blending
+refine into the visual anchor would lose the per-channel ranking
+guarantee. See `decisions.md` 2026-06-30 for the full alternatives.
+
 ## 2026-06-26 — T-061: First-session taste calibrator
 
 Cold-start UX: a homepage panel that asks new visitors to pick 1-of-2
