@@ -1179,6 +1179,230 @@ export async function listAdminAuditLog(
   return (await res.json()) as Paginated<AuditLogEntry>;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// T-081 — venues
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type VenueKind =
+  | "gallery"
+  | "shop"
+  | "studio_collective"
+  | "cafe_collab"
+  | "other";
+
+export type VenueStatus =
+  | "pending_review"
+  | "active"
+  | "paused"
+  | "declined";
+
+export interface Venue {
+  id: string;
+  slug: string;
+  name: string;
+  kind: VenueKind;
+  about: string | null;
+  address: string | null;
+  city: string | null;
+  country: string | null;
+  lat: number | null;
+  lng: number | null;
+  geocoded_at: string | null;
+  website_url: string | null;
+  instagram_handle: string | null;
+  opening_info: string | null;
+  owner_user_id: string;
+  status: VenueStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateVenueBody {
+  name: string;
+  kind: VenueKind;
+  about?: string;
+  address?: string;
+  website_url?: string;
+  instagram_handle?: string;
+  opening_info?: string;
+  slug?: string;
+}
+
+export type PatchVenueBody = Partial<Omit<CreateVenueBody, "slug">>;
+
+export interface VenueArtworkRow {
+  venue_id: string;
+  artwork_id: string;
+  artwork_title: string | null;
+  artist_id: string;
+  artist_slug: string;
+  artist_display_name: string;
+  status: "pending" | "accepted" | "declined";
+  requested_at: string;
+  decided_at: string | null;
+}
+
+export interface VenueRequest {
+  venue_id: string;
+  venue_slug: string;
+  venue_name: string;
+  venue_kind: VenueKind;
+  venue_city: string | null;
+  venue_country: string | null;
+  artwork_id: string;
+  artwork_title: string | null;
+  status: "pending" | "accepted" | "declined";
+  requested_at: string;
+}
+
+export async function listStudioVenues(init?: RequestInit): Promise<Venue[]> {
+  const res = await apiFetch("/v1/studio/venues", init);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`studio/venues ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as Venue[];
+}
+
+export async function getStudioVenue(
+  id: string,
+  init?: RequestInit,
+): Promise<Venue | null> {
+  const res = await apiFetch(
+    `/v1/studio/venues/${encodeURIComponent(id)}`,
+    init,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`studio/venues/:id ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as Venue;
+}
+
+export async function createStudioVenue(
+  body: CreateVenueBody,
+  init?: RequestInit,
+): Promise<Venue> {
+  const res = await apiFetch("/v1/studio/venues", {
+    ...init,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`studio/venues POST ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as Venue;
+}
+
+export async function patchStudioVenue(
+  id: string,
+  body: PatchVenueBody,
+  init?: RequestInit,
+): Promise<Venue> {
+  const res = await apiFetch(`/v1/studio/venues/${encodeURIComponent(id)}`, {
+    ...init,
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`studio/venues PATCH ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as Venue;
+}
+
+export async function deleteStudioVenue(
+  id: string,
+  init?: RequestInit,
+): Promise<void> {
+  const res = await apiFetch(`/v1/studio/venues/${encodeURIComponent(id)}`, {
+    ...init,
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`studio/venues DELETE ${res.status}: ${text || res.statusText}`);
+  }
+}
+
+export async function listVenueArtworks(
+  venueId: string,
+  init?: RequestInit,
+): Promise<VenueArtworkRow[]> {
+  const res = await apiFetch(
+    `/v1/studio/venues/${encodeURIComponent(venueId)}/artworks`,
+    init,
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `studio/venues/:id/artworks ${res.status}: ${text || res.statusText}`,
+    );
+  }
+  return (await res.json()) as VenueArtworkRow[];
+}
+
+export async function inviteArtworkToVenue(
+  venueId: string,
+  artworkId: string,
+  init?: RequestInit,
+): Promise<void> {
+  const res = await apiFetch(
+    `/v1/studio/venues/${encodeURIComponent(venueId)}/artworks/${encodeURIComponent(artworkId)}`,
+    { ...init, method: "POST" },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`venues invite ${res.status}: ${text || res.statusText}`);
+  }
+}
+
+export async function uninviteArtworkFromVenue(
+  venueId: string,
+  artworkId: string,
+  init?: RequestInit,
+): Promise<void> {
+  const res = await apiFetch(
+    `/v1/studio/venues/${encodeURIComponent(venueId)}/artworks/${encodeURIComponent(artworkId)}`,
+    { ...init, method: "DELETE" },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`venues uninvite ${res.status}: ${text || res.statusText}`);
+  }
+}
+
+export async function listVenueRequests(
+  init?: RequestInit,
+): Promise<VenueRequest[]> {
+  const res = await apiFetch("/v1/studio/venue-requests", init);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`venue-requests ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as VenueRequest[];
+}
+
+export async function decideVenueRequest(
+  venueId: string,
+  artworkId: string,
+  decision: "accept" | "decline",
+  init?: RequestInit,
+): Promise<void> {
+  const res = await apiFetch(
+    `/v1/studio/venue-requests/${encodeURIComponent(venueId)}/${encodeURIComponent(artworkId)}/${decision}`,
+    { ...init, method: "POST" },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`venue-requests ${decision} ${res.status}: ${text || res.statusText}`);
+  }
+}
+
 /** Patch the current artist's settings. Body keys are optional; only
  * include the fields you intend to change. Returns the updated artist. */
 export async function updateStudioSettings(
