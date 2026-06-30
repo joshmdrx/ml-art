@@ -13,4 +13,5 @@
 //! reflecting the admin's intent.
 
 pub mod artists;
+pub mod audit_log;
 pub mod images;

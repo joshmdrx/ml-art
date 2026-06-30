@@ -549,56 +549,30 @@ Three sub-commits closing the feature end-to-end:
 - **T-082.2** — Web UI: refine input on `/search`.
 - **T-082.3** — Docs + decisions.
 
-### `T-083` Admin surface — approval queues + audit log
-**Where:** New migration (`users.is_admin` boolean + `admin_audit_log` table); new `AdminUser` extractor in `api/crates/core/src/auth/`; new `/v1/admin/*` API surface; new `/admin/*` web routes.
-**Why:** Three real surfaces today need human approval before going public: artists (`status='pending'`), images (`moderation_status='rejected'` overrides), and soon venues (T-081 `status='pending_review'`). All are handled today via direct psql edits. That's manageable at single-digit scale and broken everywhere above. Pulling forward pre-launch unblocks proper operating without ad-hoc database edits.
+### ~~`T-083` Admin surface — approval queues + audit log~~ ✓ shipped 2026-06-30
 
-**Decisions confirmed 2026-06-29:**
-- `users.is_admin BOOLEAN DEFAULT false` (column, not a separate table). Single admin pre-launch; column is cheaper. Migrate to a roles table if and when multi-admin / scoped roles appear.
-- **Bootstrap admin = `mrjoshuajmatthews@gmail.com`** (not the dev-tooling identity).
-- `admin_audit_log` from day 1 — retrofitting audit later is awful. Every admin action writes a row before the mutation. Forever-retention (table will be tiny in row count for years).
-- Defer inquiry abuse / report queues. Real once we have signed-up users at volume; not before.
-- Soft state for declined artists / venues: `status='declined' + decided_at`. They can be flipped back to `pending` if they appeal. Never hard-delete a user record.
-- Non-admins get a 404 on `/admin/*` — no "you don't have access" page (info disclosure).
+Four sub-commits closing the foundational admin surface:
 
-**Acceptance:**
-- Migration `0025_admin.sql`:
-  - `ALTER TABLE users ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT false;`
-  - `CREATE INDEX users_is_admin_idx ON users (is_admin) WHERE is_admin = true;` (partial; very few admins ever).
-  - `CREATE TABLE admin_audit_log (id uuid PK default uuidv7(), admin_user_id uuid not null references users, action text not null, target_kind text not null, target_id uuid, before_jsonb jsonb, after_jsonb jsonb, context jsonb, created_at timestamptz default now())` + index on `(created_at desc)`.
-  - Bootstrap: `UPDATE users SET is_admin=true WHERE email = 'mrjoshuajmatthews@gmail.com';` (idempotent — no-op if the row doesn't exist yet).
-- Extractor: `AdminUser` composes on `AuthedUser` + asserts `is_admin=true`. 403 otherwise. Single chokepoint for all admin endpoints.
-- Audit helper: `core::admin::audit::record(pool, admin_id, action, target_kind, target_id, before, after, ctx)` — called before every mutation.
-- API endpoints (all under `/v1/admin/`):
-  - `GET /v1/admin/artists?status=pending` (paginated)
-  - `POST /v1/admin/artists/:id/approve` (status pending → active; writes audit)
-  - `POST /v1/admin/artists/:id/decline` (status pending → declined; writes audit)
-  - `POST /v1/admin/artists/:id/pause` / `.../unpause`
-  - `GET /v1/admin/images?status=rejected` (paginated; joins artwork + artist for context)
-  - `POST /v1/admin/images/:id/override` (flips `moderation_status='approved'` + clears `moderation_reason`; writes audit)
-  - `GET /v1/admin/venues?status=pending_review` + approve/decline (lands with T-081)
-  - `GET /v1/admin/audit-log?cursor=...` (paginated read-only)
-- Web:
-  - `/admin` — index page with section links + recent activity feed (last 10 audit rows).
-  - `/admin/artists` — pending queue + approve/decline buttons via server actions + `useConfirm()` + `toast.success()`.
-  - `/admin/images` — rejected queue with thumbnails + reason badges + override button.
-  - `/admin/venues` — pending queue (with T-081).
-  - `/admin/audit-log` — paginated read-only viewer.
-  - Non-admins get `notFound()` from every `/admin/*` route — no link visible anywhere else in the UI.
-- Tests: ≥8 integration tests asserting (a) non-admin gets 403 on every endpoint, (b) every mutation writes an audit row, (c) approve / decline transitions are correct, (d) idempotent re-approve no-ops cleanly.
+- **T-083.1** — Schema + backend. Migration `0024_admin_audit_log.sql` adds the audit table + bootstrap UPDATE on `mrjoshuajmatthews@gmail.com`. `core::auth::ADMIN_EMAILS` + auto-promote in `upsert_user`. `core::admin::audit::record` chokepoint. `AdminUser` extractor in api-search (403 for non-admins). `/v1/admin/artists` endpoints: list (paginated, status-filtered) + approve / decline / pause / unpause via a shared `transition` helper that asserts legal source state, writes audit, applies UPDATE. 11 integration tests.
+- **T-083.2** — Web `/admin` shell + artists queue. Layout-level `notFound()` gate for non-admins. `/admin` index with queue-count tiles. `/admin/artists` with status tabs + `AdminArtistRow` client component (useConfirm for destructive transitions; toast.success on result).
+- **T-083.3** — Image moderation override queue. Backend `/v1/admin/images` list + `POST /:id/override` (rejected → approved, clears `moderation_reason`, writes audit). Wire shape adds a `url` field built from `s3_key`. Web `/admin/images` page + `AdminImageRow` (50%-opacity + grayscale thumbnails; reason code chip; override goes through useConfirm). 5 more integration tests.
+- **T-083.5** — Audit log viewer + docs. `GET /v1/admin/audit-log` paginated read-only feed (joins admin email). `/admin/audit-log` web page with `<details>` diffs of before/after JSON. `decisions.md` 2026-06-30 captures the eight design choices. `CHANGELOG.md` entry. 2 more integration tests (total: 18).
 
-**Subcommit plan:**
-- **T-083.1** — Schema + `AdminUser` extractor + `/v1/admin/artists/*` endpoints + audit helper + tests.
-- **T-083.2** — Web: `/admin` shell + `/admin/artists` page + server actions.
-- **T-083.3** — Image moderation: `/v1/admin/images` + override + web page.
-- **T-083.4** — Venue review (slots into T-081 — could ship as part of T-081.4 if convenient).
-- **T-083.5** — Audit log viewer + docs.
+(T-083.4 — venue approval — slots into T-081 since the venue schema doesn't exist yet.)
 
-**Deferred follow-ups (don't block v1):**
-- Inquiry-abuse / report queues. Real once we have signed-up users at volume.
-- Multi-admin with scoped roles. Migrate `is_admin` → `admin_roles` table when needed.
-- 2FA enforcement on admin accounts (Clerk-side config — set when there are multiple admins).
-- Read-only admin role (vs full mutate). Same trigger as multi-admin.
+**Design choices** (full record in `decisions.md` 2026-06-30):
+- `users.is_admin` column over a separate roles table.
+- Auto-promote on first sign-in from a hardcoded `ADMIN_EMAILS` list.
+- Audit row written **before** the mutation it audits (captures intent even on failed mutations).
+- 403 from the API, 404 from the web layer (different lies for different audiences).
+- Idempotent re-application skips the audit; illegal source-state is 409.
+
+**Deferred follow-ups:**
+- Inquiry abuse / report queue. Real once we have signed-up users at volume.
+- Scoped admin roles (read-only vs full mutate). Migrate when second admin appears.
+- 2FA enforcement on admin accounts (Clerk-side config).
+- Audit retention windowing. The table is tiny in row count for years.
+- Re-pending a declined artist. UI affordance needs designing; not blocking pre-launch.
 
 ### `T-080` Currency-aware price filter — canonical GBP
 **Where:** New migration (`fx_rates` table + `artworks.price_gbp_cents` column); `core::fx` module; new `JobEvent::FxRatesRefresh`; `search.rs` filter swap; FilterBar label changes.

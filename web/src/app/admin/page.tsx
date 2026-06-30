@@ -64,6 +64,15 @@ export default async function AdminIndexPage() {
             countLabel="rejected"
           />
         </section>
+
+        <section className="mt-10">
+          <Link
+            href="/admin/audit-log"
+            className="text-sm text-muted hover:text-foreground underline underline-offset-2"
+          >
+            View audit log →
+          </Link>
+        </section>
       </main>
     </>
   );

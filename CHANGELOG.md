@@ -3,6 +3,75 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-06-30 — T-083: Admin surface — artist + image queues, audit log
+
+Foundational admin surface so approvals stop happening via direct psql
+edits. Three queues live at v1:
+
+- `/admin/artists` — pending applications. Approve / decline / pause /
+  unpause via per-row buttons. Tab strip on the page (Pending / Active /
+  Paused / Declined) for filtering. Destructive transitions
+  (decline, pause) go through `useConfirm`; results surface via `toast.success`.
+- `/admin/images` — auto-moderator (T-008) rejections awaiting human
+  review. 2-column thumbnail grid; each image rendered at 50% opacity
+  + grayscale to reinforce that it's hidden on public surfaces. The
+  Rekognition reason code is shown as a chip. Override flips
+  `moderation_status` rejected → approved + clears `moderation_reason`.
+- `/admin/audit-log` — read-only feed of every admin mutation,
+  newest-first. Expandable per-row `before/after` JSON view.
+
+Backend (`api/crates/api-search/src/admin/`):
+
+- New `AdminUser` extractor (`extractors.rs`) — composes on `AuthedUser`
+  + asserts `is_admin`. 403 for non-admins (the URL is correct, the
+  caller just can't operate on it).
+- `core::admin` module: `audit::record(pool, admin_id, action,
+  target_kind, target_id, before, after, context)` chokepoint called
+  before each mutation. NULL `admin_user_id` = system action.
+- 7 endpoints under `/v1/admin/`:
+  - `GET  /v1/admin/artists?status=pending` (paginated)
+  - `POST /v1/admin/artists/:id/approve | decline | pause | unpause`
+  - `GET  /v1/admin/images?status=rejected` (paginated)
+  - `POST /v1/admin/images/:id/override`
+  - `GET  /v1/admin/audit-log` (paginated)
+- Audit row is written **before** the mutation it audits — intent-to-
+  mutate is captured even if the UPDATE no-op's or 409's.
+- Idempotent re-application (already-target status) returns the row
+  with no audit clutter; illegal source-state is 409.
+
+Web (`web/src/app/admin/`):
+
+- `layout.tsx` — calls `getMe()`, `notFound()` if `is_admin === false`.
+  Single chokepoint; child pages don't repeat the check. Non-admin
+  browsers see a clean 404 — the admin surface stays invisible.
+- `page.tsx` — index landing with three queue-count tiles +
+  audit-log link.
+- `artists/page.tsx` — status-tabbed queue + `AdminArtistRow` client
+  component with the approve/decline/pause/unpause buttons.
+- `images/page.tsx` — 2-col rejected-image grid + `AdminImageRow`
+  client component with the override button.
+- `audit-log/page.tsx` — newest-first feed with `<details>` diffs.
+- `actions/admin.ts` — server-action wrappers around `lib/api`'s
+  admin helpers so client components don't pull Clerk's server-only
+  modules into the browser bundle.
+
+Schema (`0024_admin_audit_log.sql`):
+
+- `admin_audit_log (id, admin_user_id NULL, action text, target_kind
+  text, target_id, before_jsonb, after_jsonb, context jsonb,
+  created_at)` + three indexes (time-desc, by-admin, by-target).
+- Bootstrap UPDATE flips `is_admin=true` for `mrjoshuajmatthews@gmail.com`
+  (idempotent no-op if the user hasn't Clerk-signed-up yet).
+- `core::auth::ADMIN_EMAILS` + auto-promote in `upsert_user` —
+  hardcoded list of strings, OR'd against the existing flag on
+  conflict so manual promotions are never overwritten.
+
+Test coverage: 18 integration tests on the API surface (auth gates,
+list filters, every transition, idempotency, illegal-source 409,
+unknown-target 404, audit row presence + admin_email join). Plus the
+admin user + pending artist + rejected image rows in the shared
+fixture so future admin tests have stable identities to target.
+
 ## 2026-06-30 — T-082: Refine-with-text on /search
 
 Free-form ranking bias for visual + text search. The fixed-vocabulary

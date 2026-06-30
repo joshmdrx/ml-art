@@ -1150,6 +1150,35 @@ export async function adminImageOverride(
   return (await res.json()) as { id: string; moderation_status: string };
 }
 
+/** T-083.5 — audit log row. `admin_email` is joined from the users
+ * table; `null` means a system action (auto-promotion, scheduled job). */
+export interface AuditLogEntry {
+  id: string;
+  admin_user_id: string | null;
+  admin_email: string | null;
+  action: string;
+  target_kind: string;
+  target_id: string | null;
+  before_jsonb: unknown;
+  after_jsonb: unknown;
+  created_at: string;
+}
+
+export async function listAdminAuditLog(
+  opts: { cursor?: string },
+  init?: RequestInit,
+): Promise<Paginated<AuditLogEntry>> {
+  const usp = new URLSearchParams();
+  if (opts.cursor) usp.set("cursor", opts.cursor);
+  const qs = usp.toString();
+  const res = await apiFetch(`/v1/admin/audit-log${qs ? `?${qs}` : ""}`, init);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`admin/audit-log ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as Paginated<AuditLogEntry>;
+}
+
 /** Patch the current artist's settings. Body keys are optional; only
  * include the fields you intend to change. Returns the updated artist. */
 export async function updateStudioSettings(

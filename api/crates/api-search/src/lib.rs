@@ -305,6 +305,8 @@ pub fn build_app(state: Arc<AppState>) -> Router {
             "/v1/admin/images/:id/override",
             post(admin::images::override_approve),
         )
+        // T-083.5 — read-only audit log viewer.
+        .route("/v1/admin/audit-log", get(admin::audit_log::list))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         // CORS: browser-direct calls from the Next dev server / future web

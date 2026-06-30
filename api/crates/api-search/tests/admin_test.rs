@@ -348,3 +348,45 @@ async fn admin_image_override_unknown_image_is_404(pool: PgPool) {
     let (status, _) = send_authed(app, "POST", &uri, ADMIN_BEARER, None).await;
     assert_eq!(status, 404);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T-083.5 — audit log read-only viewer
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Debug)]
+struct AuditLogPage {
+    items: Vec<AuditLogEntry>,
+}
+
+#[derive(Deserialize, Debug)]
+struct AuditLogEntry {
+    action: String,
+    target_kind: String,
+    admin_email: Option<String>,
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn admin_audit_log_requires_admin(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+    let (status, _) = send_authed(app, "GET", "/v1/admin/audit-log", ALICE_BEARER, None).await;
+    assert_eq!(status, 403);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn admin_audit_log_returns_recent_actions(pool: PgPool) {
+    let app = app_with_test_auth(pool.clone());
+
+    // Perform a transition to seed an audit row.
+    let uri = format!("/v1/admin/artists/{PENDING_ARTIST}/approve");
+    let (status, _) = send_authed(app.clone(), "POST", &uri, ADMIN_BEARER, None).await;
+    assert_eq!(status, 200);
+
+    // Audit log lists it with the admin email joined in.
+    let (status, page): (_, AuditLogPage) =
+        get_json_authed(app, "/v1/admin/audit-log", ADMIN_BEARER).await;
+    assert_eq!(status, 200);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].action, "artist.approve");
+    assert_eq!(page.items[0].target_kind, "artist");
+    assert_eq!(page.items[0].admin_email.as_deref(), Some("admin@example.com"));
+}

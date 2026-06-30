@@ -17,6 +17,106 @@ Format:
 
 ---
 
+## 2026-06-30 — T-083: admin surface — column over table, audit-before-mutate, layout-level 404 gate
+
+**Context:** Three queues need human approval before going public —
+artists (`status='pending'`), images (`moderation_status='rejected'`
+overrides), and (soon) venues (T-081). All three were being handled
+via direct psql edits. The same shape kept reappearing in scope
+discussion, so the foundational pieces are worth getting right
+before they multiply.
+
+**Decided:**
+
+1. **`users.is_admin BOOLEAN` column.** Pre-existing on the table
+   (0001_init.sql); kept rather than swapped for a separate
+   `admins` table with roles. Today one admin, ever-growing
+   manually; the column is cheaper for that shape. A roles table
+   lands when (a) we have multi-admin AND (b) we have at least two
+   distinct sets of permissions worth distinguishing.
+
+2. **Auto-promote on first sign-in from a hardcoded `ADMIN_EMAILS`
+   list.** `core::auth::upsert_user` checks the list on INSERT and
+   seeds `is_admin=true` for matching emails. The migration's
+   bootstrap UPDATE handles the inverse case where the user signed
+   in before the constant landed. Either ordering converges. The
+   ON CONFLICT branch OR's the seed flag against the existing
+   value — manual promotions are never overwritten by a re-seed.
+
+   Rejected: an `admin_seed_emails` table you can INSERT into. The
+   hardcoded list is in version control, reviewable in PRs, and
+   accompanies a deploy — qualities you want for an admin grant.
+   Add a table when admins exceed ~5.
+
+3. **`admin_audit_log` from day 1.** Retrofitting audit later is
+   awful — every existing admin endpoint would need surgery to add
+   the row. Up front it's one extra INSERT per mutation. NULL
+   `admin_user_id` represents a system action (the auto-promotion
+   itself doesn't audit; future scheduled jobs that mutate state
+   will). Generic `before_jsonb` / `after_jsonb` columns avoid
+   per-target schema churn.
+
+4. **Audit BEFORE the mutation it audits.** Not in a single
+   transaction with the UPDATE. If the UPDATE fails (e.g. illegal
+   transition, row already gone) the audit still records the
+   admin's intent. "Tried to approve at T but the row was already
+   gone" is itself audit signal — losing it because the UPDATE
+   no-op'd would be wrong. Cost: an audit row can exist without a
+   corresponding state change. Tradeoff accepted; the alternative
+   (atomic transaction) loses the intent signal.
+
+5. **403 from the API, 404 from the web layer.** `AdminUser`
+   extractor returns 403 for non-admins (`/v1/admin/*` is the
+   correct address; you just can't operate on it). The web
+   `/admin/*` layout returns `notFound()` for non-admins so the
+   admin surface is invisible to anyone who doesn't already know
+   it exists. Two different lies for two different audiences.
+
+6. **Idempotent re-application skips the audit.** Approving an
+   already-active artist returns the row, no audit row. Same for
+   override-an-already-approved image. "I double-clicked approve"
+   shouldn't clutter the log.
+
+7. **Illegal source-state transitions are 409 Conflict.** Approving
+   a `rejected` artist isn't allowed — the admin must re-pending
+   them first (separate affordance, not yet built). Better than
+   silent no-op because the UI would otherwise show a stale state.
+
+8. **Web actions: server-action wrappers, useConfirm + toast
+   surface.** Mirrors the studio side. Destructive transitions
+   (decline, pause, image override) go through `useConfirm`;
+   every action surfaces via `toast.success` / `toast.error`. ESLint
+   bans `window.confirm`; the convention is universal across the
+   web layer.
+
+**Alternatives:**
+
+- **Open-self-listing for new admins:** rejected. Same reason
+  artists go through `status='pending'` rather than self-publishing
+  on signup — friction is the feature.
+- **Scoped roles on day 1** (`admin_roles` table with bitfields):
+  rejected. Adds complexity for no concrete use case yet. Single
+  admin pre-launch; add when there's a second admin who shouldn't
+  see all queues.
+- **Inquiry abuse / report queue in v1:** rejected. Real once we
+  have signed-up users at volume; not before. The shape will
+  follow the artist / image queue patterns when it lands.
+- **Hard-delete declined artists:** rejected. `status='declined' +
+  decided_at` preserves the row so an appealing artist can be
+  re-pending'd; data is never destroyed silently.
+- **Audit retention windowing:** deferred. The table will be tiny
+  in row count for years (single-digit admin operations per day
+  at v1 scale). Layer in a TTL or partition once daily volume
+  justifies it.
+
+**Reversibility:** Medium for the column choice + admin email
+constant (migrating to a roles table is a schema change + code
+sweep but mechanical). Low for the audit log: once written, those
+rows are the system's official memory of "who did what" and we
+can't go back. That's the point.
+
+---
+
 ## 2026-06-30 — T-082: refine-with-text — fourth RRF channel, not anchor mutation
 
 **Context:** Visual search has carried two ranking-modifier primitives
