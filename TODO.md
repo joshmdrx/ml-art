@@ -458,6 +458,140 @@ Threshold deliberately lowered from the spec's `>= 10` to `>= 5` — a completed
 
 **Trigger:** First real complaint that "my piece doesn't show up when I search for X angle / Y colour" that can be traced to this. Or routine audit shows ≥ ~10% of artworks have non-primary images and we're getting silent retrieval misses.
 
+### `T-081` Venues — galleries/shops as discovery destinations
+**Where:** New migration (`venues` + `venue_artworks` tables); new `api-search::venues` module; new `/v1/studio/venues/*` + `/v1/venues/*` endpoints; new web routes `/venues`, `/venues/:slug`, `/studio/venues/*`; map integration via `searchMapClient`.
+**Depends on:** T-083 (admin surface) for the `pending_review → active` verification flip.
+**Why:** Not every independent contemporary artist has their own studio worth visiting. Galleries, project spaces, and curated shops give the discovery story a richer supply side: "see this work in person at X" rather than only "see this work online." Widens the platform's reach without changing what an artwork *is* — venues are a parallel pin source on the map, with a controlled consent flow between venue admins and the artists they represent.
+
+**Decisions confirmed 2026-06-29:**
+- Multiple venues per user account (galleries with branches, shops with several locations).
+- One-direction consent: **venue invites artwork → artist accepts/declines**. Bidirectional volunteer-flow deferred — keeps abuse vectors low for v1.
+- Public verification: new venues default to `status='pending_review'`; admin (see T-083) flips to `active` before public listing. Mirrors the artist-onboarding admin gate.
+- Single concept per row: *"this artwork is at this venue"* — no separate "on display" vs "for sale" distinction in v1. Whether the work is purchasable is already on the artwork (`availability`).
+- Cascade-clear on artwork delete: `venue_artworks.artwork_id` FK → `ON DELETE CASCADE`. The artwork no longer exists, so it can't be at a venue.
+- Single owner per venue (`venues.owner_user_id` FK to users). Multi-admin co-ownership deferred until requested.
+
+**Acceptance:**
+- Migration `0024_venues.sql`: `venues (id, slug, name, kind text check kind in ('gallery','shop','studio_collective','cafe_collab','other'), about, address, city, country, lat, lng, geocoded_at, website_url, instagram_handle, opening_info, owner_user_id, status text check status in ('pending_review','active','paused','declined'), created_at, updated_at, deleted_at)` + `venue_artworks (venue_id, artwork_id, status text check ('pending','accepted','declined'), requested_at, decided_at, primary key (venue_id, artwork_id), artwork_id fk on delete cascade)`. Indexes: `(slug)` unique partial on non-deleted; `(owner_user_id)`; `(status, lat, lng)` partial for map scan; `(artwork_id, status)` for "currently at" reads.
+- `core::venues` module: row types, helpers, geocoding reuse via `JobEvent::VenueGeocode` (mirror `ArtistLocationGeocode`).
+- Studio API:
+  - `POST /v1/studio/venues` (create — `pending_review`)
+  - `PATCH /v1/studio/venues/:id` (partial — owner only — `deserialize_double_option` per T-072)
+  - `DELETE /v1/studio/venues/:id` (soft via `deleted_at`)
+  - `GET /v1/studio/venues` (list own venues)
+  - `POST /v1/studio/venues/:id/artworks/:artwork_id` (invite — creates `pending` row; 404 if artist soft-deleted artwork)
+  - `DELETE /v1/studio/venues/:id/artworks/:artwork_id` (uninvite; idempotent)
+  - `GET /v1/studio/venues/:id/artworks` (paginated; includes pending/accepted/declined)
+  - Artist-side: `POST /v1/studio/venue-requests/:venue_id/:artwork_id/accept`, `.../decline` (artist accepts/declines a venue's invite for their own artwork)
+  - `GET /v1/studio/venue-requests` (artist's pending inbox)
+- Public API:
+  - `GET /v1/venues` (paginated; `status='active' AND deleted_at IS NULL`; supports `?bbox=`, `?city=`)
+  - `GET /v1/venues/:slug` (404 indistinguishably for not-found / pending / deleted)
+  - `GET /v1/venues/:slug/artworks` (only `accepted` rows)
+  - `GET /v1/search/map` extended to optionally include venue pins (`?include=venues` or merged by default — TBD during build)
+  - `ArtworkFull.venues: Vec<VenueRef>` — list of accepted venues for "Currently at" surface
+- Web:
+  - `/studio/venues` — list owner's venues + create button; modal follows URL-driven pattern (`?id=`, `?tab=`) per `docs/ui-patterns.md`. Multi-step: details / artworks tab.
+  - Artwork invitation in studio: multi-select grid mirrors `SeriesEditModal`'s artworks tab.
+  - `/studio/venue-requests` — artist's inbox; accept/decline per row.
+  - `/venues` — public index w/ grid + map overlay.
+  - `/venues/:slug` — public detail page.
+  - `/artworks/:id` — "Currently at:" strip linking to venue pages.
+  - Map: venue pins styled distinctly from artist pins (different colour or icon).
+- Verification flow (admin side, T-083): admin queue at `/admin/venues` lists `pending_review`; approve flips to `active`, decline flips to `declined`.
+- Tests: ≥10 integration tests (CRUD, consent flow, ownership boundaries, public visibility gates, cascade-clear).
+
+**Subcommit plan:**
+- **T-081.1** — Schema + backend (migration, all venue + venue_artworks endpoints, consent flow, geocoding via JobEvent reuse, public reads, tests).
+- **T-081.2** — Studio UI (venues list + edit modal + artwork-invite grid + artist's venue-requests inbox).
+- **T-081.3** — Public surfaces (`/venues` index, `/venues/:slug` detail, map integration, ArtworkFull "Currently at" strip).
+- **T-081.4** — Docs (decisions.md entry; CHANGELOG; STRATEGY.md note).
+
+**Deferred follow-ups (don't block v1):**
+- Bidirectional consent (artist volunteers work to a venue).
+- Multi-admin co-ownership of a venue.
+- Opening hours as structured data (today: free-text `opening_info`).
+- Venue-level events / "this work on display until X date".
+- Venue follow / notifications (parallel to artist follow).
+
+### `T-082` Refine-with-text on visual search
+**Where:** `api-search::search` (new `refine_ranked` CTE); `web/src/components/FilterBar.tsx` or a sibling refine control; URL param `?refine=...`.
+**Why:** Visual search today is: "this image as the anchor + optional fixed-vocabulary modifiers (moodier / warmer / etc)." The modifiers cover a fixed delta vocabulary; they don't help when a user wants to say "this painting but more abstract" or "this sculpture but in stone." Free-form refine text adds an open-ended channel without dropping the visual anchor.
+
+**Decisions confirmed 2026-06-29:**
+- Implementation: **new fourth RRF channel (`refine_ranked`)**, not vector-blending with the existing anchor. The anchor stays untouched (user said "I want things like this image"); refine adds a *separate* preference signal that RRF blends in. Rejected: pre-blending refine into the visual vector at some α — feels hacky and loses the per-channel ranking guarantee.
+- Composes with both text-search (`?q=`) and visual-search (`?image_upload_id=` / `?seed_artwork_id=`). Refuses to fire when no primary signal is set — alone, it'd just be regular text search, so we reject it gracefully (no `refine_ranked` CTE built).
+- Naming: "Refine" (clear, neutral, doesn't promise too much). Alternatives considered: "And also...", "Steer", "Nudge", "Modify" — all worse.
+- Does **not** replace the fixed-vocabulary modifiers. The two coexist: modifiers are one-click quick deltas anchored to WikiArt; refine is free-form. Different ergonomics for different intents.
+
+**Acceptance:**
+- API: `?refine=TEXT` on `/v1/search`. Embed via `Embedder::embed_text` (cache hit via existing `query_cache`).
+- `search.rs`'s `run_hybrid` gains a `refine_ranked` CTE: `ROW_NUMBER() OVER (ORDER BY ae.embedding <=> $refine_vec)`. Added to the `rrf_score` SELECT as `1.0 / (60 + COALESCE(rr.rk, candidate_pool_size + 60))`. Same shape as `taste_ranked`.
+- Per-request log line: `refine=<true|false>` + length of TEXT.
+- Tests: refine alone (no primary) → behaves like keyword (no CTE built); refine + q → both channels in the RRF; refine + image → both channels; refine text length cap (defensive, ~500 chars).
+- Web UI:
+  - Collapsed `Refine →` button under the main search controls on `/search`. Click expands a text input + Apply button.
+  - URL-driven: `?refine=TEXT`. Cleared via a small × on the active-refine chip.
+  - Visible on every result view (text-search, visual-search, seed-artwork).
+- Telemetry: `refine_applied` event (T-050 surface) on apply.
+- Default off (no `refine_ranked` weight tuning needed — RRF is naturally calibrated by the `1/(60+rk)` shape).
+
+**Subcommit plan:**
+- **T-082.1** — Backend: `refine_ranked` channel + tests.
+- **T-082.2** — Web UI: refine input on `/search`.
+- **T-082.3** — Docs + decisions.
+
+### `T-083` Admin surface — approval queues + audit log
+**Where:** New migration (`users.is_admin` boolean + `admin_audit_log` table); new `AdminUser` extractor in `api/crates/core/src/auth/`; new `/v1/admin/*` API surface; new `/admin/*` web routes.
+**Why:** Three real surfaces today need human approval before going public: artists (`status='pending'`), images (`moderation_status='rejected'` overrides), and soon venues (T-081 `status='pending_review'`). All are handled today via direct psql edits. That's manageable at single-digit scale and broken everywhere above. Pulling forward pre-launch unblocks proper operating without ad-hoc database edits.
+
+**Decisions confirmed 2026-06-29:**
+- `users.is_admin BOOLEAN DEFAULT false` (column, not a separate table). Single admin pre-launch; column is cheaper. Migrate to a roles table if and when multi-admin / scoped roles appear.
+- **Bootstrap admin = `mrjoshuajmatthews@gmail.com`** (not the dev-tooling identity).
+- `admin_audit_log` from day 1 — retrofitting audit later is awful. Every admin action writes a row before the mutation. Forever-retention (table will be tiny in row count for years).
+- Defer inquiry abuse / report queues. Real once we have signed-up users at volume; not before.
+- Soft state for declined artists / venues: `status='declined' + decided_at`. They can be flipped back to `pending` if they appeal. Never hard-delete a user record.
+- Non-admins get a 404 on `/admin/*` — no "you don't have access" page (info disclosure).
+
+**Acceptance:**
+- Migration `0025_admin.sql`:
+  - `ALTER TABLE users ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT false;`
+  - `CREATE INDEX users_is_admin_idx ON users (is_admin) WHERE is_admin = true;` (partial; very few admins ever).
+  - `CREATE TABLE admin_audit_log (id uuid PK default uuidv7(), admin_user_id uuid not null references users, action text not null, target_kind text not null, target_id uuid, before_jsonb jsonb, after_jsonb jsonb, context jsonb, created_at timestamptz default now())` + index on `(created_at desc)`.
+  - Bootstrap: `UPDATE users SET is_admin=true WHERE email = 'mrjoshuajmatthews@gmail.com';` (idempotent — no-op if the row doesn't exist yet).
+- Extractor: `AdminUser` composes on `AuthedUser` + asserts `is_admin=true`. 403 otherwise. Single chokepoint for all admin endpoints.
+- Audit helper: `core::admin::audit::record(pool, admin_id, action, target_kind, target_id, before, after, ctx)` — called before every mutation.
+- API endpoints (all under `/v1/admin/`):
+  - `GET /v1/admin/artists?status=pending` (paginated)
+  - `POST /v1/admin/artists/:id/approve` (status pending → active; writes audit)
+  - `POST /v1/admin/artists/:id/decline` (status pending → declined; writes audit)
+  - `POST /v1/admin/artists/:id/pause` / `.../unpause`
+  - `GET /v1/admin/images?status=rejected` (paginated; joins artwork + artist for context)
+  - `POST /v1/admin/images/:id/override` (flips `moderation_status='approved'` + clears `moderation_reason`; writes audit)
+  - `GET /v1/admin/venues?status=pending_review` + approve/decline (lands with T-081)
+  - `GET /v1/admin/audit-log?cursor=...` (paginated read-only)
+- Web:
+  - `/admin` — index page with section links + recent activity feed (last 10 audit rows).
+  - `/admin/artists` — pending queue + approve/decline buttons via server actions + `useConfirm()` + `toast.success()`.
+  - `/admin/images` — rejected queue with thumbnails + reason badges + override button.
+  - `/admin/venues` — pending queue (with T-081).
+  - `/admin/audit-log` — paginated read-only viewer.
+  - Non-admins get `notFound()` from every `/admin/*` route — no link visible anywhere else in the UI.
+- Tests: ≥8 integration tests asserting (a) non-admin gets 403 on every endpoint, (b) every mutation writes an audit row, (c) approve / decline transitions are correct, (d) idempotent re-approve no-ops cleanly.
+
+**Subcommit plan:**
+- **T-083.1** — Schema + `AdminUser` extractor + `/v1/admin/artists/*` endpoints + audit helper + tests.
+- **T-083.2** — Web: `/admin` shell + `/admin/artists` page + server actions.
+- **T-083.3** — Image moderation: `/v1/admin/images` + override + web page.
+- **T-083.4** — Venue review (slots into T-081 — could ship as part of T-081.4 if convenient).
+- **T-083.5** — Audit log viewer + docs.
+
+**Deferred follow-ups (don't block v1):**
+- Inquiry-abuse / report queues. Real once we have signed-up users at volume.
+- Multi-admin with scoped roles. Migrate `is_admin` → `admin_roles` table when needed.
+- 2FA enforcement on admin accounts (Clerk-side config — set when there are multiple admins).
+- Read-only admin role (vs full mutate). Same trigger as multi-admin.
+
 ### `T-080` Currency-aware price filter — canonical GBP
 **Where:** New migration (`fx_rates` table + `artworks.price_gbp_cents` column); `core::fx` module; new `JobEvent::FxRatesRefresh`; `search.rs` filter swap; FilterBar label changes.
 **Why:** The price filter today compares raw `price_cents` regardless of currency — so a `Under £500` filter matches a $500 painting (≈£395) AND a €500 painting (≈£430) as if they're the same value. Wander accepts USD/GBP/EUR/CAD/AUD/JPY on the artwork row; the filter is currency-blind.
