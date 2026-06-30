@@ -8,13 +8,17 @@
 -- Users (1; used for collections / inquiries in later tests)
 -- ─────────────────────────────────────────────────────────────────────────────
 
-INSERT INTO users (id, clerk_user_id, email, display_name, is_artist) VALUES
-  ('99999999-9999-9999-9999-999999999999', 'user_test_99', 'test@example.com', 'Test User', false),
+INSERT INTO users (id, clerk_user_id, email, display_name, is_artist, is_admin) VALUES
+  ('99999999-9999-9999-9999-999999999999', 'user_test_99', 'test@example.com', 'Test User', false, false),
   -- alice + bob: used by the collections tests to assert ownership boundaries.
   -- Alice is also an artist (linked below); bob is intentionally NOT — the
   -- /v1/studio/* tests rely on bob hitting the "no artist for this user" 404.
-  ('88888888-8888-8888-8888-888888888888', 'user_test_alice', 'alice@example.com', 'Alice', true),
-  ('77777777-7777-7777-7777-777777777777', 'user_test_bob',   'bob@example.com',   'Bob',   false);
+  ('88888888-8888-8888-8888-888888888888', 'user_test_alice', 'alice@example.com', 'Alice', true,  false),
+  ('77777777-7777-7777-7777-777777777777', 'user_test_bob',   'bob@example.com',   'Bob',   false, false),
+  -- T-083 — dedicated admin identity for tests. NOT an artist so the
+  -- /v1/admin/* surface can be exercised without colliding with the
+  -- studio-side tests that use bob as the "non-artist" baseline.
+  ('66666666-6666-6666-6666-666666666666', 'user_test_admin', 'admin@example.com', 'Admin', false, true);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Artists (3)
@@ -40,7 +44,12 @@ INSERT INTO artists (
    '{"type":"platform"}'::jsonb, 'active'),
   ('aaa33333-3333-3333-3333-333333333333', NULL, 'carmen-test', 'Carmen Test',
    'Printmaker; location private.', NULL, NULL, NULL, NULL, NULL, NULL,
-   '{"type":"platform"}'::jsonb, 'active');
+   '{"type":"platform"}'::jsonb, 'active'),
+  -- T-083 — pending artist for the admin queue tests. No user link;
+  -- the queue lists by `ar.status = 'pending'` regardless of ownership.
+  ('aaa44444-4444-4444-4444-444444444444', NULL, 'dora-pending', 'Dora Pending',
+   'Painter awaiting admin approval.', 'Manchester, GB', 'Manchester', 'GB', 53.4808, -2.2426, now(),
+   '{"type":"platform"}'::jsonb, 'pending');
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Artworks (6 — 5 published, 1 draft)

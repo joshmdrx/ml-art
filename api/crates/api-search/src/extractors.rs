@@ -44,3 +44,34 @@ impl FromRequestParts<Arc<AppState>> for AuthedUser {
         })
     }
 }
+
+/// T-083 — admin-only caller. Composes on `AuthedUser` and additionally
+/// asserts `is_admin = true`. Non-admins get a 403 Forbidden, never a
+/// 404 — the resource exists; they just can't operate on it. (Compare
+/// with the web layer's `/admin/*` routes, which return 404 to non-admin
+/// browsers so the admin surface is invisible. The API surface is one
+/// step closer to the truth: returning 403 here is correct because a
+/// caller would already know `/v1/admin/*` exists if they're poking at
+/// it.)
+pub struct AdminUser(pub auth::User);
+
+impl FromRequestParts<Arc<AppState>> for AdminUser {
+    type Rejection = ApiError;
+
+    fn from_request_parts<'a, 'b, 'fut>(
+        parts: &'a mut Parts,
+        state: &'b Arc<AppState>,
+    ) -> Pin<Box<dyn Future<Output = Result<Self, Self::Rejection>> + Send + 'fut>>
+    where
+        'a: 'fut,
+        'b: 'fut,
+    {
+        Box::pin(async move {
+            let user = auth::authenticate(&parts.headers, &state.jwt_verifier, &state.pool).await?;
+            if !user.is_admin {
+                return Err(ApiError::Forbidden);
+            }
+            Ok(AdminUser(user))
+        })
+    }
+}

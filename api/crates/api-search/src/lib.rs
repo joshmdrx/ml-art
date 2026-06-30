@@ -1,6 +1,7 @@
 //! api-search library — exposes the route handlers and app builder so
 //! integration tests can call them without binding a network port.
 
+pub mod admin;
 pub mod anon;
 pub mod artist;
 pub mod artwork;
@@ -279,6 +280,23 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         // modifier registry so the search-page button row can render
         // without hardcoding labels client-side.
         .route("/v1/modifiers", get(meta::list_modifiers))
+        // ── Admin surface (T-083). All endpoints gated by `AdminUser`
+        // (extractor returns 403 for non-admins). Every mutation
+        // writes one `admin_audit_log` row before applying.
+        .route("/v1/admin/artists", get(admin::artists::list))
+        .route(
+            "/v1/admin/artists/:id/approve",
+            post(admin::artists::approve),
+        )
+        .route(
+            "/v1/admin/artists/:id/decline",
+            post(admin::artists::decline),
+        )
+        .route("/v1/admin/artists/:id/pause", post(admin::artists::pause))
+        .route(
+            "/v1/admin/artists/:id/unpause",
+            post(admin::artists::unpause),
+        )
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         // CORS: browser-direct calls from the Next dev server / future web

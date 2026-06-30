@@ -368,6 +368,21 @@ fn parse_bearer(headers: &axum::http::HeaderMap) -> Result<String, ApiError> {
     Ok(token.to_string())
 }
 
+/// T-083 — emails that are auto-promoted to `is_admin = true` on first
+/// sign-in. Lowercase, ASCII. The migration `0024_admin_audit_log.sql`
+/// also runs a one-off UPDATE for the same set so a user who signed in
+/// before the deploy is promoted in place. Either path covers either
+/// ordering.
+///
+/// Grow this list when the next admin onboards; the seed lookup is a
+/// `==` check so there's no per-row cost at scale.
+pub const ADMIN_EMAILS: &[&str] = &["mrjoshuajmatthews@gmail.com"];
+
+fn is_seeded_admin_email(email: &str) -> bool {
+    let lower = email.to_ascii_lowercase();
+    ADMIN_EMAILS.iter().any(|e| *e == lower)
+}
+
 /// Insert the user if we haven't seen this `clerk_user_id` before; either
 /// way, return our internal `User` record. Calls Clerk's API for the email
 /// on first sight (one extra HTTP request per user, lifetime).
@@ -387,20 +402,28 @@ async fn upsert_user(
         return Ok(u.into_user());
     }
 
-    // Slow path: fetch email from Clerk and insert.
+    // Slow path: fetch email from Clerk and insert. Seed is_admin from
+    // ADMIN_EMAILS so the platform's first admin can sign up without a
+    // post-hoc psql edit; the migration covers the inverse case where
+    // they signed in before the admin-email constant landed. The ON
+    // CONFLICT branch OR's the seed flag against the existing value so
+    // a manual promotion is never overwritten.
     let email = verifier.fetch_clerk_email(&claims.sub).await?;
+    let seed_admin = is_seeded_admin_email(&email);
     let row: UserRow = sqlx::query_as(
         r#"
-        INSERT INTO users (clerk_user_id, email)
-        VALUES ($1, $2)
+        INSERT INTO users (clerk_user_id, email, is_admin)
+        VALUES ($1, $2, $3)
         ON CONFLICT (clerk_user_id) DO UPDATE
            SET email = EXCLUDED.email,
+               is_admin = users.is_admin OR EXCLUDED.is_admin,
                updated_at = now()
         RETURNING id, clerk_user_id, email, is_admin
         "#,
     )
     .bind(&claims.sub)
     .bind(&email)
+    .bind(seed_admin)
     .fetch_one(pool)
     .await?;
     Ok(row.into_user())
