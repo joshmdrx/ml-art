@@ -219,7 +219,11 @@ pub async fn create(
             "invalid availability `{availability}`"
         )));
     }
-    let currency = body.currency.as_deref().unwrap_or("USD");
+    // Default-on-create is GBP (T-080). Artists can override on the
+    // form via the currency dropdown; the create handler accepts any
+    // ISO code, the FX layer just leaves price_gbp_cents NULL for
+    // codes it doesn't track.
+    let currency = body.currency.as_deref().unwrap_or("GBP");
 
     // T-070 — validate + normalise dimensions JSONB. Absent / null pass
     // through as None; a present object goes through the shape check
@@ -240,14 +244,21 @@ pub async fn create(
         _ => None,
     };
 
+    // T-080 — compute canonical GBP value at write time so the price
+    // filter has a usable value immediately. Returns None for POA
+    // prices or untracked currencies (matches the migration backfill's
+    // LEFT-JOIN-leaves-NULL behaviour).
+    let price_gbp_cents =
+        ml_art_core::fx::compute_price_gbp_cents(&state.pool, body.price_cents, currency).await?;
+
     let row: ArtworkRow = sqlx::query_as(
         r#"
         INSERT INTO artworks (
             artist_id, title, description, year_created, medium,
             medium_category, dimensions, price_cents, currency, availability,
-            external_url, status
+            external_url, status, price_gbp_cents
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft')
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12)
         RETURNING
             id, title, status, medium, medium_category,
             price_cents, currency, availability,
@@ -267,6 +278,7 @@ pub async fn create(
     .bind(currency)
     .bind(availability)
     .bind(body.external_url.as_deref())
+    .bind(price_gbp_cents)
     .fetch_one(&state.pool)
     .await?;
 
@@ -519,6 +531,31 @@ pub async fn patch(
     .await?;
 
     let row = row.ok_or(ApiError::NotFound)?;
+
+    // T-080 — recompute price_gbp_cents when price OR currency
+    // changed. Reads the row's now-current values + fx_rates in a
+    // subquery; idempotent. Skip when neither field was in the patch
+    // (cheap no-op anyway, but a write avoided is a write avoided).
+    if body.price_cents.is_some() || body.currency.is_some() {
+        sqlx::query(
+            r#"
+            UPDATE artworks a
+            SET price_gbp_cents = CASE
+                WHEN a.price_cents IS NULL OR fx.rate_to_gbp IS NULL THEN NULL
+                ELSE ROUND(a.price_cents * fx.rate_to_gbp)::bigint
+              END
+            FROM (SELECT code, rate_to_gbp FROM fx_rates) fx
+            WHERE a.id = $1
+              AND a.artist_id = $2
+              AND fx.code = a.currency
+            "#,
+        )
+        .bind(id)
+        .bind(artist_id)
+        .execute(&state.pool)
+        .await?;
+    }
+
     Ok(Json(row.into_summary()))
 }
 

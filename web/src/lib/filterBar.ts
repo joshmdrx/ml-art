@@ -26,9 +26,12 @@ export const SIZE_BANDS: SizeBand[] = [
 ];
 
 /** Mapping from a `price` selection to the underlying `price_min`/`price_max`
- * URL params. `min` and `max` are in **cents** to match the API contract. */
+ * URL params. `min` and `max` are in **canonical-GBP minor units** to match
+ * the API contract — the search filter compares against `price_gbp_cents`
+ * (T-080). Artworks priced in other currencies (USD/EUR/…) are converted
+ * server-side; the bucket boundaries here are pence amounts. */
 export interface PriceBucket {
-  /** Display label, e.g. "Under $500" — also stored in the URL as `price=under-500`. */
+  /** Display label, e.g. "Under £500" — also stored in the URL as `price=u500`. */
   label: string;
   /** Stable URL token — slug-style so it round-trips cleanly. */
   token: string;
@@ -36,12 +39,13 @@ export interface PriceBucket {
   max?: number;
 }
 
-/** Curated price buckets. Tweak ranges as we learn what artists list. */
+/** Curated price buckets. Tweak ranges as we learn what artists list.
+ *  Anchored on GBP after T-080 — UK-artist focus. */
 export const PRICE_BUCKETS: PriceBucket[] = [
-  { label: "Under $500", token: "u500", max: 50_000 },
-  { label: "$500 – $2,000", token: "500-2k", min: 50_000, max: 200_000 },
-  { label: "$2,000 – $10,000", token: "2k-10k", min: 200_000, max: 1_000_000 },
-  { label: "$10,000+", token: "10kplus", min: 1_000_000 },
+  { label: "Under £500", token: "u500", max: 50_000 },
+  { label: "£500 – £2,000", token: "500-2k", min: 50_000, max: 200_000 },
+  { label: "£2,000 – £10,000", token: "2k-10k", min: 200_000, max: 1_000_000 },
+  { label: "£10,000+", token: "10kplus", min: 1_000_000 },
 ];
 
 /** Availability enum values the API accepts (matches the CHECK constraint

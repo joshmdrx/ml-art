@@ -631,13 +631,19 @@ fn build_filters(
         clauses.push(format!("AND a.medium_category = ANY(${idx}::text[])"));
     }
 
+    // T-080 — the price filter is canonical-GBP. Artists set prices in
+    // their own currency; `artworks.price_gbp_cents` is the converted
+    // value maintained by studio writes + the FX-refresh job. Filtering
+    // on the raw `price_cents` would compare a $500 artwork as if it
+    // were £500 (it's actually ~£395) which surfaces wrong results.
+    // Both bucket presets and custom-range inputs pass GBP values.
     if let Some(pm) = p.price_min {
         let idx = next.bind(args, pm)?;
-        clauses.push(format!("AND a.price_cents >= ${idx}"));
+        clauses.push(format!("AND a.price_gbp_cents >= ${idx}"));
     }
     if let Some(pm) = p.price_max {
         let idx = next.bind(args, pm)?;
-        clauses.push(format!("AND a.price_cents <= ${idx}"));
+        clauses.push(format!("AND a.price_gbp_cents <= ${idx}"));
     }
 
     if let Some(av) = p.availability.as_deref().filter(|s| !s.is_empty()) {

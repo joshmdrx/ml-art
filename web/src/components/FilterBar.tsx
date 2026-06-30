@@ -155,10 +155,13 @@ export function FilterBar({ availableFilters, basePath }: FilterBarProps) {
             </DropdownMenu.Item>
           ))}
           <DropdownMenu.Separator className="my-1 border-t border-border" />
-          {/* T-062 — custom range. Inputs are in major units ($500),
+          {/* T-062 — custom range. Inputs are in major GBP units (£500),
               converted to minor (50000) when submitted to match the
               existing bucket scale. Submitting clears `price` (the
-              bucket token) so the label switches to the custom range. */}
+              bucket token) so the label switches to the custom range.
+              The server-side filter operates on `price_gbp_cents`
+              (T-080), so submitting numeric pounds works for artworks
+              listed in any tracked currency. */}
           <CustomPriceRange
             initialMin={priceMin}
             initialMax={priceMax}
@@ -329,7 +332,7 @@ function PillMenu({
 }
 
 /** T-062 — custom min/max price inputs inside the price dropdown.
- *  Values are in major units ($500, not 50000 cents) — the parent
+ *  Values are in major GBP units (£500, not 50000 pence) — the parent
  *  converts to minor units when submitting to the URL. Submitting
  *  with both fields blank clears the custom range. */
 function CustomPriceRange({
@@ -423,7 +426,7 @@ function priceLabel(
   const hasMin = priceMin !== undefined;
   const hasMax = priceMax !== undefined;
   if (!hasMin && !hasMax) return "Price";
-  const fmt = (cents: number) => `$${Math.round(cents / 100).toLocaleString()}`;
+  const fmt = (pence: number) => `£${Math.round(pence / 100).toLocaleString()}`;
   if (hasMin && hasMax) return `Price: ${fmt(priceMin!)}–${fmt(priceMax!)}`;
   if (hasMin) return `Price: ${fmt(priceMin!)}+`;
   return `Price: under ${fmt(priceMax!)}`;

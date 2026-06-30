@@ -191,7 +191,7 @@ export function InquiryModal({
                 label="Budget (optional)"
                 value={budget}
                 onChange={setBudget}
-                placeholder="e.g. $500–$1,000, open"
+                placeholder="e.g. £500–£1,000, open"
               />
 
               {state.kind === "error" && (

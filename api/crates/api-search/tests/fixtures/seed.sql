@@ -79,6 +79,15 @@ INSERT INTO artworks (
    'Hidden Sketch', NULL, 'Print',
    NULL, 'USD', 'available', 'draft', false, NULL);
 
+-- T-080 — backfill `price_gbp_cents` from the seeded fx_rates so the
+-- price-filter tests don't see NULL on every fixture row. The migration's
+-- own backfill runs BEFORE the fixture INSERTs, so we have to replay it
+-- here against the just-inserted rows.
+UPDATE artworks a
+SET price_gbp_cents = ROUND(a.price_cents * fx.rate_to_gbp)::bigint
+FROM fx_rates fx
+WHERE fx.code = a.currency AND a.price_cents IS NOT NULL;
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Artwork images (1 per published artwork; the draft has none)
 -- ─────────────────────────────────────────────────────────────────────────────

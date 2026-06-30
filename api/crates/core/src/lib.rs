@@ -19,6 +19,7 @@ pub mod emails;
 pub mod embedder;
 pub mod error;
 pub mod events;
+pub mod fx;
 pub mod geocoding;
 pub mod images;
 pub mod jobs;

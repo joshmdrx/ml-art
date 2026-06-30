@@ -107,6 +107,11 @@ pub enum JobEvent {
     /// — the trigger code is shipped, the schedule wiring is deferred
     /// until real users exist.
     UserProfileRefreshKickoff {},
+    /// T-080 — refresh FX rates against GBP from the Frankfurter API,
+    /// then bulk-recompute `artworks.price_gbp_cents` so the search
+    /// price filter operates on current values. Cron not live yet;
+    /// manual invoke via `jobs-worker --enqueue` until artists onboard.
+    FxRatesRefresh {},
 }
 
 impl JobEvent {
@@ -128,6 +133,7 @@ impl JobEvent {
             JobEvent::EventLog { .. } => "event_log",
             JobEvent::UserProfileRefresh { .. } => "user_profile_refresh",
             JobEvent::UserProfileRefreshKickoff {} => "user_profile_refresh_kickoff",
+            JobEvent::FxRatesRefresh {} => "fx_rates_refresh",
         }
     }
 }
@@ -612,6 +618,14 @@ pub async fn handle(event: JobEvent, deps: &JobsDeps) -> Result<(), HandlerError
             crate::user_profile::kickoff(deps)
                 .await
                 .map_err(|e| HandlerError::Domain(format!("user_profile_refresh_kickoff: {e}")))?;
+        }
+        JobEvent::FxRatesRefresh {} => {
+            // T-080 — pull latest GBP-base rates from Frankfurter,
+            // upsert `fx_rates`, recompute `price_gbp_cents` across
+            // the corpus. Logging + counts live in `fx::refresh_rates`.
+            crate::fx::refresh_rates(&deps.pool)
+                .await
+                .map_err(|e| HandlerError::Domain(format!("fx_rates_refresh: {e}")))?;
         }
     }
     Ok(())

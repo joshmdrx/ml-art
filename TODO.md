@@ -458,6 +458,21 @@ Threshold deliberately lowered from the spec's `>= 10` to `>= 5` — a completed
 
 **Trigger:** First real complaint that "my piece doesn't show up when I search for X angle / Y colour" that can be traced to this. Or routine audit shows ≥ ~10% of artworks have non-primary images and we're getting silent retrieval misses.
 
+### `T-080` Currency-aware price filter — canonical GBP
+**Where:** New migration (`fx_rates` table + `artworks.price_gbp_cents` column); `core::fx` module; new `JobEvent::FxRatesRefresh`; `search.rs` filter swap; FilterBar label changes.
+**Why:** The price filter today compares raw `price_cents` regardless of currency — so a `Under £500` filter matches a $500 painting (≈£395) AND a €500 painting (≈£430) as if they're the same value. Wander accepts USD/GBP/EUR/CAD/AUD/JPY on the artwork row; the filter is currency-blind.
+
+**Decision: GBP as the canonical platform currency.** Initial focus is UK artists; comparing in GBP is the right anchor. Artwork cards keep showing the artist's native currency (`formatPrice`); only the filter operates in GBP.
+
+**Acceptance:**
+- New `fx_rates (code text pk, rate_to_gbp numeric, fetched_at timestamptz)` table; seeded with mid-2026 approximations in the migration so day-1 search works.
+- New `artworks.price_gbp_cents bigint` column; backfilled in the migration; indexed for the filter.
+- `core::fx::refresh_rates` fetches from a free FX API (Frankfurter — ECB data, GBP-base, no key), upserts the table, then bulk-recomputes `price_gbp_cents` across all artworks. Wired through `JobEvent::FxRatesRefresh` so it runs on the existing jobs queue.
+- Studio writes (`POST/PATCH /v1/studio/artworks`) maintain `price_gbp_cents` at insert/update time using the current rates.
+- `search.rs` `build_filters` swaps `price_cents` → `price_gbp_cents` for `price_min`/`price_max` comparisons.
+- FilterBar `PRICE_BUCKETS` switch to GBP amounts; pill labels use `£`.
+- Cron not live yet (matches the T-077 deferral): trigger manually until real artists onboard. Daily rate drift is fine.
+
 ### ~~`T-057` Algorithmic neighbourhoods (HDBSCAN + Claude label)~~ ✓ shipped 2026-06-26
 Pipeline lives at `ml/ml_art/neighborhoods.py`, runnable via `make neighborhoods-build`. HDBSCAN with `cluster_selection_method='leaf'`, `min_cluster_size=15`, `min_samples=2`, euclidean over L2-normalised embeddings — tuned after the initial `eom`/30 default produced one 856-artwork mega-bucket. Claude (Sonnet 4.6) labels each cluster with 5 centroid-nearest sample images; result persisted as `kind='semantic'`, top 3 clusters by size become `is_featured`. Pure-rebuild semantics (drops + re-inserts every run; no Hungarian-matching yet since no real bookmarks pre-launch). Curated set untouched — coexists by `kind` discriminator. Groq + Llama 4 Scout wired as a fallback/iteration provider behind `--provider groq`; baked off, Claude clearly wins on evocative register (`decisions.md` 2026-06-26). First prod build seeded 14 neighbourhoods from ~2000 eligible artworks.
 

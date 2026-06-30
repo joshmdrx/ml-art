@@ -284,7 +284,9 @@ function ArtworkForm({
       ? formatPriceForInput(detail.price_cents, detail.currency)
       : ""
   );
-  const [currency, setCurrency] = useState(detail?.currency ?? "USD");
+  // Default for new artworks is GBP (T-080 — UK focus). Existing
+  // artworks keep whatever currency they were saved with.
+  const [currency, setCurrency] = useState(detail?.currency ?? "GBP");
   const [priceError, setPriceError] = useState<string | null>(null);
 
   /** Parse the current price input into `{ amount_minor, currency }`
@@ -414,7 +416,7 @@ function ArtworkForm({
       // not what an artist who blanked the dims expects.
       dimensions: dims.value ?? null,
       price_cents: parsedPrice?.amount_minor ?? null,
-      currency: parsedPrice?.currency ?? (currency.trim() || "USD"),
+      currency: parsedPrice?.currency ?? (currency.trim() || "GBP"),
       availability: availability as
         | "available"
         | "sold"

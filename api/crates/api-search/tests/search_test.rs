@@ -158,8 +158,14 @@ async fn search_medium_filter_unknown_value_passes_through(pool: PgPool) {
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn search_price_range_filter(pool: PgPool) {
     let app = app_keyword_only(pool);
-    let (_, page): (_, Page) = get_json(app, "/v1/search?price_min=100000&price_max=300000").await;
-    // Blue Morning (100k), Crimson Field (250k) — Stone Form II (500k) excluded.
+    // T-080 — filter values are now in GBP minor units against
+    // `price_gbp_cents`. Fixture artworks are USD-priced; at the
+    // seed FX rate (0.79 GBP per USD) the originals translate to:
+    //   Blue Morning      $1000  → £790    (price_gbp_cents = 79_000)
+    //   Crimson Field     $2500  → £1975   (price_gbp_cents = 197_500)
+    //   Stone Form II     $5000  → £3950   (price_gbp_cents = 395_000)
+    // Bound £500–£3000 captures Blue + Crimson, excludes Stone Form II.
+    let (_, page): (_, Page) = get_json(app, "/v1/search?price_min=50000&price_max=300000").await;
     let titles: Vec<_> = page.items.iter().filter_map(|i| i.title.clone()).collect();
     assert!(titles.contains(&"Blue Morning".to_string()));
     assert!(titles.contains(&"Crimson Field".to_string()));
