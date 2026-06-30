@@ -147,6 +147,23 @@ pub struct ArtworkFull {
     pub published_at: Option<DateTime<Utc>>,
     pub artist: ArtworkArtist,
     pub images: Vec<ArtworkImage>,
+    /// T-081 — venues that have accepted this artwork. Empty when
+    /// nobody has invited it (or accepted invitations have all been
+    /// uninvited / venue paused / artwork unpublished).
+    #[serde(default)]
+    pub venues: Vec<ArtworkVenueRef>,
+}
+
+/// Lightweight venue reference embedded on `ArtworkFull` — enough to
+/// render the "Currently at:" strip on the artwork detail page.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtworkVenueRef {
+    pub id: Uuid,
+    pub slug: String,
+    pub name: String,
+    pub kind: String,
+    pub city: Option<String>,
+    pub country: Option<String>,
 }
 
 /// Embedded artist on `ArtworkFull` — enough to render the credit line and

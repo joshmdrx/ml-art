@@ -12,7 +12,9 @@ use ml_art_core::{
     error::ApiError,
     events::{self, EventName},
     images::url_for_s3_key,
-    models::{ArtworkArtist, ArtworkFull, ArtworkImage, ArtworkSummary, Paginated},
+    models::{
+        ArtworkArtist, ArtworkFull, ArtworkImage, ArtworkSummary, ArtworkVenueRef, Paginated,
+    },
 };
 use serde::Deserialize;
 use sqlx::FromRow;
@@ -82,6 +84,26 @@ pub async fn detail(
     .fetch_all(&state.pool)
     .await?;
 
+    // T-081 — venues that have accepted this artwork. Filtered to
+    // active+non-deleted venues so paused / declined venues don't
+    // leak through. Empty list for artworks with no accepted venues
+    // is the common case pre-launch.
+    let venues: Vec<VenueRefRow> = sqlx::query_as(
+        r#"
+        SELECT v.id, v.slug, v.name, v.kind, v.city, v.country
+        FROM venue_artworks va
+        JOIN venues v ON v.id = va.venue_id
+        WHERE va.artwork_id = $1
+          AND va.status = 'accepted'
+          AND v.deleted_at IS NULL
+          AND v.status = 'active'
+        ORDER BY va.decided_at DESC NULLS LAST
+        "#,
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await?;
+
     // T-050 — artwork_viewed. Best-effort enqueue; never blocks the response.
     events::emit(
         &state.jobs,
@@ -95,7 +117,7 @@ pub async fn detail(
     )
     .await;
 
-    Ok(Json(row.into_full(images)))
+    Ok(Json(row.into_full(images, venues)))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -219,7 +241,7 @@ struct ArtworkRow {
 }
 
 impl ArtworkRow {
-    fn into_full(self, images: Vec<ImageRow>) -> ArtworkFull {
+    fn into_full(self, images: Vec<ImageRow>, venues: Vec<VenueRefRow>) -> ArtworkFull {
         ArtworkFull {
             id: self.id,
             title: self.title,
@@ -240,8 +262,29 @@ impl ArtworkRow {
                 location: self.artist_location,
             },
             images: images.into_iter().map(ImageRow::into_image).collect(),
+            venues: venues
+                .into_iter()
+                .map(|v| ArtworkVenueRef {
+                    id: v.id,
+                    slug: v.slug,
+                    name: v.name,
+                    kind: v.kind,
+                    city: v.city,
+                    country: v.country,
+                })
+                .collect(),
         }
     }
+}
+
+#[derive(FromRow)]
+struct VenueRefRow {
+    id: Uuid,
+    slug: String,
+    name: String,
+    kind: String,
+    city: Option<String>,
+    country: Option<String>,
 }
 
 #[derive(FromRow)]

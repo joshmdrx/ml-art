@@ -193,6 +193,21 @@ export interface ArtworkFull {
   published_at: string | null;
   artist: ArtworkArtist;
   images: ArtworkImage[];
+  /** T-081 — venues that have accepted this artwork. Empty list when
+   * nobody has invited it (or accepted invitations have all been
+   * uninvited / venue paused). May be absent on older API responses
+   * (pre-T-081 deploy) — default to empty in the renderer. */
+  venues?: ArtworkVenueRef[];
+}
+
+/** T-081 — venue reference embedded on ArtworkFull. */
+export interface ArtworkVenueRef {
+  id: string;
+  slug: string;
+  name: string;
+  kind: VenueKind;
+  city: string | null;
+  country: string | null;
 }
 
 export interface CollectionSummary {
@@ -1401,6 +1416,76 @@ export async function decideVenueRequest(
     const text = await res.text().catch(() => "");
     throw new Error(`venue-requests ${decision} ${res.status}: ${text || res.statusText}`);
   }
+}
+
+/** T-081.3 — public venue list row. Subset of the full Venue shape;
+ * the public list is for a grid + map overlay and doesn't surface
+ * about / opening_info / instagram. */
+export interface PublicVenue {
+  id: string;
+  slug: string;
+  name: string;
+  kind: VenueKind;
+  city: string | null;
+  country: string | null;
+  lat: number | null;
+  lng: number | null;
+  website_url: string | null;
+}
+
+export interface PublicVenueDetail {
+  id: string;
+  slug: string;
+  name: string;
+  kind: VenueKind;
+  about: string | null;
+  address: string | null;
+  city: string | null;
+  country: string | null;
+  lat: number | null;
+  lng: number | null;
+  website_url: string | null;
+  instagram_handle: string | null;
+  opening_info: string | null;
+  artworks: PublicVenueArtwork[];
+}
+
+export interface PublicVenueArtwork {
+  artwork_id: string;
+  title: string | null;
+  artist_id: string;
+  artist_slug: string;
+  artist_display_name: string;
+  primary_image_url: string | null;
+}
+
+export async function listPublicVenues(
+  opts: { city?: string; cursor?: string } = {},
+  init?: RequestInit,
+): Promise<Paginated<PublicVenue>> {
+  const usp = new URLSearchParams();
+  if (opts.city) usp.set("city", opts.city);
+  if (opts.cursor) usp.set("cursor", opts.cursor);
+  const qs = usp.toString();
+  const res = await apiFetch(`/v1/venues${qs ? `?${qs}` : ""}`, init);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`venues ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as Paginated<PublicVenue>;
+}
+
+export async function getPublicVenue(
+  slug: string,
+  init?: RequestInit,
+): Promise<PublicVenueDetail | null> {
+  const res = await apiFetch(`/v1/venues/${encodeURIComponent(slug)}`, init);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`venues/:slug ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as PublicVenueDetail;
 }
 
 /** Patch the current artist's settings. Body keys are optional; only

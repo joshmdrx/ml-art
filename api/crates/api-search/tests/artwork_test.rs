@@ -26,6 +26,14 @@ struct Artwork {
     availability: String,
     artist: Artist,
     images: Vec<Image>,
+    #[serde(default)]
+    venues: Vec<ArtworkVenue>,
+}
+
+#[derive(Deserialize, Debug)]
+struct ArtworkVenue {
+    slug: String,
+    name: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -44,6 +52,8 @@ async fn artwork_detail_happy_path(pool: PgPool) {
     let (status, artwork): (_, Artwork) =
         get_json(app, "/v1/artworks/bbb11111-1111-1111-1111-111111111111").await;
     assert_eq!(status, 200);
+    // T-081 — venues is always present (empty when none accepted).
+    assert!(artwork.venues.is_empty());
     assert_eq!(artwork.title.as_deref(), Some("Blue Morning"));
     assert_eq!(artwork.medium.as_deref(), Some("Painting"));
     assert_eq!(artwork.price_cents, Some(100000));
@@ -81,6 +91,41 @@ async fn artwork_missing_uuid_returns_404(pool: PgPool) {
     let app = app_keyword_only(pool);
     let (status, _) = get_status(app, "/v1/artworks/00000000-0000-0000-0000-000000000000").await;
     assert_eq!(status, 404);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn artwork_surfaces_accepted_venues(pool: PgPool) {
+    // T-081 — set up an active venue + an accepted venue_artworks row,
+    // then assert /v1/artworks/:id includes the venue ref.
+    let venue_id = sqlx::types::Uuid::parse_str("dddddddd-dddd-dddd-dddd-dddddddddddd").unwrap();
+    sqlx::query(
+        r#"
+        INSERT INTO venues (id, slug, name, kind, owner_user_id, status, city, country)
+        VALUES ($1, 'positive-gallery', 'Positive Gallery', 'gallery',
+                '99999999-9999-9999-9999-999999999999', 'active',
+                'London', 'GB')
+        "#,
+    )
+    .bind(venue_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO venue_artworks (venue_id, artwork_id, status, decided_at)
+         VALUES ($1, 'bbb11111-1111-1111-1111-111111111111'::uuid, 'accepted', now())",
+    )
+    .bind(venue_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let app = app_keyword_only(pool);
+    let (status, artwork): (_, Artwork) =
+        get_json(app, "/v1/artworks/bbb11111-1111-1111-1111-111111111111").await;
+    assert_eq!(status, 200);
+    assert_eq!(artwork.venues.len(), 1);
+    assert_eq!(artwork.venues[0].slug, "positive-gallery");
+    assert_eq!(artwork.venues[0].name, "Positive Gallery");
 }
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
