@@ -39,6 +39,11 @@ use uuid::Uuid;
 
 const RRF_K: i64 = 60;
 const CANDIDATE_POOL: i64 = 200;
+/// T-082 — defensive ceiling on `?refine=` text length. Refine is a
+/// free-form input that pays one Jina embed per request; without a cap
+/// a malicious caller could spend our budget on long strings. 500 chars
+/// is comfortably more than any natural-language refinement.
+const REFINE_MAX_LEN: usize = 500;
 /// Upper bound on `size=l` band — mirrors the validator's
 /// `MAX_DIMENSION_CM` so an artwork created at the ceiling is still
 /// filterable. Kept local to avoid pulling the core::validation
@@ -74,6 +79,16 @@ pub struct SearchParams {
     /// part of the validated path. Phase C of T-010.
     #[serde(default)]
     pub modifiers: Option<String>,
+    /// T-082 — free-form "refine with text" override. Adds a fourth RRF
+    /// channel (`refine_ranked`) alongside keyword + semantic + taste
+    /// when at least one primary signal is also set (q, image_upload_id,
+    /// or seed_artwork_id). Without a primary signal, refine is silently
+    /// ignored — refine alone would just be regular text search, so we
+    /// don't promote it into the keyword channel. Composes with modifiers
+    /// (refine modifies the result-set ranking; modifiers modify the
+    /// anchor vector). Length-capped at REFINE_MAX_LEN.
+    #[serde(default)]
+    pub refine: Option<String>,
 
     // Filters
     #[serde(default)]
@@ -283,6 +298,35 @@ pub async fn handle(
     let has_text = params.q.as_deref().is_some_and(|q| !q.trim().is_empty());
     let has_visual_anchor = params.image_upload_id.is_some() || params.seed_artwork_id.is_some();
 
+    // T-082 — resolve the refine vector. Only fires when:
+    //   1. `?refine=…` is set with a non-empty trimmed value, AND
+    //   2. At least one primary signal is set (text or visual anchor).
+    //
+    // Without a primary signal, refine is silently dropped — alone it
+    // would just be regular text search, and we'd be promoting refine
+    // into the keyword channel rather than the refine channel. Better
+    // to no-op than to do something subtly different from what the URL
+    // shape claims.
+    //
+    // Length-capped defensively; refine is a free-form input that pays
+    // one Jina embed per request.
+    let refine_text = params
+        .refine
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let refine_vec: Option<Vector> = match refine_text {
+        Some(r) if has_text || has_visual_anchor => {
+            if r.len() > REFINE_MAX_LEN {
+                return Err(ApiError::BadRequest(format!(
+                    "refine: text too long (max {REFINE_MAX_LEN} chars)"
+                )));
+            }
+            state.embedder.embed_text(r).await?
+        }
+        _ => None,
+    };
+
     // T-056.3 — decide whether the taste channel joins this request's
     // RRF blend. Three gates ALL must hold:
     //
@@ -338,6 +382,15 @@ pub async fn handle(
         );
     }
 
+    if refine_vec.is_some() {
+        tracing::info!(
+            refine = "on",
+            refine_len = refine_text.map(str::len),
+            rrf_k = RRF_K,
+            "search with refine channel"
+        );
+    }
+
     // Fetch limit+1 so we can detect whether a next page exists
     // without a separate COUNT query. If we got back limit+1 rows,
     // drop the sentinel and issue a cursor pointing to the next
@@ -348,6 +401,7 @@ pub async fn handle(
             &params,
             semantic_anchor.as_ref(),
             taste_vec.as_ref(),
+            refine_vec.as_ref(),
             sort,
             limit,
             offset,
@@ -382,6 +436,7 @@ pub async fn handle(
                     "location": params.location.clone(),
                     "size": params.size.clone(),
                     "modifiers": params.modifiers.clone(),
+                    "refine": params.refine.clone(),
                     "image_upload_id": params.image_upload_id,
                     "sort": params.sort,
                     "result_count": items.len(),
@@ -403,11 +458,20 @@ pub async fn handle(
 // RRF fusion via the same shape `semantic_ranked` uses. Empty CTE when
 // None so the COALESCE-with-0 in the rrf_score short-circuits cleanly
 // and existing queries are unchanged.
+//
+// T-082 — `refine_vec` adds a fourth `refine_ranked` channel. Unlike
+// taste (which only re-ranks), refine joins the candidate-contribution
+// clause: a refine-only match (no keyword + no semantic-anchor match)
+// can still surface a row, because the user is saying "I'm looking for
+// this concept too." Without that, "abstract" as refine wouldn't pull
+// in abstract works that the visual anchor didn't already find.
+#[allow(clippy::too_many_arguments)]
 async fn run_hybrid(
     state: &AppState,
     params: &SearchParams,
     query_vec: Option<&Vector>,
     taste_vec: Option<&Vector>,
+    refine_vec: Option<&Vector>,
     sort: SortOrder,
     limit: i64,
     offset: i64,
@@ -470,6 +534,30 @@ async fn run_hybrid(
         }
     };
 
+    // T-082 — refine channel. Same shape as semantic/taste; empty CTE
+    // when refine is absent so the rest of the SQL doesn't branch.
+    let refine_cte = match refine_vec {
+        Some(v) => {
+            let idx = next.bind(&mut args, v.clone())?;
+            format!(
+                "refine_ranked AS (
+                    SELECT ae.artwork_id AS id,
+                           ROW_NUMBER() OVER (ORDER BY ae.embedding <=> ${idx}) AS rk
+                    FROM artwork_embeddings ae
+                    WHERE ae.model_name = ${m} AND ae.model_version = ${mv}
+                    ORDER BY ae.embedding <=> ${idx}
+                    LIMIT ${cp}
+                )",
+                m = model_name_idx,
+                mv = model_version_idx,
+                cp = candidate_pool_idx,
+            )
+        }
+        None => {
+            "refine_ranked AS (SELECT NULL::uuid AS id, NULL::bigint AS rk WHERE false)".to_string()
+        }
+    };
+
     let (filters_sql, _) = build_filters(params, &mut next, &mut args)?;
     let order_sql = build_order(sort);
     // Fetch `limit + 1` so the caller can detect whether a next
@@ -492,7 +580,8 @@ async fn run_hybrid(
             LIMIT ${cp}
         ),
         {semantic_cte},
-        {taste_cte}
+        {taste_cte},
+        {refine_cte}
         SELECT
             a.id,
             a.title,
@@ -505,7 +594,8 @@ async fn run_hybrid(
             a.availability,
             (COALESCE(1.0/({rrf_k} + k.rk), 0)
               + COALESCE(1.0/({rrf_k} + s.rk), 0)
-              + COALESCE(1.0/({rrf_k} + t.rk), 0))::float8 AS rrf_score
+              + COALESCE(1.0/({rrf_k} + t.rk), 0)
+              + COALESCE(1.0/({rrf_k} + r.rk), 0))::float8 AS rrf_score
         FROM artworks a
         JOIN artists ar ON ar.id = a.artist_id
         LEFT JOIN artwork_images ai
@@ -515,11 +605,12 @@ async fn run_hybrid(
         LEFT JOIN keyword_ranked  k ON k.id = a.id
         LEFT JOIN semantic_ranked s ON s.id = a.id
         LEFT JOIN taste_ranked    t ON t.id = a.id
+        LEFT JOIN refine_ranked   r ON r.id = a.id
         WHERE a.deleted_at IS NULL
           AND a.status = 'published'
           AND ar.deleted_at IS NULL
           AND ar.status = 'active'
-          AND (k.id IS NOT NULL OR s.id IS NOT NULL)
+          AND (k.id IS NOT NULL OR s.id IS NOT NULL OR r.id IS NOT NULL)
           {filters_sql}
         {order_sql}
         LIMIT ${limit_idx} OFFSET ${offset_idx}

@@ -5,9 +5,20 @@
 
 mod common;
 
-use common::{app_keyword_only, get_json, get_status, MIGRATOR};
+use common::{app_keyword_only, app_with_fixed_vector, get_json, get_status, MIGRATOR};
+use pgvector::Vector;
 use serde::Deserialize;
 use sqlx::PgPool;
+
+/// Build a unit vector with a 1.0 at `pos`. Mirrors the fixture seed +
+/// the helper that lives in artwork_embeddings_test; duplicated rather
+/// than shared because each integration-test binary compiles its own
+/// `common` module.
+fn unit_vector_at(pos: usize) -> Vector {
+    let mut v = vec![0.0_f32; 1024];
+    v[pos] = 1.0;
+    Vector::from(v)
+}
 
 #[derive(Deserialize, Debug)]
 struct Summary {
@@ -450,4 +461,81 @@ async fn search_cursor_threads_through_filters(pool: PgPool) {
     // No third page — confirms the filter is still applied on page 2
     // (without it, the cursor offset would land in non-painting rows).
     assert!(p2.next_cursor.is_none());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T-082 — refine-with-text channel
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Refine alone (no q, no image_upload_id, no seed_artwork_id) is silently
+/// dropped — `?refine=` is a modifier, not a search. Without a primary
+/// signal the response is the no-query path: published artworks newest
+/// first. The embedder is enabled (with_fixed_vector) so this proves
+/// refine is gated on the *primary signal*, not on embedder availability.
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_refine_without_primary_signal_is_noop(pool: PgPool) {
+    let app = app_with_fixed_vector(pool, unit_vector_at(0));
+    let (status, page): (_, Page) = get_json(app, "/v1/search?refine=more+abstract&limit=10").await;
+    assert_eq!(status, 200);
+    // 5 published artworks; identical to the no-query path. If refine
+    // were leaking into the keyword channel we'd get a 500 (the vector
+    // CTEs would self-join on nothing) or a different ordering.
+    assert_eq!(page.items.len(), 5);
+}
+
+/// Refine with a text query: both channels fire. Result-set isn't empty
+/// (regression-guard against the SQL going sideways) and the keyword
+/// match is preserved as one of the candidates.
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_refine_with_text_query_returns_results(pool: PgPool) {
+    let app = app_with_fixed_vector(pool, unit_vector_at(0));
+    let (status, page): (_, Page) =
+        get_json(app, "/v1/search?q=blue&refine=darker&limit=10").await;
+    assert_eq!(status, 200);
+    // With fixed_vector the refine + semantic channels rank every
+    // artwork at the same position (all distance 1.0 to pos-0). The
+    // keyword channel pins "Blue Morning" via its tsvector match.
+    // The refine channel also contributes candidates, so all 5
+    // published artworks land in the result set; ordering puts the
+    // keyword-matched one first via the higher rrf_score.
+    assert!(!page.items.is_empty());
+    assert_eq!(page.items[0].title.as_deref(), Some("Blue Morning"));
+}
+
+/// Defensive cap on refine text length — refine is a free-form input
+/// that pays one Jina embed per request. Over the cap → 400.
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_refine_rejects_oversized_text(pool: PgPool) {
+    let app = app_with_fixed_vector(pool, unit_vector_at(0));
+    let long = "a".repeat(501); // REFINE_MAX_LEN + 1
+    let (status, _) =
+        get_status(app, &format!("/v1/search?q=blue&refine={long}&limit=10")).await;
+    assert_eq!(status, 400);
+}
+
+/// With the embedder disabled, refine silently drops (mirrors the q-text
+/// degradation). The request still succeeds; results match the
+/// keyword-only path without refine.
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_refine_with_disabled_embedder_silently_drops(pool: PgPool) {
+    let app = app_keyword_only(pool);
+    let (status, page): (_, Page) =
+        get_json(app, "/v1/search?q=sculpture&refine=stone&limit=10").await;
+    assert_eq!(status, 200);
+    // Same as the keyword-only sculpture query — both Stone Forms.
+    assert_eq!(page.items.len(), 2);
+    for item in &page.items {
+        assert_eq!(item.artist_slug, "bruno-test");
+    }
+}
+
+/// Empty / whitespace refine is treated as absent. No 400; behaves as
+/// the bare keyword query.
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn search_refine_empty_string_is_ignored(pool: PgPool) {
+    let app = app_with_fixed_vector(pool, unit_vector_at(0));
+    let (status, page): (_, Page) =
+        get_json(app, "/v1/search?q=blue&refine=&limit=10").await;
+    assert_eq!(status, 200);
+    assert_eq!(page.items[0].title.as_deref(), Some("Blue Morning"));
 }
