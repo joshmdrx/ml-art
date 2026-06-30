@@ -1021,6 +1021,84 @@ export async function getStudioMe(
   return (await res.json()) as StudioArtist;
 }
 
+/** T-083 — `GET /v1/me`. The current authenticated user, with the
+ * `is_admin` flag used by `/admin/*` route gating. Returns null for
+ * unauthenticated callers (401) so server components can treat that
+ * the same as "not an admin." */
+export interface Me {
+  id: string;
+  clerk_user_id: string;
+  email: string;
+  is_admin: boolean;
+}
+export async function getMe(init?: RequestInit): Promise<Me | null> {
+  const res = await apiFetch("/v1/me", init);
+  if (res.status === 401 || res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`me ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as Me;
+}
+
+/** T-083 — admin queue row for `/admin/artists`. Joined with the
+ * owning user's email + artwork count for sortable context. */
+export interface AdminArtistItem {
+  id: string;
+  slug: string;
+  display_name: string;
+  email: string | null;
+  status: "pending" | "active" | "paused" | "rejected";
+  city: string | null;
+  country: string | null;
+  created_at: string;
+  updated_at: string;
+  artwork_count: number;
+}
+
+export async function listAdminArtists(
+  opts: { status?: string; cursor?: string },
+  init?: RequestInit,
+): Promise<Paginated<AdminArtistItem>> {
+  const usp = new URLSearchParams();
+  if (opts.status) usp.set("status", opts.status);
+  if (opts.cursor) usp.set("cursor", opts.cursor);
+  const qs = usp.toString();
+  const res = await apiFetch(`/v1/admin/artists${qs ? `?${qs}` : ""}`, init);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`admin/artists ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as Paginated<AdminArtistItem>;
+}
+
+export type AdminArtistTransition =
+  | "approve"
+  | "decline"
+  | "pause"
+  | "unpause";
+
+/** Apply an admin transition to an artist. Returns the new (id, status)
+ * tuple on success; throws for 403/404/409 with the API's message body
+ * so the caller can surface it via `toUserMessage`. */
+export async function adminArtistTransition(
+  id: string,
+  action: AdminArtistTransition,
+  init?: RequestInit,
+): Promise<{ id: string; status: string }> {
+  const res = await apiFetch(
+    `/v1/admin/artists/${encodeURIComponent(id)}/${action}`,
+    { ...init, method: "POST" },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `admin/artists/${action} ${res.status}: ${text || res.statusText}`,
+    );
+  }
+  return (await res.json()) as { id: string; status: string };
+}
+
 /** Patch the current artist's settings. Body keys are optional; only
  * include the fields you intend to change. Returns the updated artist. */
 export async function updateStudioSettings(
