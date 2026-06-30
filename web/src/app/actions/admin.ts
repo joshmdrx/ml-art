@@ -16,6 +16,7 @@ import { revalidatePath } from "next/cache";
 import {
   adminArtistTransition,
   adminImageOverride,
+  adminVenueTransition,
   type AdminArtistTransition,
 } from "@/lib/api";
 
@@ -37,5 +38,17 @@ export async function overrideImageRejection(
   const result = await adminImageOverride(id);
   revalidatePath("/admin/images");
   revalidatePath("/admin");
+  return result;
+}
+
+export async function transitionVenue(
+  id: string,
+  decision: "approve" | "decline",
+): Promise<{ id: string; status: string }> {
+  const result = await adminVenueTransition(id, decision);
+  revalidatePath("/admin/venues");
+  revalidatePath("/admin");
+  // Public venue surfaces flip visibility on approve.
+  revalidatePath("/venues");
   return result;
 }

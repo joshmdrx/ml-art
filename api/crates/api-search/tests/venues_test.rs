@@ -384,3 +384,100 @@ async fn public_detail_pending_review_is_404(pool: PgPool) {
     let (status, _) = send_authed(app, "GET", &format!("/v1/venues/{}", v.slug), "", None).await;
     assert_eq!(status, 404);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T-081.4 — admin venue queue
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ADMIN_BEARER: &str = "test-user_test_admin";
+
+#[derive(Deserialize, Debug)]
+struct AdminVenueListItem {
+    id: String,
+    slug: String,
+    status: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct AdminVenueListPage {
+    items: Vec<AdminVenueListItem>,
+}
+
+#[derive(Deserialize, Debug)]
+struct AdminVenueStatus {
+    id: String,
+    status: String,
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn admin_venue_list_requires_admin(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+    let (status, _) = send_authed(app, "GET", "/v1/admin/venues", OWNER_BEARER, None).await;
+    assert_eq!(status, 403);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn admin_venue_queue_lists_pending_review(pool: PgPool) {
+    let app = app_with_test_auth(pool);
+    let _ = create_venue(&app, OWNER_BEARER, "Awaiting Approval").await;
+    let (status, page): (_, AdminVenueListPage) =
+        get_json_authed(app, "/v1/admin/venues", ADMIN_BEARER).await;
+    assert_eq!(status, 200);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].status, "pending_review");
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn admin_venue_approve_flips_to_active(pool: PgPool) {
+    let app = app_with_test_auth(pool.clone());
+    let v = create_venue(&app, OWNER_BEARER, "Approve Me").await;
+    let uri = format!("/v1/admin/venues/{}/approve", v.id);
+    let (status, bytes) = send_authed(app, "POST", &uri, ADMIN_BEARER, None).await;
+    assert_eq!(status, 200);
+    let row: AdminVenueStatus = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(row.status, "active");
+
+    let audit_action: String = sqlx::query_scalar(
+        "SELECT action FROM admin_audit_log
+         WHERE target_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(Uuid::parse_str(&v.id).unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audit_action, "venue.approve");
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn admin_venue_decline_flips_to_declined(pool: PgPool) {
+    let app = app_with_test_auth(pool.clone());
+    let v = create_venue(&app, OWNER_BEARER, "Decline Me").await;
+    let uri = format!("/v1/admin/venues/{}/decline", v.id);
+    let (status, bytes) = send_authed(app, "POST", &uri, ADMIN_BEARER, None).await;
+    assert_eq!(status, 200);
+    let row: AdminVenueStatus = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(row.status, "declined");
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn admin_venue_approve_already_active_is_noop(pool: PgPool) {
+    let app = app_with_test_auth(pool.clone());
+    let v = create_venue(&app, OWNER_BEARER, "Already Active").await;
+    // Flip to active via the admin route first.
+    let uri = format!("/v1/admin/venues/{}/approve", v.id);
+    let (s, _) = send_authed(app.clone(), "POST", &uri, ADMIN_BEARER, None).await;
+    assert_eq!(s, 200);
+
+    // Re-approve: 200 + no new audit row.
+    let (s, _) = send_authed(app, "POST", &uri, ADMIN_BEARER, None).await;
+    assert_eq!(s, 200);
+
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint FROM admin_audit_log WHERE target_id = $1",
+    )
+    .bind(Uuid::parse_str(&v.id).unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 1, "second approve must not double-write the audit");
+}

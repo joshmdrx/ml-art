@@ -458,61 +458,29 @@ Threshold deliberately lowered from the spec's `>= 10` to `>= 5` — a completed
 
 **Trigger:** First real complaint that "my piece doesn't show up when I search for X angle / Y colour" that can be traced to this. Or routine audit shows ≥ ~10% of artworks have non-primary images and we're getting silent retrieval misses.
 
-### `T-081` Venues — galleries/shops as discovery destinations
-**Where:** New migration (`venues` + `venue_artworks` tables); new `api-search::venues` module; new `/v1/studio/venues/*` + `/v1/venues/*` endpoints; new web routes `/venues`, `/venues/:slug`, `/studio/venues/*`; map integration via `searchMapClient`.
-**Depends on:** T-083 (admin surface) for the `pending_review → active` verification flip.
-**Why:** Not every independent contemporary artist has their own studio worth visiting. Galleries, project spaces, and curated shops give the discovery story a richer supply side: "see this work in person at X" rather than only "see this work online." Widens the platform's reach without changing what an artwork *is* — venues are a parallel pin source on the map, with a controlled consent flow between venue admins and the artists they represent.
+### ~~`T-081` Venues — galleries/shops as discovery destinations~~ ✓ shipped 2026-06-30
 
-**Decisions confirmed 2026-06-29:**
-- Multiple venues per user account (galleries with branches, shops with several locations).
-- One-direction consent: **venue invites artwork → artist accepts/declines**. Bidirectional volunteer-flow deferred — keeps abuse vectors low for v1.
-- Public verification: new venues default to `status='pending_review'`; admin (see T-083) flips to `active` before public listing. Mirrors the artist-onboarding admin gate.
-- Single concept per row: *"this artwork is at this venue"* — no separate "on display" vs "for sale" distinction in v1. Whether the work is purchasable is already on the artwork (`availability`).
-- Cascade-clear on artwork delete: `venue_artworks.artwork_id` FK → `ON DELETE CASCADE`. The artwork no longer exists, so it can't be at a venue.
-- Single owner per venue (`venues.owner_user_id` FK to users). Multi-admin co-ownership deferred until requested.
+Four sub-commits closing the feature end-to-end:
 
-**Acceptance:**
-- Migration `0024_venues.sql`: `venues (id, slug, name, kind text check kind in ('gallery','shop','studio_collective','cafe_collab','other'), about, address, city, country, lat, lng, geocoded_at, website_url, instagram_handle, opening_info, owner_user_id, status text check status in ('pending_review','active','paused','declined'), created_at, updated_at, deleted_at)` + `venue_artworks (venue_id, artwork_id, status text check ('pending','accepted','declined'), requested_at, decided_at, primary key (venue_id, artwork_id), artwork_id fk on delete cascade)`. Indexes: `(slug)` unique partial on non-deleted; `(owner_user_id)`; `(status, lat, lng)` partial for map scan; `(artwork_id, status)` for "currently at" reads.
-- `core::venues` module: row types, helpers, geocoding reuse via `JobEvent::VenueGeocode` (mirror `ArtistLocationGeocode`).
-- Studio API:
-  - `POST /v1/studio/venues` (create — `pending_review`)
-  - `PATCH /v1/studio/venues/:id` (partial — owner only — `deserialize_double_option` per T-072)
-  - `DELETE /v1/studio/venues/:id` (soft via `deleted_at`)
-  - `GET /v1/studio/venues` (list own venues)
-  - `POST /v1/studio/venues/:id/artworks/:artwork_id` (invite — creates `pending` row; 404 if artist soft-deleted artwork)
-  - `DELETE /v1/studio/venues/:id/artworks/:artwork_id` (uninvite; idempotent)
-  - `GET /v1/studio/venues/:id/artworks` (paginated; includes pending/accepted/declined)
-  - Artist-side: `POST /v1/studio/venue-requests/:venue_id/:artwork_id/accept`, `.../decline` (artist accepts/declines a venue's invite for their own artwork)
-  - `GET /v1/studio/venue-requests` (artist's pending inbox)
-- Public API:
-  - `GET /v1/venues` (paginated; `status='active' AND deleted_at IS NULL`; supports `?bbox=`, `?city=`)
-  - `GET /v1/venues/:slug` (404 indistinguishably for not-found / pending / deleted)
-  - `GET /v1/venues/:slug/artworks` (only `accepted` rows)
-  - `GET /v1/search/map` extended to optionally include venue pins (`?include=venues` or merged by default — TBD during build)
-  - `ArtworkFull.venues: Vec<VenueRef>` — list of accepted venues for "Currently at" surface
-- Web:
-  - `/studio/venues` — list owner's venues + create button; modal follows URL-driven pattern (`?id=`, `?tab=`) per `docs/ui-patterns.md`. Multi-step: details / artworks tab.
-  - Artwork invitation in studio: multi-select grid mirrors `SeriesEditModal`'s artworks tab.
-  - `/studio/venue-requests` — artist's inbox; accept/decline per row.
-  - `/venues` — public index w/ grid + map overlay.
-  - `/venues/:slug` — public detail page.
-  - `/artworks/:id` — "Currently at:" strip linking to venue pages.
-  - Map: venue pins styled distinctly from artist pins (different colour or icon).
-- Verification flow (admin side, T-083): admin queue at `/admin/venues` lists `pending_review`; approve flips to `active`, decline flips to `declined`.
-- Tests: ≥10 integration tests (CRUD, consent flow, ownership boundaries, public visibility gates, cascade-clear).
+- **T-081.1** — Schema + backend. Migration `0025_venues.sql` (venues + venue_artworks tables + indexes). `core::venues` row types, `core::geocoding::geocode_and_update_venue`, `JobEvent::VenueGeocode`. Nine endpoints (studio CRUD + invitation flow + artist accept/decline + public reads). 15 integration tests.
+- **T-081.2** — Studio UI. `/studio/venues` list page + `VenueEditModal` (URL-driven, two tabs: Details + Artworks). `/studio/venue-requests` artist inbox with Accept / Decline. `lib/api.ts` + `actions/venues.ts` server-action wrappers including a diff helper that synthesises bulk-replace from per-row idempotent invite/uninvite.
+- **T-081.3** — Public surfaces. `/venues` paginated index + `/venues/[slug]` detail page. `ArtworkFull.venues: Vec<ArtworkVenueRef>` field surfaces accepted venues on `/v1/artworks/:id`; artwork detail page renders a "Currently at" strip.
+- **T-081.4** — Admin queue + docs. `/v1/admin/venues` (list + approve + decline) + `/admin/venues` web page with status tabs. `/admin` index gains a fourth pending-venues tile. 5 new admin tests bring venues_test.rs to 20 total. `decisions.md` + `CHANGELOG.md` entries.
 
-**Subcommit plan:**
-- **T-081.1** — Schema + backend (migration, all venue + venue_artworks endpoints, consent flow, geocoding via JobEvent reuse, public reads, tests).
-- **T-081.2** — Studio UI (venues list + edit modal + artwork-invite grid + artist's venue-requests inbox).
-- **T-081.3** — Public surfaces (`/venues` index, `/venues/:slug` detail, map integration, ArtworkFull "Currently at" strip).
-- **T-081.4** — Docs (decisions.md entry; CHANGELOG; STRATEGY.md note).
+**Design choices** (full record in `decisions.md` 2026-06-30):
+- Top-level `venues` entity, not a row on `artists` — galleries show work by many artists.
+- One-direction consent: venue invites artwork → artist accepts/declines. Bidirectional volunteer-flow deferred.
+- Re-invite after decline reopens to `pending` — captures the real social dynamic.
+- Status starts `pending_review`; admin flips to `active`. CHECK constraint pins the status set.
+- Single concept per venue_artworks row ("this artwork is at this venue"). No on-display-vs-for-sale axis.
+- `ON DELETE CASCADE` on `venue_artworks.artwork_id` — the artwork doesn't exist, so it can't be at a venue.
 
-**Deferred follow-ups (don't block v1):**
-- Bidirectional consent (artist volunteers work to a venue).
-- Multi-admin co-ownership of a venue.
-- Opening hours as structured data (today: free-text `opening_info`).
-- Venue-level events / "this work on display until X date".
-- Venue follow / notifications (parallel to artist follow).
+**Deferred follow-ups:**
+- Map integration: venues as a distinct pin source on `/search?map=1`. Needs a parallel `/v1/search/venues/map` endpoint + GeoJSON layer.
+- Search-to-invite UI inside the venue edit modal (paste-an-id works, but autocomplete is the better UX).
+- Venue follow + new-work notifications — same retention loop as artist follow.
+- Venue-level events: "this artwork on display until X."
+- Pause / unpause admin actions for venues (artist queue has them; venues just have approve/decline in v1).
 
 ### ~~`T-082` Refine-with-text on visual search~~ ✓ shipped 2026-06-30
 

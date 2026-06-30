@@ -17,6 +17,110 @@ Format:
 
 ---
 
+## 2026-06-30 — T-081: venues — top-level entity, one-direction consent, single-concept membership
+
+**Context:** Independent contemporary artists often don't have a
+studio worth visiting. Galleries, project spaces, and curated shops
+materially widen the "see this work in person" supply side. The
+existing `artist_locations` table (T-038) carried per-artist pins
+but only for that artist's own studio / representation — a venue
+that shows three artists couldn't appear cleanly.
+
+**Decided:**
+
+1. **Top-level `venues` entity, not a row on `artists`.** A venue is
+   owned by a user (the gallery owner) and stands on its own. That
+   user may or may not also be an artist — these are independent
+   identities. Schema mirrors `artist_locations` for the address /
+   geocoding fields but adds `owner_user_id`, `status`, `slug`, and
+   public-facing copy (`about`, `opening_info`, `instagram_handle`).
+
+2. **One-direction consent: venue invites artwork → artist
+   accepts/declines.** Implemented as `venue_artworks (venue_id,
+   artwork_id, status, requested_at, decided_at)` with the status
+   pinned to `pending | accepted | declined`. Only `accepted` rows
+   surface publicly. Bidirectional flow (artist volunteers their
+   work to a venue) is deferred — more code, more abuse vector,
+   pre-launch we don't need it.
+
+3. **Re-invite after decline reopens to `pending`.** The
+   `ON CONFLICT` branch on the invite SQL flips a declined row
+   back to pending (resetting `requested_at`). Captures the real
+   social dynamic — a gallery and an artist may negotiate before
+   the artist agrees to be shown.
+
+4. **Status starts `pending_review`; admin (T-083) flips to
+   `active`.** Same manual-gate pattern as artist onboarding. New
+   venues stay hidden until an admin approves. The CHECK
+   constraint pins the set to `pending_review | active | paused |
+   declined`. Decline is reversible by an admin (re-pending) but
+   no UI affordance for that yet.
+
+5. **Single concept per `venue_artworks` row: "this artwork is at
+   this venue."** No separate "on display" vs "for sale" status. The
+   artwork's existing `availability` field already says whether the
+   piece is purchasable; layering a second axis would be confusing.
+
+6. **`ON DELETE CASCADE` on `venue_artworks.artwork_id`.** If the
+   artwork is hard-deleted, its venue rows go too — the artwork
+   doesn't exist, so it can't be at a venue. Soft-deleted artworks
+   keep their venue rows (the artwork still exists; it just isn't
+   public). Public reads filter on `a.status='published'` so
+   soft-deleted artworks don't leak.
+
+7. **Slug uniqueness scoped to non-deleted rows.** Same shape as
+   artists + series — delete a venue, the slug can be reused.
+
+8. **Geocoding via the existing job queue.** New `JobEvent::VenueGeocode`
+   variant + `geocode_and_update_venue` helper mirror the
+   `ArtistLocationGeocode` path. Studio create + patch enqueue
+   on address change; pre-geocode rows have `lat/lng` NULL and
+   stay off the map until the job lands.
+
+9. **Public detail surface is per-venue, not per-city.** `/venues`
+   index + `/venues/[slug]` detail. No per-city index page in v1 —
+   the index supports `?city=` as a filter param. Editorial
+   "London venues" landing pages are a follow-up.
+
+**Alternatives:**
+
+- **Reuse `artist_locations` and add a "shared" flag.** Rejected
+  early. The semantics are fundamentally different — an artist
+  location has one owning artist; a venue has many artists. Trying
+  to fit both into one table would force conditional surfaces
+  everywhere.
+- **Bidirectional invitation flow on day 1.** Rejected. Two paths,
+  two notification surfaces, two abuse vectors. v1 keeps it
+  one-direction; add the artist-volunteers path when there's actual
+  demand from real users.
+- **Venue verification via a separate `venue_verifications` table**
+  (with submitted documents / Companies House lookups). Rejected
+  — for pre-launch with a single admin manually approving, the
+  status column + audit log is enough. Heavier verification when
+  it becomes a real fraud vector.
+- **Auto-approve venues whose owner has an existing artist row.**
+  Rejected. The trust signal is different — being an artist on the
+  platform doesn't mean you operate a credible gallery. Manual
+  review stays.
+
+**Reversibility:** Medium. The `venues` + `venue_artworks` tables
+are additive; removing them would be a data migration but
+mechanical. The wire surfaces (`ArtworkFull.venues`, the public
+`/v1/venues/*` endpoints) are semver-meaningful — once a third
+party consumes them they're sticky.
+
+**Deferred follow-ups** (logged in TODO):
+- Map integration: venues as a distinct pin source on
+  `/search?map=1`. Needs a parallel `/v1/search/venues/map`
+  endpoint + GeoJSON layer.
+- Search-to-invite UI inside the venue edit modal (today the
+  affordance is paste-an-id, which is functional but clunky).
+- Venue follow / new-work notifications — same retention loop as
+  artist follow.
+- Venue-level events: "this artwork on display until X."
+
+---
+
 ## 2026-06-30 — T-083: admin surface — column over table, audit-before-mutate, layout-level 404 gate
 
 **Context:** Three queues need human approval before going public —

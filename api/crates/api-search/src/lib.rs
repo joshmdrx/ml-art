@@ -308,6 +308,18 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         )
         // T-083.5 — read-only audit log viewer.
         .route("/v1/admin/audit-log", get(admin::audit_log::list))
+        // T-081.4 — admin venue approval queue. Lands as part of
+        // T-081 since the venue schema didn't exist when T-083 was
+        // structured.
+        .route("/v1/admin/venues", get(admin::venues::list))
+        .route(
+            "/v1/admin/venues/:id/approve",
+            post(admin::venues::approve),
+        )
+        .route(
+            "/v1/admin/venues/:id/decline",
+            post(admin::venues::decline),
+        )
         // ── Venues (T-081). Studio side: the venue owner manages
         // their listings + invites artworks. Artist side: pending-
         // invitation inbox + accept / decline. Public side: index
