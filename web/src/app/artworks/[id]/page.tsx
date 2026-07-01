@@ -147,35 +147,6 @@ export default async function ArtworkPage({ params }: { params: Params }) {
               </p>
             )}
 
-            {/* T-081 — accepted venues for this artwork. Only renders
-                when at least one venue has accepted; empty list is
-                hidden entirely so the section doesn't appear without
-                content. */}
-            {artwork.venues && artwork.venues.length > 0 && (
-              <section className="mt-8">
-                <h2 className="text-xs text-muted mb-2">Currently at</h2>
-                <ul className="space-y-2">
-                  {artwork.venues.map((v) => (
-                    <li key={v.id}>
-                      <Link
-                        href={`/venues/${encodeURIComponent(v.slug)}`}
-                        className="text-sm underline underline-offset-2 hover:no-underline"
-                      >
-                        {v.name}
-                      </Link>
-                      {(v.city || v.country) && (
-                        <span className="text-muted text-xs">
-                          {" · "}
-                          {v.city ?? ""}
-                          {v.country ? `, ${v.country}` : ""}
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
-
             <div className="mt-8 flex flex-col gap-3">
               <InquireButton
                 artworkId={artwork.id}
