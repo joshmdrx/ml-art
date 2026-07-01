@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { TopNav } from "@/components/TopNav";
 import { ArtworkGrid } from "@/components/ArtworkGrid";
+import { ArtworkImageViewer } from "@/components/ArtworkImageViewer";
 import { BackToSearchLink } from "@/components/BackToSearchLink";
 import { InquireButton } from "@/components/InquireButton";
 import { SaveButton } from "@/components/SaveButton";
@@ -56,9 +57,6 @@ export default async function ArtworkPage({ params }: { params: Params }) {
 
   if (!artwork) notFound();
 
-  const primaryImg = artwork.images.find((i) => i.is_primary) ?? artwork.images[0] ?? null;
-  const otherImgs = artwork.images.filter((i) => i.id !== primaryImg?.id);
-
   const price = formatPrice(artwork.price_cents, artwork.currency);
   const dims = formatDimensions(artwork.dimensions);
   const availabilityLabel = labelForAvailability(artwork.availability);
@@ -72,34 +70,11 @@ export default async function ArtworkPage({ params }: { params: Params }) {
         <article className="grid grid-cols-1 md:grid-cols-12 gap-8 md:gap-12">
           {/* Image column */}
           <div className="md:col-span-7 lg:col-span-8">
-            {primaryImg ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={primaryImg.url}
-                alt={
-                  artwork.title
-                    ? `${artwork.title} by ${artwork.artist.display_name}`
-                    : `Untitled by ${artwork.artist.display_name}`
-                }
-                className="w-full h-auto border border-border bg-surface"
-              />
-            ) : (
-              <div className="aspect-square bg-border" />
-            )}
-
-            {otherImgs.length > 0 && (
-              <div className="mt-4 flex gap-3 overflow-x-auto">
-                {otherImgs.map((im) => (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    key={im.id}
-                    src={im.url}
-                    alt=""
-                    className="h-24 w-auto border border-border"
-                  />
-                ))}
-              </div>
-            )}
+            <ArtworkImageViewer
+              images={artwork.images}
+              title={artwork.title}
+              artistName={artwork.artist.display_name}
+            />
           </div>
 
           {/* Details column */}
