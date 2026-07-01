@@ -593,30 +593,21 @@ Backend at `api-search::calibrate` + frontend `CalibratePanel` on the homepage. 
 - Score-based pair selection (currently greedy farthest by euclidean over the raw centroids; could weight toward visually-recognisable / featured clusters more heavily).
 - Re-trigger the panel on demand from /settings (e.g. "re-tune what we show you") once that surface exists.
 
-### `T-062` Filter UI: price range slider
-**Where:** `web/src/components/FilterBar.tsx` + URL params; API already supports `price_min`/`price_max` via `api-search::search`.
-**Why:** "Something small under £500" is a real query we silently can't serve from the UI today. Schema + API have always been there; the only remaining gap is the slider component.
-**Acceptance:**
-- Currency-aware range slider via `lib/format.ts`.
-- URL-driven via the established `useUrlState` pattern (matches the existing size/medium/availability chips).
-- Mobile-friendly touch handles.
+### ~~`T-062` Filter UI: price range~~ — shipped 2026-06-29
 
-**Scope reduced 2026-06-29** — original ticket covered size + price + medium. Size shipped via `T-070`, medium multi-select shipped via `T-073`. Only price remains.
+Landed as a **custom-range input pair** (min / max number inputs inside the Price pill's dropdown) rather than a two-handled slider. Same UX outcome — "something small under £500" is one Min = 0, Max = 500 input. URL-driven via the existing `price_min` / `price_max` params; labels use `£` (T-080).
 
-**Open gap on medium:** the `medium=` filter today is a preset enum that doesn't match what artists actually type. Artists publish free-text (`oil on linen`, `gouache and ink on cotton`) while users filter against a fixed list (`Painting`, `Print`, `Photography`). Either:
+**Original slider scope kept as a follow-up if needed:** a two-handle range slider is more discoverable than typing numbers, but is significantly more code (touch handles, dragging math, keyboard support). Custom-range input pair covers the use case; upgrade only if user feedback surfaces the discoverability issue.
+
+**Follow-up — medium taxonomy vs artist input.** The `medium=` filter operates on the canonical `medium_category` column (T-073). Artists still enter free-text materials (`oil on linen`) in a separate field. Two possible follow-ups if the split feels wrong:
 - (a) normalise artist input at save time against a controlled taxonomy (typeahead with free-text fallback into "Other"), or
 - (b) retrieval-side mapping (Claude call on first publish picks the canonical bucket; cluster fallback via Jina embeddings).
 
-T-057 / T-061 will need a stable medium taxonomy anyway for taste-vector grouping, so this isn't only a UX cleanup. Decide approach before T-062 lands the multi-select.
+Not urgent — the current split works and taxonomy stability is already a soft benefit of T-073.
 
-### `T-063` Inline "more like this" in grid
-**Where:** `ArtworkCard` extension + a small flyout component; backend already has `GET /v1/artworks/:id/similar`.
-**Why:** Pinterest-style discovery deep-dive. Engine exists; we just don't surface it inline.
-**Acceptance:**
-- Desktop: hover ≥600ms reveals a 4-thumb similar-works tray below the card.
-- Mobile: long-press equivalent.
-- Doesn't navigate the main page; clicking a similar thumb does.
-- Lazy-loaded — only fires the fetch on hover threshold.
+### ~~`T-063` Inline "more like this" in grid~~ — shipped 2026-06-29
+
+`ArtworkCard` became a client component with a ≥600ms hover threshold that triggers a lazy fetch of 4 similar artworks via `/api/artworks/[id]/similar` (bridge route). Renders as a small tray below the card; clicking a thumb navigates to that artwork.
 
 ### `T-064` Lock API Gateway invoke URL to CloudFront-only
 **Where:** `infra/modules/web/main.tf` — add a custom-header check on the integration; CloudFront origin config gains a shared secret header.
