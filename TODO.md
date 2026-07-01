@@ -165,12 +165,23 @@ if the item was dropped, with a one-line reason.
   - `POST /v1/onboarding/extract-metadata` — Anthropic conversational extraction per artwork (gated by `ANTHROPIC_ENABLED`)
   - `POST /v1/onboarding/polish-statement` — optional LLM polish on the artist statement
 
-### `T-015` Spend caps + budget alarms
-**Where:** `infra/` (Terraform, not yet started)
-**Acceptance:**
-- AWS Budgets at $20/mo (prod) → email
-- Per-service spend monitors via scheduled jobs (cron-enqueued `JobEvent`)
-- Pre-launch checklist in `COST.md` satisfied
+### ~~`T-015` Spend caps + budget alarms~~ — partial ship 2026-07-01
+
+**AWS side (Terraform, mostly live):**
+- ✅ `aws_budgets_budget.monthly` at `$${var.monthly_budget_usd}` with 80% actual + 100% forecast alarms
+- ✅ Observability early-warning at 50% actual (added with T-084.2)
+- ✅ Per-Lambda daily invocations alarm (> 100k / day) — applied via targeted terraform apply 2026-07-01
+- 🔧 Committed but **not applied**: `api_cloudfront_daily_bytes` (20 GB/day) — same `CLOUDFLARE_API_TOKEN` block as the web CloudFront 5xx alarm from T-084.2. Whoever picks this up: `export CLOUDFLARE_API_TOKEN=<token>` + `terraform apply` from `infra/` will land both.
+- ❌ **Not done**: web CloudFront daily bytes alarm. Same CF-token block. Add + apply once the token wiring is settled.
+
+**External-service console clicks (need account access I don't have):**
+- ❌ Anthropic spend cap at $30/mo → https://console.anthropic.com → Billing → spend limits
+- ❌ Jina spend cap → https://jina.ai/embeddings → account settings
+- ❌ PostHog quota notification at 80% of free tier
+- ❌ Resend quota notification at 80% of free tier
+
+**Deferred:**
+- Per-service spend monitors via scheduled jobs. Belt-and-suspenders alongside AWS Budgets + the 4 new CloudWatch alarms; only worth building if the platform ever burns a real amount of money.
 
 ### ~~`T-034` Edge rate limiting (AWS WAF / CloudFront)~~ — shipped
 
