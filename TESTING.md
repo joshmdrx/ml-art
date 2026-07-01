@@ -100,23 +100,32 @@ misconfigurations that integration tests can't see.
 - Stub Jina via a wrapper (deterministic vectors per text query); we
   don't call real Jina from E2E
 
-**Coverage today (read-only browse + anonymous writes):**
+**Coverage:** [`docs/e2e-coverage.md`](./docs/e2e-coverage.md) is the
+authoritative register. Add or update a row there when you ship a
+user-visible feature — see [`CLAUDE.md`](./CLAUDE.md) → "E2E coverage
+discipline".
 
-1. `/` loads → "Recently added" grid is non-empty
-2. Search "ukiyo" from hero → results page shows Ukiyo-E cards
-3. Click a card → artwork detail page with image + "More like this"
-4. From a card, click artist name → portfolio with works
-5. `/neighborhoods` → click "Fields of Color" → detail page with works
-6. Unknown artist / artwork / neighborhood slugs → Next 404 pages
-7. Impossible filter (`location=nowhere-no-studio-here`) → empty state
-8. `/search?location=berlin` → results restricted to Berlin studios
-9. Anonymous Inquire end-to-end: open modal → submit → "Check your inbox" state → dev verify link resolves
-10. Signed-out Save click → redirect to `/sign-in?redirect_url=…`
-11. Verify page with bogus token → "Link doesn't look right"
-12. `/studio/inquiries` non-artist redirect + route reachable (signed-in)
-13. `/api/me/merge-anonymous` bridge fires once on sign-in + sessionStorage marker (signed-in)
+At a glance, the suite covers:
 
-**Gap: signed-in flows.** Save-modal interactions (open, toggle, create-with-first-artwork), Inquire when signed-in (email pre-filled, immediate "Sent"), and the future studio surfaces all need a way to drive Playwright as a signed-in user without Clerk's real OTP flow. Tracked as `T-031` in `TODO.md` (web test-mode session bypass mirroring the Rust `JwtVerifier::for_tests()` pattern).
+- **Anonymous browse**: home, keyword search, artwork detail, artist
+  portfolio, neighborhoods, 404s, empty state, location + generic
+  FilterBar, visual-search shell, geography map shell
+- **Anonymous writes**: inquire (with dev-verify link), signed-out
+  save redirect, bogus verify token
+- **Signed-in reads**: `/studio` + `/studio/settings` + `/studio/inquiries`
+  + `/studio/series` gates, `/collections` index, onboarding identity
+  step
+- **Signed-in writes**: save modal (toggle + inline create), membership
+  awareness, inquire (pre-filled email), follow toggle, notification
+  prefs round-trip, collection make-public + share URL
+- **Bridges**: anon → user merge (`/api/me/merge-anonymous`)
+- **Unsubscribe**: bogus + missing token error copy on `/u/confirm`
+
+**Signed-in test infrastructure**: `auth.setup.ts` signs up a fresh
+Clerk user per run via the `*+clerk_test@*` test-email convention.
+Storage state (cookies + localStorage) is persisted to
+`e2e/.auth/user.json` and consumed by the `chromium-authed` project;
+tests opt in by matching the filename pattern `*signed-in*.spec.ts`.
 
 **Where:**
 - `e2e/playwright.config.ts` — config + reporters
@@ -126,7 +135,7 @@ misconfigurations that integration tests can't see.
 **Retry policy:** retry failed tests once; two failures = real bug,
 not flakiness.
 
-**Acceptance:** flows pass against the local stack in under 60s. Current: ~11 specs, ~5s.
+**Acceptance:** flows pass against the local stack in under 60s. Current: 27 specs (2026-07-01).
 
 ### Tier 3 — Vitest units (web)
 

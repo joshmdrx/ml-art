@@ -20,7 +20,7 @@ PRs that look out-of-band and waste a review cycle.
 | **Rust / API** | [`CONTRIBUTING.md` → Code conventions → Rust](./CONTRIBUTING.md) | Module-level `//! …` docs required. Errors are `ApiError`. Auth is the `AuthedUser` extractor. Dynamic SQL via `AssertSqlSafe(format!(...))` + `PgArguments`. Row structs stay private to handler modules; `core::models` is wire types only. |
 | **DB / migrations** | [`CONTRIBUTING.md` → Code conventions → SQL / migrations](./CONTRIBUTING.md) | `NNNN_topic.sql` filenames, one concern per migration, never edit shipped ones. All tables get `created_at` + `updated_at`; soft delete via `deleted_at`. UUID v7 keys for batch sort order. |
 | **Background jobs** | [`CONTRIBUTING.md` → Background jobs](./CONTRIBUTING.md) | Anything outside a request goes through `core::jobs::JobEvent` + a handler arm in `core::jobs::handle`. Existing examples: `ArtistLocationGeocode`, `InquirySendVerification`, `EventLog`. |
-| **Tests** | [`TESTING.md`](./TESTING.md) | Three tiers: Rust integration via `sqlx::test`, Vitest unit, Playwright E2E. Add at the lowest tier that can prove the change. |
+| **Tests** | [`TESTING.md`](./TESTING.md) + [`docs/e2e-coverage.md`](./docs/e2e-coverage.md) | Four tiers: Rust integration via `sqlx::test`, Vitest unit, Playwright E2E, CI. Add at the lowest tier that can prove the change. The E2E register is the authoritative list of what's covered vs a gap — **update it in the same commit that ships a user-visible feature** (see "E2E coverage discipline" below). |
 | **Why we built it that way** | [`decisions.md`](./decisions.md) | Append-only record of significant choices. **Read the recent entries** before making structural calls — most things you'd be tempted to redesign are already discussed. |
 | **What ships when** | [`TODO.md`](./TODO.md) (live backlog) + [`CHANGELOG.md`](./CHANGELOG.md) (shipped) | New tickets land in TODO; shipped work moves to CHANGELOG. The `T-NNN` prefix is the canonical ticket id used in commits and comments. |
 | **Strategy / scope** | [`STRATEGY.md`](./STRATEGY.md), [`99-deferred.md`](./99-deferred.md) | Stage plan + things we've explicitly de-scoped. Worth checking before proposing major work. |
@@ -78,6 +78,36 @@ modes that produced PRs we had to redo:
   manually via `psql` against the Neon DB URL. Deploys don't run
   them automatically — apply *before* the api deploy if the new code
   reads/writes new columns.
+
+---
+
+## E2E coverage discipline
+
+Every user-visible flow either has a Playwright spec, or is explicitly
+noted as a gap in [`docs/e2e-coverage.md`](./docs/e2e-coverage.md).
+This is the register — treat it as source of truth for "is X covered?"
+
+**When you ship a user-visible feature, in the same commit:**
+
+1. Add a row to the register under the right section.
+2. Set the status:
+   - ✅ if you wrote (or updated) a spec — link it.
+   - ⏳ if you didn't — that's fine, but it's now a tracked gap. Give
+     it enough context that whoever picks it up knows what to assert.
+   - 🚫 only if E2E is genuinely the wrong tier (cron-driven, needs
+     external SMTP, non-deterministic personalisation, etc.). Write
+     the reason on the same line.
+3. Update the spec count in [`TESTING.md`](./TESTING.md) → "Acceptance"
+   under Tier 2 when you land a batch.
+
+**A "user-visible feature" is** a new route, a new button, a new
+modal, a URL-driven state change, or a change to any of those. Pure
+backend / infra / job changes don't need a register row.
+
+The register lives in `docs/e2e-coverage.md` because it's more
+detailed than a CLAUDE.md list can carry, and it doubles as a
+launch-readiness checklist — the count of ⏳ rows is roughly "how
+many golden paths could quietly break tomorrow."
 
 ---
 
