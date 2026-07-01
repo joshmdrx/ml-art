@@ -56,10 +56,42 @@ if [[ ! -d node_modules/@opennextjs ]]; then
   exit 1
 fi
 
+# T-065 — Sentry DSN is baked into the client bundle at build time
+# via NEXT_PUBLIC_SENTRY_DSN. The DSN is a public value (browsers
+# must know where to POST events) so storing it in SSM as a
+# SecureString is defence-in-depth, not confidentiality — the same
+# string appears in `view-source:wander.gallery` once deployed.
+# `|| true` so a build machine without SSO doesn't hard-fail on
+# `--check` when we're only exercising the OpenNext bundler.
+SENTRY_DSN_WEB=$(aws --profile "$PROFILE" --region "$REGION" ssm get-parameter \
+  --name "/ml-art-prod/sentry_dsn_web" --with-decryption \
+  --query 'Parameter.Value' --output text 2>/dev/null || true)
+if [[ -n "$SENTRY_DSN_WEB" ]]; then
+  export NEXT_PUBLIC_SENTRY_DSN="$SENTRY_DSN_WEB"
+  echo "▶ Sentry DSN baked into client bundle (from SSM)"
+else
+  echo "▶ SENTRY_DSN_WEB unavailable — client Sentry will no-op"
+fi
+
+# T-065 build workaround: Next 16's standalone output omits the
+# instrumentation files (js + map + nft.json) that OpenNext's
+# copyTracedFiles requires. We run `next build` ourselves, patch
+# the three files into the standalone dir, then hand off to
+# OpenNext with a no-op internal build (via `buildCommand` in
+# `open-next.config.ts`) so it doesn't clobber the fix by
+# rebuilding.
+echo "▶ pnpm build (standalone output)"
+PATH=/opt/homebrew/opt/node/bin:$PATH pnpm build
+
+if [[ -d .next/standalone/.next/server ]]; then
+  for f in instrumentation.js instrumentation.js.map instrumentation.js.nft.json; do
+    if [[ -f ".next/server/$f" && ! -f ".next/standalone/.next/server/$f" ]]; then
+      cp ".next/server/$f" ".next/standalone/.next/server/$f"
+    fi
+  done
+fi
+
 echo "▶ pnpm exec open-next build"
-# Node 23 (matches pnpm >= v11.3 requirement). The OpenNext build
-# shells out to `pnpm build` internally — Node version must satisfy
-# both the workspace's pnpm and OpenNext's own scripts.
 PATH=/opt/homebrew/opt/node/bin:$PATH pnpm exec open-next build
 
 SERVER_DIR=".open-next/server-functions/default"
@@ -116,11 +148,11 @@ echo "▶ syncing server-side secrets from SSM → web Lambda env"
 # secret read by server-side code (Clerk middleware, anon cookie
 # signer) must live in the Lambda's config env.
 #
-# Sentry is NOT synced here — @sentry/nextjs is incompatible with
-# OpenNext 4.0's copyTracedFiles step (see next.config.ts for the
-# rationale). Web errors are caught via CloudWatch + CloudFront 5xx
-# alarms until OpenNext upstream fixes the interaction.
-export CLERK_SECRET ANON_COOKIE_SECRET
+# T-065 — Sentry: SENTRY_DSN is set on the server tier so
+# `instrumentation.ts` reports SSR / route-handler errors to
+# Sentry. Same value as NEXT_PUBLIC_SENTRY_DSN above (single DSN
+# spans server + browser events on the Sentry side).
+export CLERK_SECRET ANON_COOKIE_SECRET SENTRY_DSN_WEB
 CLERK_SECRET=$(aws --profile "$PROFILE" --region "$REGION" ssm get-parameter \
   --name "/ml-art-prod/clerk_secret_key" --with-decryption \
   --query 'Parameter.Value' --output text)
@@ -138,6 +170,8 @@ import json, sys, os
 env = json.load(sys.stdin) or {}
 env['CLERK_SECRET_KEY'] = os.environ['CLERK_SECRET']
 env['ANON_COOKIE_SECRET'] = os.environ['ANON_COOKIE_SECRET']
+if os.environ.get('SENTRY_DSN_WEB'):
+    env['SENTRY_DSN'] = os.environ['SENTRY_DSN_WEB']
 print(json.dumps({'Variables': env}))
 ")
 

@@ -17,6 +17,7 @@
     "@radix-ui/react-alert-dialog": "^1.1.17",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-dropdown-menu": "^2.1.16",
+    "@sentry/nextjs": "^10.62.0",
     "@swc/helpers": "^0.5.23",
     "clsx": "^2.1.1",
     "lucide-react": "^1.16.0",
