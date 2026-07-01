@@ -137,6 +137,15 @@ an email suffixed `-admin+clerk_test@example.com`. The API's
 in `e2e/.auth/admin.json`; the `chromium-admin` project picks up
 `*admin-signed-in*.spec.ts`.
 
+**Artist test infrastructure**: `artist.setup.ts` signs up a fresh
+Clerk user AND drives them through the onboarding wizard end-to-end
+(identity → publish), yielding a user with a linked `artists` row.
+Metadata (email, display name, slug) persists to
+`e2e/.auth/artist-meta.json` so downstream specs can reach the
+public artist page or reference the display name. The
+`chromium-artist` project consumes `e2e/.auth/artist.json` and picks
+up `*artist-signed-in*.spec.ts`.
+
 **Where:**
 - `e2e/playwright.config.ts` — config + reporters
 - `e2e/tests/*.spec.ts` — flows
@@ -145,7 +154,7 @@ in `e2e/.auth/admin.json`; the `chromium-admin` project picks up
 **Retry policy:** retry failed tests once; two failures = real bug,
 not flakiness.
 
-**Acceptance:** flows pass against the local stack in under 60s. Current: 41 specs (2026-07-01).
+**Acceptance:** flows pass against the local stack in under 60s. Current: 43 specs + 3 setup fixtures (2026-07-01).
 
 ### Tier 3 — Vitest units (web)
 

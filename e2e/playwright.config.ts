@@ -58,7 +58,14 @@ export default defineConfig({
       testMatch: /admin\.setup\.ts/,
     },
 
-    // 3. Anonymous tests. Default state — fresh browser, no cookies.
+    // 3. One-shot Clerk sign-up + onboarding-wizard drive; saves
+    //    storageState for the `chromium-artist` project.
+    {
+      name: "artist-setup",
+      testMatch: /artist\.setup\.ts/,
+    },
+
+    // 4. Anonymous tests. Default state — fresh browser, no cookies.
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
@@ -66,8 +73,8 @@ export default defineConfig({
       testIgnore: /.*signed-in.*\.spec\.ts/,
     },
 
-    // 4. Signed-in-as-regular-user tests. Match `*-signed-in*.spec.ts`
-    //    but exclude the admin variant, which routes to `chromium-admin`.
+    // 5. Signed-in-as-regular-user tests. Match `*-signed-in*.spec.ts`
+    //    but exclude admin + artist variants that route elsewhere.
     {
       name: "chromium-authed",
       use: {
@@ -76,10 +83,10 @@ export default defineConfig({
       },
       dependencies: ["setup"],
       testMatch: /.*signed-in.*\.spec\.ts/,
-      testIgnore: /.*admin-signed-in.*\.spec\.ts/,
+      testIgnore: /.*(admin|artist)-signed-in.*\.spec\.ts/,
     },
 
-    // 5. Signed-in-as-admin tests. Match `*-admin-signed-in*.spec.ts`.
+    // 6. Signed-in-as-admin tests. Match `*-admin-signed-in*.spec.ts`.
     {
       name: "chromium-admin",
       use: {
@@ -88,6 +95,20 @@ export default defineConfig({
       },
       dependencies: ["admin-setup"],
       testMatch: /.*admin-signed-in.*\.spec\.ts/,
+    },
+
+    // 7. Signed-in-as-onboarded-artist tests. Match
+    //    `*-artist-signed-in*.spec.ts`. Setup drives the whole
+    //    onboarding wizard so downstream specs can drive /studio
+    //    without redirect-to-/onboarding friction.
+    {
+      name: "chromium-artist",
+      use: {
+        ...devices["Desktop Chrome"],
+        storageState: "e2e/.auth/artist.json",
+      },
+      dependencies: ["artist-setup"],
+      testMatch: /.*artist-signed-in.*\.spec\.ts/,
     },
   ],
 });

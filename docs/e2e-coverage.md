@@ -77,7 +77,7 @@ downgrade to 🚫 with the reason if you decide it's not worth it.
 | Feature | Spec | Status |
 |---|---|---|
 | Signed-in follow toggle + persistence (T-052) | [`25-follow-signed-in`](../e2e/tests/25-follow-signed-in.spec.ts) | ✅ |
-| Anon-pending-follow queue → replay after sign-in (T-052c) | — | ⏳ complex (anon → Clerk sign-up mid-test); write once we're happy accepting a slower spec |
+| Anon-pending-follow queue → replay after sign-in (T-052c) | [`45-follow-anon-queue`](../e2e/tests/45-follow-anon-queue.spec.ts) | ✅ mid-test Clerk sign-up; ~30s per run |
 | Notification prefs read + toggle round-trip (T-068) | [`26-notification-prefs-signed-in`](../e2e/tests/26-notification-prefs-signed-in.spec.ts) | ✅ |
 | One-click unsubscribe `/u/confirm` — bogus + missing token error copy | [`27-unsubscribe-token`](../e2e/tests/27-unsubscribe-token.spec.ts) | ✅ |
 | Valid unsubscribe token → prefs flipped off | — | 🚫 needs token minted by API in-test; covered by Rust integration + smoke |
@@ -92,13 +92,20 @@ downgrade to 🚫 with the reason if you decide it's not worth it.
 
 ## Studio (artist-side)
 
+**Artist fixture:** `artist.setup.ts` mints a fresh Clerk user AND
+drives them through the onboarding wizard end-to-end, producing a
+user with an `artists.user_id` link. Metadata (email, display name,
+slug) persists to `e2e/.auth/artist-meta.json` so downstream specs
+can reach the fixture's public artist page. The `chromium-artist`
+project picks up `*artist-signed-in*.spec.ts`.
+
 | Feature | Spec | Status |
 |---|---|---|
 | `/studio/settings` auto-provisions artist row (T-012 P1) | [`17-studio-settings-signed-in`](../e2e/tests/17-studio-settings-signed-in.spec.ts) | ✅ |
 | `/studio` portfolio for a fresh Clerk user (T-011 P3) | [`18-studio-portfolio-signed-in`](../e2e/tests/18-studio-portfolio-signed-in.spec.ts) | ✅ |
 | Onboarding wizard identity step (T-012 P1) | [`21-onboarding-signed-in`](../e2e/tests/21-onboarding-signed-in.spec.ts) | 🟡 identity step only; steps 2–5 not covered |
 | `/studio/series` non-artist redirects to onboarding (T-058.2) | [`28-studio-series-signed-in`](../e2e/tests/28-studio-series-signed-in.spec.ts) | ✅ |
-| Studio sidebar nav (2026-07-01 UX rewrite) | — | ⏳ smoke: assert 4 nav items render + active-state class on current route |
+| Studio sidebar nav (2026-07-01 UX rewrite) | [`46-studio-sidebar-artist-signed-in`](../e2e/tests/46-studio-sidebar-artist-signed-in.spec.ts) | ✅ 4 nav items + aria-current follows route (uses artist fixture) |
 | Artwork edit modal — URL-driven lifecycle | — | ⏳ open via `?artwork_id=…`, close reflects in URL |
 | Series edit modal — URL-driven lifecycle (T-058.2) | — | ⏳ same shape as artwork edit |
 | Studio → public artist page link (2026-07-01) | — | 🚫 single link, low breakage risk |
