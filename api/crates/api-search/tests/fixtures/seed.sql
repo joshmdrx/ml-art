@@ -49,7 +49,13 @@ INSERT INTO artists (
   -- the queue lists by `ar.status = 'pending'` regardless of ownership.
   ('aaa44444-4444-4444-4444-444444444444', NULL, 'dora-pending', 'Dora Pending',
    'Painter awaiting admin approval.', 'Manchester, GB', 'Manchester', 'GB', 53.4808, -2.2426, now(),
-   '{"type":"platform"}'::jsonb, 'pending');
+   '{"type":"platform"}'::jsonb, 'pending'),
+  -- T-084.2 — paused artist for the admin-banner + admin-bypass tests.
+  -- Public artist page 404s for non-admins (status != 'active'); admins
+  -- see the page with a status banner atop it.
+  ('aaa55555-5555-5555-5555-555555555555', NULL, 'edith-paused', 'Edith Paused',
+   'Artist temporarily paused.', 'Bristol, GB', 'Bristol', 'GB', 51.4545, -2.5879, now(),
+   '{"type":"platform"}'::jsonb, 'paused');
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Artworks (6 — 5 published, 1 draft)

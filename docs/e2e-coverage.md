@@ -120,10 +120,13 @@ the `chromium-admin` project consumes it and picks up
 | Non-admin visits `/admin` → 404 | [`34-admin-blocked-signed-in`](../e2e/tests/34-admin-blocked-signed-in.spec.ts) | ✅ |
 | Admin sees `/admin` index tiles + queue links (T-083) | [`32-admin-index-admin-signed-in`](../e2e/tests/32-admin-index-admin-signed-in.spec.ts) | ✅ |
 | `/admin/stats` renders tiles + funnel (T-084.1) | [`33-admin-stats-admin-signed-in`](../e2e/tests/33-admin-stats-admin-signed-in.spec.ts) | ✅ |
-| Admin approve pending artist → artist becomes publicly listed | — | ⏳ needs a pending-artist DB fixture — the seed lacks one; either extend the seed or drive it via /onboarding as a second Clerk user |
-| Admin override image rejection → image visible | — | ⏳ same shape — needs a rejected-image seeded row |
-| `/admin/audit-log` renders recent mutations | — | ⏳ trivial to add once we're OK asserting on either an empty or non-empty log |
-| Admin banner shows on non-active artist page (T-084.2 admin bypass) | — | ⏳ needs a non-active artist in seed |
+| Admin approve pending artist → row leaves pending queue (T-083) | [`35-admin-artists-approve-admin-signed-in`](../e2e/tests/35-admin-artists-approve-admin-signed-in.spec.ts) | ✅ mutates seed's `dora-pending`; local re-run needs seed reset |
+| Admin override rejected image → row leaves rejected queue (T-083.3) | [`36-admin-images-override-admin-signed-in`](../e2e/tests/36-admin-images-override-admin-signed-in.spec.ts) | ✅ mutates seed's Carmen-linocut rejected row |
+| `/admin/audit-log` renders (T-083.5) | [`37-admin-audit-log-admin-signed-in`](../e2e/tests/37-admin-audit-log-admin-signed-in.spec.ts) | ✅ tolerant of empty/non-empty state so spec ordering doesn't matter |
+| Admin banner on non-active artist page (T-084.2) | [`38-admin-artist-banner-admin-signed-in`](../e2e/tests/38-admin-artist-banner-admin-signed-in.spec.ts) | ✅ uses seed's `edith-paused` |
+| Non-admin visitor to non-active artist → 404 (T-084.2 inverse) | [`39-artist-non-active-blocked-signed-in`](../e2e/tests/39-artist-non-active-blocked-signed-in.spec.ts) | ✅ |
+| Admin decline pending artist | — | ⏳ confirm-dialog path (uses `useConfirm`) not asserted |
+| Admin pause / unpause active artist | — | ⏳ needs to drive both transitions from an active-artist row |
 
 ## OG cards + metadata (T-051)
 
