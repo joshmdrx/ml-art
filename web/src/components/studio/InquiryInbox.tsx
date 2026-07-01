@@ -1,24 +1,31 @@
 "use client";
 
 /**
- * Client side of the studio inquiry inbox (T-011 Phase 4 + 4b).
+ * Two-pane studio inquiry inbox.
  *
- * The page above us is a server component that loads the initial list
- * + filter chrome; this owns:
+ * Layout mirrors Gmail / Superhuman / Etsy's seller inbox:
+ *   - Left pane (fixed 20rem on md+): compact list of inquiries with
+ *     unread indicators, sorted by latest activity.
+ *   - Right pane: the selected thread (full conversation + reply form)
+ *     or an empty-state prompt when nothing is selected.
  *
- *   - per-card reply form state (open / message / loading / error)
- *   - optimistic append of new replies
- *   - auto-mark-as-read on first render for whatever was unread
+ * Selection is URL-driven via `?id=<inquiry_id>` so bookmarks, browser
+ * back / forward, and refresh all Just Work. Status filter (`?status=`)
+ * is preserved across selections.
  *
- * Why a client component for the whole list (rather than just the
- * form): inquiries arrive ordered newest-first and the user expects
- * the optimistic append to stay put. Re-fetching the server payload
- * on every reply would re-order and lose the form-focus we just
- * scrolled to.
+ * Mobile (<md): the two panes stack. With no `?id=`, only the list is
+ * visible. With `?id=` set, only the thread is visible + a "← All
+ * inquiries" back link at the top.
+ *
+ * Read/unread behavior changed here (previously T-011 Phase 4b marked
+ * ALL loaded inquiries as read on page render). Now: only the
+ * currently-selected inquiry is marked as read when opened. Preserves
+ * the "which of these still needs my attention" signal.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import clsx from "clsx";
 
 import type { StudioInquiry, StudioInquiryReply } from "@/lib/api";
@@ -26,12 +33,16 @@ import { toUserMessage } from "@/lib/reportError";
 
 interface Props {
   initialItems: StudioInquiry[];
+  selectedId: string | null;
 }
 
-export function InquiryInbox({ initialItems }: Props) {
+export function InquiryInbox({ initialItems, selectedId }: Props) {
+  const searchParams = useSearchParams();
+  const statusParam = searchParams.get("status");
+
   // Local copy so optimistic reply append doesn't fight the server
   // payload. Re-syncs when the server pushes a fresh list (filter
-  // change in the URL).
+  // change flips the initialItems identity).
   const [prevServerItems, setPrevServerItems] = useState(initialItems);
   const [items, setItems] = useState(initialItems);
   if (prevServerItems !== initialItems) {
@@ -39,26 +50,41 @@ export function InquiryInbox({ initialItems }: Props) {
     setItems(initialItems);
   }
 
-  // Auto-mark-as-read for whatever was unread when the page loaded.
-  // Fires once per `initialItems` identity — a filter change pushes a
-  // new array so we'll mark the new set too. Errors are swallowed
-  // (the user doesn't need to act on a failed mark-read).
-  const markedRef = useRef<Set<StudioInquiry[]>>(new Set());
+  // Sort by latest activity (newest reply, or created_at if no
+  // replies). Recomputed only when items array identity changes, so
+  // an optimistic reply append doesn't scramble the list mid-session.
+  const sortedItems = useMemo(() => {
+    return [...items].sort((a, b) => latestActivity(b) - latestActivity(a));
+  }, [items]);
+
+  const selected: StudioInquiry | null = selectedId
+    ? items.find((i) => i.id === selectedId) ?? null
+    : null;
+
+  // Auto-mark-as-read the currently-selected inquiry when it's opened
+  // + still unread. Fires once per (id, initialItems) pair so
+  // navigating away and back doesn't refire.
+  const markedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (markedRef.current.has(initialItems)) return;
-    markedRef.current.add(initialItems);
-    const unreadIds = initialItems
-      .filter((i) => i.read_at === null)
-      .map((i) => i.id);
-    if (unreadIds.length === 0) return;
+    if (!selected || selected.read_at !== null) return;
+    if (markedRef.current.has(selected.id)) return;
+    markedRef.current.add(selected.id);
     fetch("/api/studio/inquiries/read", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ids: unreadIds }),
+      body: JSON.stringify({ ids: [selected.id] }),
     }).catch(() => {
       /* best-effort — silent */
     });
-  }, [initialItems]);
+    // Optimistic local update so the list stops showing bold + dot.
+    setItems((prev) =>
+      prev.map((i) =>
+        i.id === selected.id
+          ? { ...i, read_at: new Date().toISOString() }
+          : i,
+      ),
+    );
+  }, [selected]);
 
   function onReplied(inquiryId: string, reply: StudioInquiryReply) {
     setItems((prev) =>
@@ -70,18 +96,181 @@ export function InquiryInbox({ initialItems }: Props) {
     );
   }
 
+  const listHrefBase =
+    statusParam && statusParam !== "all"
+      ? `/studio/inquiries?status=${encodeURIComponent(statusParam)}`
+      : "/studio/inquiries";
+
   return (
-    <ul className="flex flex-col gap-3">
-      {items.map((inq) => (
-        <li key={inq.id}>
-          <InquiryCard inquiry={inq} onReplied={onReplied} />
-        </li>
-      ))}
+    <div className="md:grid md:grid-cols-[20rem_1fr] md:gap-6 md:min-h-[32rem]">
+      {/* List pane */}
+      <aside
+        className={clsx(
+          "md:block",
+          selected ? "hidden md:block" : "block",
+          "md:border-r md:border-border md:pr-4",
+        )}
+        aria-label="Inquiry list"
+      >
+        <InquiryList
+          items={sortedItems}
+          selectedId={selectedId}
+          statusParam={statusParam}
+        />
+      </aside>
+
+      {/* Thread pane */}
+      <section
+        className={clsx(
+          "md:block",
+          selected ? "block" : "hidden md:block",
+        )}
+        aria-label="Inquiry thread"
+      >
+        {selected ? (
+          <>
+            {/* Mobile-only back link — desktop uses list selection */}
+            <div className="md:hidden mb-4">
+              <Link
+                href={listHrefBase}
+                className="text-sm underline underline-offset-2 text-muted hover:text-foreground"
+              >
+                ← All inquiries
+              </Link>
+            </div>
+            <InquiryThread inquiry={selected} onReplied={onReplied} />
+          </>
+        ) : (
+          <div className="hidden md:flex items-center justify-center text-sm text-muted min-h-[24rem]">
+            Select an inquiry to view the thread.
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function InquiryList({
+  items,
+  selectedId,
+  statusParam,
+}: {
+  items: StudioInquiry[];
+  selectedId: string | null;
+  statusParam: string | null;
+}) {
+  if (items.length === 0) {
+    return (
+      <p className="text-sm text-muted py-6 text-center">
+        No inquiries match this filter.
+      </p>
+    );
+  }
+  return (
+    <ul className="flex flex-col">
+      {items.map((inq) => {
+        const isSelected = inq.id === selectedId;
+        const isUnread = inq.read_at === null;
+        const href = buildRowHref(inq.id, statusParam);
+        return (
+          <li key={inq.id}>
+            <InquiryListRow
+              inquiry={inq}
+              href={href}
+              isSelected={isSelected}
+              isUnread={isUnread}
+            />
+          </li>
+        );
+      })}
     </ul>
   );
 }
 
-function InquiryCard({
+function buildRowHref(id: string, statusParam: string | null): string {
+  const params = new URLSearchParams();
+  params.set("id", id);
+  if (statusParam && statusParam !== "all") params.set("status", statusParam);
+  return `/studio/inquiries?${params.toString()}`;
+}
+
+function InquiryListRow({
+  inquiry,
+  href,
+  isSelected,
+  isUnread,
+}: {
+  inquiry: StudioInquiry;
+  href: string;
+  isSelected: boolean;
+  isUnread: boolean;
+}) {
+  const latest = new Date(latestActivity(inquiry));
+  const latestReply = inquiry.replies[inquiry.replies.length - 1];
+  const snippet = latestReply?.message ?? inquiry.message;
+
+  return (
+    <Link
+      href={href}
+      scroll={false}
+      aria-current={isSelected ? "true" : undefined}
+      className={clsx(
+        "block border-l-2 pl-3 pr-2 py-3 transition-colors",
+        isSelected
+          ? "border-foreground bg-background"
+          : "border-transparent hover:bg-background",
+      )}
+    >
+      <div className="flex gap-3">
+        {inquiry.artwork_primary_image_url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={inquiry.artwork_primary_image_url}
+            alt=""
+            className="w-12 h-12 object-cover bg-background shrink-0"
+          />
+        ) : (
+          <div className="w-12 h-12 bg-background shrink-0" aria-hidden />
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline justify-between gap-2">
+            <p
+              className={clsx(
+                "text-sm truncate",
+                isUnread ? "font-medium" : "text-muted",
+              )}
+            >
+              {isUnread && (
+                <span
+                  aria-label="unread"
+                  className="inline-block w-1.5 h-1.5 rounded-full bg-foreground mr-2 align-middle"
+                />
+              )}
+              {inquiry.from_name}
+            </p>
+            <span className="text-xs text-muted shrink-0">
+              {formatRelative(latest)}
+            </span>
+          </div>
+          <p className="text-xs text-muted truncate">
+            {inquiry.artwork_title ?? "an artwork"}
+          </p>
+          <p
+            className={clsx(
+              "text-xs truncate mt-1",
+              isUnread ? "text-foreground" : "text-muted",
+            )}
+          >
+            {latestReply?.from_role === "artist" ? "You: " : ""}
+            {snippet}
+          </p>
+        </div>
+      </div>
+    </Link>
+  );
+}
+
+function InquiryThread({
   inquiry,
   onReplied,
 }: {
@@ -279,8 +468,9 @@ function ReplyForm({
           </p>
         ) : (
           <span className="text-xs text-muted">
-            Goes to {/* avoid quoting the email here so screen readers don't read the angle brackets */}
-            <span className="font-mono text-foreground">via email</span> · they can reply directly to you.
+            Goes to{" "}
+            <span className="font-mono text-foreground">via email</span> ·
+            they can reply directly to you.
           </span>
         )}
         <div className="flex gap-2">
@@ -324,11 +514,17 @@ function StatusBadge({ status }: { status: StudioInquiry["status"] }) {
   );
 }
 
+/** Latest activity timestamp (created_at OR newest reply's created_at)
+ * as a number so sort() works cleanly. */
+function latestActivity(inq: StudioInquiry): number {
+  const created = new Date(inq.created_at).getTime();
+  const latestReply = inq.replies[inq.replies.length - 1];
+  if (!latestReply) return created;
+  return Math.max(created, new Date(latestReply.created_at).getTime());
+}
+
 /**
- * Tiny "5m ago / 2h ago / 3d ago / Jan 4" formatter. Same logic as
- * the server-rendered page used to inline; lives here so the card
- * doesn't need a server roundtrip to format timestamps for its
- * own optimistically-appended replies.
+ * Tiny "5m ago / 2h ago / 3d ago / Jan 4" formatter.
  */
 function formatRelative(d: Date): string {
   const now = Date.now();

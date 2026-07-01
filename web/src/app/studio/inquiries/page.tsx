@@ -11,7 +11,7 @@ export const metadata: Metadata = {
   title: "Studio inquiries",
 };
 
-type Search = { status?: string };
+type Search = { status?: string; id?: string };
 type StatusFilter = "all" | "pending" | "delivered";
 
 const FILTERS: { token: StatusFilter; label: string }[] = [
@@ -109,7 +109,7 @@ export default async function StudioInquiriesPage({
       {items.length === 0 ? (
         <EmptyState status={status} />
       ) : (
-        <InquiryInbox initialItems={items} />
+        <InquiryInbox initialItems={items} selectedId={sp.id ?? null} />
       )}
     </>
   );
