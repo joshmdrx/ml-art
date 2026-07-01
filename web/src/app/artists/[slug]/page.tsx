@@ -7,7 +7,8 @@ import { ArtworkGrid } from "@/components/ArtworkGrid";
 import { ArtistLocationsMap } from "@/components/ArtistLocationsMap";
 import { BackToSearchLink } from "@/components/BackToSearchLink";
 import { FollowButton } from "@/components/FollowButton";
-import { getArtist, listArtistSeries, type PublicSeries } from "@/lib/api";
+import { AdminArtistBanner } from "@/components/admin/AdminArtistBanner";
+import { getArtist, getMe, listArtistSeries, type PublicSeries } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
 /**
@@ -55,7 +56,10 @@ export default async function ArtistPage({
   // T-058.3 — fetch series alongside the artist so we know whether to
   // show the Works/Series toggle even on the default "works" view.
   // Empty list → toggle is hidden entirely.
-  const [data, seriesList] = await Promise.all([
+  // T-083 — also fetch `me` in parallel; admins see a preview banner
+  // when the artist isn't publicly active. Non-admins get `null` from
+  // getMe() and the banner never renders.
+  const [data, seriesList, me] = await Promise.all([
     getArtist(slug).catch((e) => {
       reportError(e, { surface: "artist-detail", slug });
       return null;
@@ -64,6 +68,7 @@ export default async function ArtistPage({
       reportError(e, { surface: "artist-detail-series", slug });
       return { items: [] };
     }),
+    getMe().catch(() => null),
   ]);
   if (!data) notFound();
 
@@ -80,11 +85,24 @@ export default async function ArtistPage({
     ([, v]) => typeof v === "string" && v.length > 0
   );
 
+  const isAdminPreview = me?.is_admin && artist.status !== "active";
+
   return (
     <>
       <TopNav />
 
       <main className="flex-1 mx-auto w-full max-w-screen-2xl px-6 py-12 md:py-16">
+        {/* T-083 — admin preview banner. Only renders for admins
+            viewing an artist that isn't publicly `active`. Puts
+            approve/decline shortcuts inline so the workflow is:
+            queue → click through → decide from the artist page. */}
+        {isAdminPreview && (
+          <AdminArtistBanner
+            artistId={artist.id}
+            artistName={artist.display_name}
+            status={artist.status}
+          />
+        )}
         {/* Header */}
         <header className="max-w-3xl mb-12 md:mb-16">
           <div className="flex items-start justify-between gap-6">

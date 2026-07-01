@@ -32,23 +32,43 @@ pub async fn handle(
     // T-052 — when present we light up `is_following` for the
     // Follow button. Missing/invalid auth is non-fatal; the field
     // defaults to false.
+    // T-083 — additionally, admins get the `status='active'` filter
+    // lifted so paused / pending / declined artists are visible.
+    // The response's `artist.status` field then drives the "Admin
+    // view" banner on the web page.
     auth: Option<AuthedUser>,
     OptionalAnonId(anon_id): OptionalAnonId,
     headers: HeaderMap,
 ) -> Result<Json<ArtistDetail>, ApiError> {
-    // 1. Look up the artist.
-    let artist_row: Option<ArtistRow> = sqlx::query_as(
-        r#"
-        SELECT
-            id, slug, display_name, bio, artist_statement,
-            location, city, country, lat, lng,
-            website_url, socials, commissioning_preferences
-        FROM artists
-        WHERE slug = $1
-          AND deleted_at IS NULL
-          AND status = 'active'
-        "#,
-    )
+    let is_admin = auth.as_ref().is_some_and(|AuthedUser(u)| u.is_admin);
+
+    // 1. Look up the artist. Admins bypass the `status='active'`
+    //    filter so they can review non-active artists inline.
+    let artist_row: Option<ArtistRow> = if is_admin {
+        sqlx::query_as(
+            r#"
+            SELECT
+                id, slug, display_name, bio, artist_statement,
+                location, city, country, lat, lng,
+                website_url, socials, commissioning_preferences, status
+            FROM artists
+            WHERE slug = $1 AND deleted_at IS NULL
+            "#,
+        )
+    } else {
+        sqlx::query_as(
+            r#"
+            SELECT
+                id, slug, display_name, bio, artist_statement,
+                location, city, country, lat, lng,
+                website_url, socials, commissioning_preferences, status
+            FROM artists
+            WHERE slug = $1
+              AND deleted_at IS NULL
+              AND status = 'active'
+            "#,
+        )
+    }
     .bind(&slug)
     .fetch_optional(&state.pool)
     .await?;
@@ -57,8 +77,33 @@ pub async fn handle(
         return Err(ApiError::NotFound);
     };
 
-    // 2. First page of published artworks for this artist.
-    let artworks: Vec<ArtworkRow> = sqlx::query_as(
+    // 2. First page of the artist's artworks. Admins get drafts
+    //    included so they can see the full portfolio before deciding.
+    let artworks_sql: &str = if is_admin {
+        r#"
+        SELECT
+            a.id,
+            a.title,
+            ar.id           AS artist_id,
+            ar.display_name AS artist_name,
+            ar.slug         AS artist_slug,
+            ai.s3_key       AS primary_s3_key,
+            a.price_cents,
+            a.currency,
+            a.availability
+        FROM artworks a
+        JOIN artists ar ON ar.id = a.artist_id
+        LEFT JOIN artwork_images ai
+               ON ai.artwork_id = a.id
+              AND ai.is_primary
+              AND ai.moderation_status = 'approved'
+        WHERE a.artist_id = $1
+          AND a.deleted_at IS NULL
+          AND ar.deleted_at IS NULL
+        ORDER BY a.published_at DESC NULLS LAST, a.created_at DESC
+        LIMIT $2
+        "#
+    } else {
         r#"
         SELECT
             a.id,
@@ -82,12 +127,13 @@ pub async fn handle(
           AND ar.deleted_at IS NULL
         ORDER BY a.published_at DESC NULLS LAST
         LIMIT $2
-        "#,
-    )
-    .bind(artist.id)
-    .bind(FIRST_PAGE_LIMIT)
-    .fetch_all(&state.pool)
-    .await?;
+        "#
+    };
+    let artworks: Vec<ArtworkRow> = sqlx::query_as(artworks_sql)
+        .bind(artist.id)
+        .bind(FIRST_PAGE_LIMIT)
+        .fetch_all(&state.pool)
+        .await?;
 
     let artwork_summaries: Vec<ArtworkSummary> =
         artworks.into_iter().map(ArtworkRow::into_summary).collect();
@@ -139,6 +185,7 @@ pub async fn handle(
         socials: artist.socials.unwrap_or(serde_json::json!({})),
         commissioning_preferences: artist.commissioning_preferences,
         representative_image_urls,
+        status: artist.status,
     };
 
     // 4. Follow graph state (T-052): follower count + this caller's
@@ -211,6 +258,7 @@ struct ArtistRow {
     website_url: Option<String>,
     socials: Option<serde_json::Value>,
     commissioning_preferences: Option<serde_json::Value>,
+    status: String,
 }
 
 #[derive(FromRow)]

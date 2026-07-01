@@ -1,5 +1,6 @@
 //! `/v1/artworks/:id` and `/v1/artworks/:id/similar`.
 
+use crate::extractors::AuthedUser;
 use crate::AppState;
 use axum::{
     extract::{Path, Query, State},
@@ -31,28 +32,39 @@ const SIMILAR_LIMIT_MAX: i64 = 24;
 pub async fn detail(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
+    // T-083 — admins bypass the `status='published'` +
+    // `ar.status='active'` filters so they can preview drafts and
+    // artworks by non-active artists inline. Non-admin callers see
+    // exactly what they'd see today.
+    auth: Option<AuthedUser>,
     OptionalAnonId(anon_id): OptionalAnonId,
     headers: HeaderMap,
 ) -> Result<Json<ArtworkFull>, ApiError> {
-    let row: Option<ArtworkRow> = sqlx::query_as(
+    let is_admin = auth.as_ref().is_some_and(|AuthedUser(u)| u.is_admin);
+    let detail_sql: &str = if is_admin {
         r#"
         SELECT
-            a.id,
-            a.title,
-            a.description,
-            a.year_created,
-            a.medium,
-            a.medium_category,
-            a.dimensions,
-            a.price_cents,
-            a.currency,
-            a.availability,
-            a.external_url,
-            a.published_at,
-            ar.id            AS artist_id,
-            ar.slug          AS artist_slug,
-            ar.display_name  AS artist_name,
-            ar.location      AS artist_location
+            a.id, a.title, a.description, a.year_created,
+            a.medium, a.medium_category, a.dimensions,
+            a.price_cents, a.currency, a.availability,
+            a.external_url, a.published_at,
+            ar.id AS artist_id, ar.slug AS artist_slug,
+            ar.display_name AS artist_name, ar.location AS artist_location
+        FROM artworks a
+        JOIN artists ar ON ar.id = a.artist_id
+        WHERE a.id = $1
+          AND a.deleted_at IS NULL
+          AND ar.deleted_at IS NULL
+        "#
+    } else {
+        r#"
+        SELECT
+            a.id, a.title, a.description, a.year_created,
+            a.medium, a.medium_category, a.dimensions,
+            a.price_cents, a.currency, a.availability,
+            a.external_url, a.published_at,
+            ar.id AS artist_id, ar.slug AS artist_slug,
+            ar.display_name AS artist_name, ar.location AS artist_location
         FROM artworks a
         JOIN artists ar ON ar.id = a.artist_id
         WHERE a.id = $1
@@ -60,11 +72,12 @@ pub async fn detail(
           AND a.status = 'published'
           AND ar.deleted_at IS NULL
           AND ar.status = 'active'
-        "#,
-    )
-    .bind(id)
-    .fetch_optional(&state.pool)
-    .await?;
+        "#
+    };
+    let row: Option<ArtworkRow> = sqlx::query_as(detail_sql)
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?;
 
     let Some(row) = row else {
         return Err(ApiError::NotFound);

@@ -76,6 +76,12 @@ pub struct ArtistFull {
     pub socials: serde_json::Value,
     pub commissioning_preferences: Option<serde_json::Value>,
     pub representative_image_urls: Vec<String>,
+    /// T-083 — admin preview lifts the public `status='active'`
+    /// filter so admins can review pending / paused / rejected
+    /// artists inline. Always `active` for non-admin callers (they
+    /// can't see other statuses at all). Web layer keys the
+    /// "Admin view" banner on this + the caller's is_admin flag.
+    pub status: String,
 }
 
 /// Composite response for `/v1/artists/:slug`: profile + first page of artworks.

@@ -53,6 +53,10 @@ export interface ArtistFull {
   socials: Record<string, string>;
   commissioning_preferences: unknown;
   representative_image_urls: string[];
+  /** T-083 — admin preview. Always "active" for non-admin callers
+   * (they can't see non-active artists). Admins see the true status
+   * so the web layer can render an "Admin view" banner. */
+  status: "pending" | "active" | "paused" | "rejected";
 }
 
 export interface ArtistDetail {
