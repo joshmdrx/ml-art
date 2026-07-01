@@ -238,6 +238,69 @@ resource "aws_cloudwatch_metric_alarm" "neon_pool_errors" {
   ok_actions    = [aws_sns_topic.alerts.arn]
 }
 
+# ─── Cost / runaway-detection alarms (T-015) ────────────────────────────────
+# Belt-and-suspenders alongside the 50%/80%/100% AWS Budgets alerts.
+# Budgets fire on aggregate account cost; these fire on the two axes
+# most likely to cause a runaway: Lambda invocations (recursion / loop
+# / misconfigured cron) and CloudFront egress (someone hotlinking our
+# CDN, or a bad cache config).
+#
+# COST.md pre-launch checklist calls for both.
+
+# Per-Lambda daily-invocations alarm. 100k/day is nothing at real
+# traffic; at v1 idle, a Lambda burning 100k in a day almost
+# certainly means a recursion or retry loop.
+resource "aws_cloudwatch_metric_alarm" "lambda_daily_invocations" {
+  for_each = local.lambda_names
+
+  alarm_name          = "${var.name_prefix}-${each.key}-daily-invocations"
+  alarm_description   = "Lambda ${each.value} invocations > 100k in a day — possible runaway."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "Invocations"
+  namespace           = "AWS/Lambda"
+  period              = 86400
+  statistic           = "Sum"
+  threshold           = 100000
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    FunctionName = each.value
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+}
+
+# CloudFront daily bytes-downloaded alarm — api distribution.
+# CloudFront's free tier is 1 TB/mo egress. COST.md wants a warning
+# at 500 GB/mo; divided over 30 days that's ~17 GB/day. Set to 20 GB
+# so a single spiky day doesn't fire — only sustained pressure. On
+# web the same alarm is desirable but its DistributionId reference
+# walks through module.web → module.dns → cloudflare data source,
+# which blocks terraform plan without CLOUDFLARE_API_TOKEN. Add the
+# web-side version once the CF token wiring is settled.
+resource "aws_cloudwatch_metric_alarm" "api_cloudfront_daily_bytes" {
+  alarm_name          = "${var.name_prefix}-api-cloudfront-daily-bytes"
+  alarm_description   = "API CloudFront distribution transferred > 20 GB in a day (~500 GB/mo pace)."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "BytesDownloaded"
+  namespace           = "AWS/CloudFront"
+  period              = 86400
+  statistic           = "Sum"
+  threshold           = 21474836480 # 20 GB in bytes
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    DistributionId = var.api_cloudfront_distribution_id
+    Region         = "Global"
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+}
+
 # ─── Budget early-warning at 50% actual ─────────────────────────────────────
 # The existing aws_budgets_budget.monthly already alerts at 80% actual +
 # 100% forecast. Adding a 50% actual is overlap insurance — if the
