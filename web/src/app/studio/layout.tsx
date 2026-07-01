@@ -23,12 +23,16 @@ export default async function StudioLayout({
     return null;
   });
   const unread = me?.unread_inquiry_count ?? 0;
+  // Non-artist users (signed-in but no artist row) get null → the
+  // sidebar hides the "View public page" affordance since there's
+  // no page to view yet.
+  const publicSlug = me?.slug ?? null;
 
   return (
     <>
       <TopNav />
       <div className="flex-1 flex flex-col lg:flex-row w-full mx-auto max-w-screen-2xl">
-        <StudioSidebar unreadInquiries={unread} />
+        <StudioSidebar unreadInquiries={unread} publicSlug={publicSlug} />
         <main className="flex-1 min-w-0 px-6 py-8 lg:py-10">{children}</main>
       </div>
     </>

@@ -34,8 +34,13 @@ type Item = {
 
 export function StudioSidebar({
   unreadInquiries,
+  publicSlug,
 }: {
   unreadInquiries: number;
+  /** Artist's public slug, e.g. `alice-test`. Null for signed-in
+   * users who don't yet have an artist row (bob-style) — the "View
+   * public page" affordance is hidden in that case. */
+  publicSlug: string | null;
 }) {
   const pathname = usePathname();
   const items: Item[] = [
@@ -84,9 +89,21 @@ export function StudioSidebar({
         })}
       </ul>
 
-      {/* Exit link — desktop only; mobile users have the top-nav
-          Wander logo to get back to the public site. */}
-      <div className="hidden lg:block px-4 py-6 mt-auto">
+      {/* Utility links — desktop only; mobile users have the top-nav
+          for site navigation. "View public page" only renders when the
+          caller has an artist row (signed-in-but-not-onboarded users
+          have nowhere to go yet). */}
+      <div className="hidden lg:flex lg:flex-col px-4 py-6 mt-auto gap-2">
+        {publicSlug && (
+          <Link
+            href={`/artists/${encodeURIComponent(publicSlug)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-muted hover:text-foreground"
+          >
+            View public page ↗
+          </Link>
+        )}
         <Link
           href="/"
           className="text-xs text-muted hover:text-foreground"
