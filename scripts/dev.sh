@@ -68,6 +68,7 @@ echo "→ starting api (logs: /tmp/api.log)  [auto-reloads on *.rs / *.sql]"
   # convention already blocks these literals in a real signup.
   PORT=9100 \
   WANDER_ADMIN_EMAIL_ALLOWLIST=-admin+clerk_test@example.com \
+  WANDER_TEST_FIXTURES_ENABLED=1 \
   cargo watch \
     --why \
     --watch crates \

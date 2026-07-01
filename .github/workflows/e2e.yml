@@ -113,6 +113,11 @@ jobs:
           # sign-in. Empty in prod. Kept in sync with
           # e2e/tests/admin.setup.ts and docs/e2e-coverage.md.
           WANDER_ADMIN_EMAIL_ALLOWLIST: "-admin+clerk_test@example.com"
+          # Registers POST /v1/testfixtures/* — direct DB-insert seam
+          # for E2E specs that need seeded state (artworks, inquiries)
+          # under the per-run artist fixture. Empty in prod = routes
+          # never register. See api/crates/api-search/src/testfixtures.rs.
+          WANDER_TEST_FIXTURES_ENABLED: "1"
 
       - name: Wait for API
         run: |

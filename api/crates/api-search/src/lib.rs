@@ -20,6 +20,7 @@ pub mod search_map;
 mod serde_helpers;
 pub mod series;
 pub mod studio;
+pub mod testfixtures;
 pub mod uploads;
 pub mod webhooks;
 
@@ -76,7 +77,7 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         state.cfg.rate_limit_disabled,
     );
 
-    Router::new()
+    let router = Router::new()
         .route("/v1/health", get(health))
         .route(
             "/v1/search",
@@ -310,7 +311,18 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         // T-084.1 — operator stats page. One-round-trip aggregate
         // over users / artists / artworks / inquiries + a 4-week
         // events funnel + recent admin activity.
-        .route("/v1/admin/stats", get(admin::stats::handle))
+        .route("/v1/admin/stats", get(admin::stats::handle));
+
+    // Test-fixture insert routes — only registered when
+    // `WANDER_TEST_FIXTURES_ENABLED` is set (E2E only; empty in prod).
+    // See `testfixtures.rs` for the guarded shape.
+    let router = if testfixtures::is_enabled() {
+        router.merge(testfixtures::routes())
+    } else {
+        router
+    };
+
+    router
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         // CORS: browser-direct calls from the Next dev server / future web

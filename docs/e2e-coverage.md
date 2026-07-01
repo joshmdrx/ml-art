@@ -60,7 +60,7 @@ downgrade to 🚫 with the reason if you decide it's not worth it.
 | Signed-in inquire (no verify step) | [`13-inquire-signed-in`](../e2e/tests/13-inquire-signed-in.spec.ts) | ✅ |
 | Studio inbox (two-pane, URL-driven `?id=`) | [`22-studio-inquiries-signed-in`](../e2e/tests/22-studio-inquiries-signed-in.spec.ts) | 🟡 predates 2026-07-01 UX rewrite — reload + selection persistence not asserted |
 | Inbound email reply appears in thread (T-054) | — | 🚫 needs local SMTP + Worker; deferred to smoke tier |
-| Unread inquiry badge on TopNav (T-074) | — | ⏳ needs (a) an artwork under the fixture artist and (b) a delivered inquiry to it. Drafts don't show on public pages so anon can't inquire; blocked on either a test-only `POST /v1/testfixtures/*` seam, a psql-in-test helper, or extending `artist.setup.ts` to publish an artwork with an image (real image upload = moderation flakes) |
+| Unread inquiry badge on StudioSidebar (T-074) | [`49-unread-inquiry-badge-artist-signed-in`](../e2e/tests/49-unread-inquiry-badge-artist-signed-in.spec.ts) | ✅ uses the T-069 test-fixture seam (`POST /v1/testfixtures/inquiry`) |
 
 ## Save + collections
 
@@ -99,6 +99,14 @@ slug) persists to `e2e/.auth/artist-meta.json` so downstream specs
 can reach the fixture's public artist page. The `chromium-artist`
 project picks up `*artist-signed-in*.spec.ts`.
 
+**Test-fixture insert seam:** two direct-DB POSTs at
+`/v1/testfixtures/artwork` + `/v1/testfixtures/inquiry`, wrapped by
+`e2e/lib/fixtures.ts` (`createArtwork` + `createInquiry`).
+Guarded by `WANDER_TEST_FIXTURES_ENABLED=1` — routes never register
+in prod. Skip auth, moderation, embedding — lets specs seed world
+state under the fixture artist without driving through Jina + S3 +
+Clerk image-upload paths. Used by specs 49–51.
+
 | Feature | Spec | Status |
 |---|---|---|
 | `/studio/settings` auto-provisions artist row (T-012 P1) | [`17-studio-settings-signed-in`](../e2e/tests/17-studio-settings-signed-in.spec.ts) | ✅ |
@@ -108,10 +116,10 @@ project picks up `*artist-signed-in*.spec.ts`.
 | Onboarding wizard identity step (T-012 P1) | [`21-onboarding-signed-in`](../e2e/tests/21-onboarding-signed-in.spec.ts) | 🟡 identity step only; steps 2–5 not covered |
 | `/studio/series` non-artist redirects to onboarding (T-058.2) | [`28-studio-series-signed-in`](../e2e/tests/28-studio-series-signed-in.spec.ts) | ✅ |
 | Studio sidebar nav (2026-07-01 UX rewrite) | [`46-studio-sidebar-artist-signed-in`](../e2e/tests/46-studio-sidebar-artist-signed-in.spec.ts) | ✅ 4 nav items + aria-current follows route (uses artist fixture) |
-| Artwork edit modal — URL-driven lifecycle | — | ⏳ open via `?artwork_id=…`, close reflects in URL |
-| Series edit modal — URL-driven lifecycle (T-058.2) | — | ⏳ same shape as artwork edit |
+| Artwork edit modal — URL-driven lifecycle (`?id=<uuid>`) | [`50-studio-artwork-modal-artist-signed-in`](../e2e/tests/50-studio-artwork-modal-artist-signed-in.spec.ts) | ✅ modal opens on direct nav, Escape strips param |
+| Series edit modal — URL-driven lifecycle (T-058.2) | — | ⏳ same shape as spec 50; add once we're actively touching /studio/series |
 | Studio → public artist page link (2026-07-01) | — | 🚫 single link, low breakage risk |
-| Publish nudge on incomplete draft (T-070) | — | ⏳ create artwork with no dimensions → assert nudge copy |
+| Publish nudge on incomplete draft (T-070) | [`51-publish-nudge-artist-signed-in`](../e2e/tests/51-publish-nudge-artist-signed-in.spec.ts) | ✅ draft → published without dimensions + medium_category fires the confirm dialog |
 | Bulk image upload (T-011 P5) | — | 🚫 requires real upload pipeline + Jina stub |
 
 ## Admin (T-083 / T-084)
