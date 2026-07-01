@@ -450,7 +450,8 @@ class GroqLabeller:
                     # exponential backoff. Groq tends to set R-A in seconds.
                     wait = int(resp.headers.get("Retry-After", 2 ** attempt))
                     print(
-                        f"  groq {resp.status_code}; retrying in {wait}s (attempt {attempt + 1}/{self.MAX_ATTEMPTS})",
+                        f"  groq {resp.status_code}; retrying in {wait}s "
+                        f"(attempt {attempt + 1}/{self.MAX_ATTEMPTS})",
                         file=sys.stderr,
                     )
                     import time
@@ -466,7 +467,9 @@ class GroqLabeller:
 
         # Exhausted retries — surface the failure rather than silently
         # falling back so the operator notices and can re-run.
-        raise RuntimeError(f"groq labelling failed after {self.MAX_ATTEMPTS} attempts") from last_err
+        raise RuntimeError(
+            f"groq labelling failed after {self.MAX_ATTEMPTS} attempts"
+        ) from last_err
 
 
 def _parse_label_response(raw: str, *, cluster_id: int) -> tuple[str, str]:

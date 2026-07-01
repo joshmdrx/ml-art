@@ -88,7 +88,7 @@ class CachedEmbedder:
             return np.zeros((0, self.dimension), dtype=np.float32)
 
         # SHA per input, scoped to model identity.
-        model_tag = f"{self.model_name}:{self.model_version}:{kind}".encode("utf-8")
+        model_tag = f"{self.model_name}:{self.model_version}:{kind}".encode()
         shas = [_sha256(model_tag, b) for b in inputs]
         paths = [self._path_for(kind, s) for s in shas]
 

@@ -17,8 +17,6 @@ import numpy as np
 import requests
 from numpy.typing import NDArray
 
-from ml_art.embeddings.base import Embedder
-
 _ENDPOINT = "https://api.jina.ai/v1/embeddings"
 _BATCH_SIZE = 32
 _TIMEOUT_S = 60

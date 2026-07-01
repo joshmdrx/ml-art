@@ -31,8 +31,6 @@ from numpy.typing import NDArray
 from PIL import Image
 from tqdm import tqdm
 
-from ml_art.embeddings.base import Embedder
-
 _MODEL_ID = "jinaai/jina-clip-v2"
 _DIM = 1024
 

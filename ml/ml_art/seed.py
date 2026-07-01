@@ -31,16 +31,15 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import io
 import os
 import random
 import re
 import sys
 import time
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 import boto3
 import numpy as np
@@ -53,7 +52,6 @@ from ml_art.config import get_config
 from ml_art.corpus import CorpusItem, load_corpus
 from ml_art.embeddings.cache import CachedEmbedder
 from ml_art.vectors import normalize
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Style → synthetic artist mapping
@@ -148,7 +146,13 @@ _NEIGHBORHOODS: list[tuple[str, str, str, list[str]]] = [
         "old-masters",
         "Old Masters",
         "Renaissance and Baroque — the long apprenticeship of European painting.",
-        ["high_renaissance", "baroque", "early_renaissance", "northern_renaissance", "mannerism_late_renaissance"],
+        [
+            "high_renaissance",
+            "baroque",
+            "early_renaissance",
+            "northern_renaissance",
+            "mannerism_late_renaissance",
+        ],
     ),
     (
         "pop-and-after",
@@ -530,7 +534,10 @@ def _ensure_artworks(
                             (
                                 artist_id,
                                 f"Untitled ({pretty})",
-                                f"Demo work in the {pretty} style, sourced from the public WikiArt dataset.",
+                                (
+                                    f"Demo work in the {pretty} style, "
+                                    "sourced from the public WikiArt dataset."
+                                ),
                                 pretty,
                                 _demo_price_cents(item.sha256),
                                 Jsonb(_demo_dimensions(item.sha256)),
