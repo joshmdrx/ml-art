@@ -1183,6 +1183,49 @@ export async function listAdminAuditLog(
   return (await res.json()) as Paginated<AuditLogEntry>;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// T-084.1 — operator stats
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface StatsResponse {
+  counts: {
+    users: TimeWindow;
+    artists_active: TimeWindow;
+    artworks_published: TimeWindow;
+    inquiries_delivered: TimeWindow;
+  };
+  weekly_funnel: WeeklyFunnel[];
+  admin_activity: {
+    mutations_last_7d: number;
+    last_mutation_at: string | null;
+  };
+}
+
+export interface TimeWindow {
+  total: number;
+  last_7d: number;
+  last_30d: number;
+}
+
+export interface WeeklyFunnel {
+  week: string; // ISO date
+  searches: number;
+  views: number;
+  inquiries_started: number;
+  inquiries_submitted: number;
+}
+
+export async function getAdminStats(
+  init?: RequestInit,
+): Promise<StatsResponse> {
+  const res = await apiFetch("/v1/admin/stats", init);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`admin/stats ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as StatsResponse;
+}
+
 /** Patch the current artist's settings. Body keys are optional; only
  * include the fields you intend to change. Returns the updated artist. */
 export async function updateStudioSettings(

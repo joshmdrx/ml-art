@@ -307,6 +307,10 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         )
         // T-083.5 — read-only audit log viewer.
         .route("/v1/admin/audit-log", get(admin::audit_log::list))
+        // T-084.1 — operator stats page. One-round-trip aggregate
+        // over users / artists / artworks / inquiries + a 4-week
+        // events funnel + recent admin activity.
+        .route("/v1/admin/stats", get(admin::stats::handle))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         // CORS: browser-direct calls from the Next dev server / future web

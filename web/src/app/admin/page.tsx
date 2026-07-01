@@ -72,6 +72,13 @@ export default async function AdminIndexPage() {
           >
             View audit log →
           </Link>
+          {" · "}
+          <Link
+            href="/admin/stats"
+            className="text-sm text-muted hover:text-foreground underline underline-offset-2"
+          >
+            Stats →
+          </Link>
         </section>
       </main>
     </>
