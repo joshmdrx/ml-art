@@ -740,19 +740,31 @@ Files that came + went in attempt 2 are in git history (revert commit `69839b5`)
 - Custom `min_cm..max_cm` range — when band granularity bites.
 - Aspect-ratio filter (portrait / landscape / square) — independent feature.
 
-### `T-069` E2E coverage for the retention loop
-**Where:** `e2e/tests/` — new Playwright specs covering Follow, anon-follow-queueing, public collections, OG cards, notification preferences, unsubscribe.
-**Why:** T-051 / T-052 / T-052b / T-052c / T-053 / T-068 all shipped end-to-end with strong integration-test coverage on the API + DB sides, but the cross-tier flows (anon click → sign-up → merge replays → follow exists; user toggles preference → cron skips them; click unsubscribe link → preference flips off) are only manually-verified today. The retention loop is the highest-value surface we have; lack of E2E regression coverage means a future refactor can silently break it.
-**Acceptance:**
-- `follow-flow.spec.ts` — signed-in user follows + unfollows an artist; follower count updates; `/studio` reflects.
-- `anon-follow-queue.spec.ts` — fresh incognito context clicks Follow → bounces to sign-up → signs up → lands on artist page already following. Verifies the merge-anonymous bridge fired and the pending row was drained.
-- `public-collection.spec.ts` — owner creates a collection → toggles public → captures share URL → second context (unauthenticated) opens URL + sees the collection. Owner toggles private → second context refresh → 404.
-- `notification-prefs.spec.ts` — `/me/settings/notifications` round-trips toggles + a clean reload reflects the persisted state.
-- `unsubscribe-token.spec.ts` — mint a token via API helper (test-side), GET `/u/<token>` → confirmation page renders + preference flips off (assert via API).
-- OG cards: `og-card.spec.ts` — fetch `/artworks/<id>/opengraph-image` + assert 200 + `image/png` + non-zero bytes; same for `/artists/<slug>/opengraph-image` + `/c/<share_id>/opengraph-image`.
-- All specs use the existing Clerk test-mode storage state (set up in T-084).
-- CI: hook into the existing E2E workflow (`.github/workflows/e2e.yml`).
-- **Acceptance gate for shipping any future change to FollowButton / merge_anonymous / unsubscribe routes / OG generators:** these specs must pass.
+### ~~`T-069` E2E coverage for the retention loop~~ — shipped 2026-07-01
+
+Landed 25 new specs (23 → 48), plus a coverage register + ways-of-working
+discipline. See [`docs/e2e-coverage.md`](./docs/e2e-coverage.md) for the
+authoritative feature→spec→status map.
+
+Highlights beyond the original acceptance list:
+- **3 setup fixtures**: `auth.setup.ts` (regular user), `admin.setup.ts`
+  (with `WANDER_ADMIN_EMAIL_ALLOWLIST` suffix-match env var), and
+  `artist.setup.ts` (drives the full onboarding wizard end-to-end).
+- **Test-fixture insert seam** (`/v1/testfixtures/artwork` +
+  `/v1/testfixtures/inquiry`, guarded by `WANDER_TEST_FIXTURES_ENABLED`)
+  + `e2e/lib/fixtures.ts` helper. Lets specs seed world state under the
+  fixture artist without driving Jina + S3 + Clerk image-upload paths.
+- **CLAUDE.md discipline entry**: shipping a user-visible feature must
+  update the coverage register in the same commit.
+- **Seed additions**: `dora-pending`, `franz-pending`, `edith-paused`,
+  `greta-active`, `blue-period` series, `test-share-alice` public
+  collection, multi-image row on Crimson Field.
+
+Every retention-loop flow named in the original acceptance list is ✅.
+Remaining ⏳ (documented in the register): series edit modal T-058.2
+(same URL-driven shape as spec 50, easy add), plus a handful of 🚫
+rows for cron/personalisation/email-delivery flows that aren't the
+right tier.
 
 ### `T-017` Search facet counts — deferred indefinitely
 - Spec'd but the endpoint currently returns empty `FacetCounts`. Real implementation would mean per-search COUNT queries (expensive) or precomputed/approximated buckets. No user has asked for it. Reconsider when (a) we have enough corpus for buckets to be informative, AND (b) someone says "I wish I could see how many works of each medium there are."
