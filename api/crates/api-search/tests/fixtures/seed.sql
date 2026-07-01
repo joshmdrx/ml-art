@@ -55,7 +55,19 @@ INSERT INTO artists (
   -- see the page with a status banner atop it.
   ('aaa55555-5555-5555-5555-555555555555', NULL, 'edith-paused', 'Edith Paused',
    'Artist temporarily paused.', 'Bristol, GB', 'Bristol', 'GB', 51.4545, -2.5879, now(),
-   '{"type":"platform"}'::jsonb, 'paused');
+   '{"type":"platform"}'::jsonb, 'paused'),
+  -- T-083 — second pending artist, dedicated to the admin-decline E2E
+  -- spec so it doesn't race with `dora-pending` (consumed by the
+  -- admin-approve spec).
+  ('aaa66666-6666-6666-6666-666666666666', NULL, 'franz-pending', 'Franz Pending',
+   'Painter awaiting admin review.', 'Leeds, GB', 'Leeds', 'GB', 53.8008, -1.5491, now(),
+   '{"type":"platform"}'::jsonb, 'pending'),
+  -- T-083 — dedicated active artist for the admin-pause/unpause E2E
+  -- spec. Kept separate from alice/bruno/carmen so pausing them
+  -- doesn't hide seeded artworks that other specs depend on.
+  ('aaa77777-7777-7777-7777-777777777777', NULL, 'greta-active', 'Greta Active',
+   'Painter used by pause/unpause tests.', 'Leeds, GB', 'Leeds', 'GB', 53.8008, -1.5491, now(),
+   '{"type":"platform"}'::jsonb, 'active');
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Artworks (6 — 5 published, 1 draft)
@@ -121,7 +133,12 @@ INSERT INTO artwork_images (
   -- doesn't collide with the existing primary on bbb55555.
   ('eee11111-1111-1111-1111-111111111111',
    'bbb55555-5555-5555-5555-555555555555',
-   'test/carmen/rejected.jpg', 800, 800, false, 1, 'rejected', 'EXPLICIT_NUDITY');
+   'test/carmen/rejected.jpg', 800, 800, false, 1, 'rejected', 'EXPLICIT_NUDITY'),
+  -- Second approved image on Crimson Field so E2E thumbnail-swap has
+  -- a multi-image artwork to drive. `moderation_test` asserts on Blue
+  -- Morning's image count; Crimson Field is untouched by that path.
+  (gen_random_uuid(), 'bbb22222-2222-2222-2222-222222222222',
+   'test/alice/2b.jpg', 1200, 900, false, 1, 'approved', NULL);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Embeddings (1024-dim, 1.0 at distinct positions so similarities are well-defined)
@@ -195,3 +212,41 @@ INSERT INTO artist_locations (
    'gallery', 'Berlin Project Space', '12 Teststraße, 10115 Berlin',
    'Berlin', 'DE', 52.5300, 13.3850,
    'https://berlin-space.example', 0, now());
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- T-058 — series (1, under alice)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+INSERT INTO series (id, artist_id, slug, title, statement, cover_artwork_id)
+VALUES
+  ('fff11111-1111-1111-1111-111111111111',
+   'aaa11111-1111-1111-1111-111111111111',
+   'blue-period', 'Blue Period',
+   'A short curatorial statement about the blue period.',
+   'bbb11111-1111-1111-1111-111111111111');
+
+-- Two of Alice's artworks belong to the series (the third stays loose).
+UPDATE artworks SET series_id = 'fff11111-1111-1111-1111-111111111111'
+WHERE id IN (
+  'bbb11111-1111-1111-1111-111111111111',
+  'bbb22222-2222-2222-2222-222222222222'
+);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- T-053 — public collection (1, owned by user_test_99 to avoid colliding
+-- with the collections_test.rs assertions on Alice's + Bob's tallies)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+INSERT INTO user_collections (id, user_id, name, description, is_public, share_id)
+VALUES
+  ('11111111-cccc-cccc-cccc-cccccccccccc',
+   '99999999-9999-9999-9999-999999999999',
+   'Public Test Board',
+   'A public mood board used by E2E tests.',
+   true,
+   'test-share-alice');
+
+INSERT INTO collection_artworks (collection_id, artwork_id) VALUES
+  ('11111111-cccc-cccc-cccc-cccccccccccc', 'bbb11111-1111-1111-1111-111111111111'),
+  ('11111111-cccc-cccc-cccc-cccccccccccc', 'bbb22222-2222-2222-2222-222222222222'),
+  ('11111111-cccc-cccc-cccc-cccccccccccc', 'bbb33333-3333-3333-3333-333333333333');

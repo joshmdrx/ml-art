@@ -83,11 +83,17 @@ async fn admin_list_defaults_to_pending(pool: PgPool) {
     let (status, page): (_, ListPage) =
         get_json_authed(app, "/v1/admin/artists", ADMIN_BEARER).await;
     assert_eq!(status, 200);
-    // Only dora-pending in seed has status='pending'.
-    assert_eq!(page.items.len(), 1);
-    assert_eq!(page.items[0].slug, "dora-pending");
-    assert_eq!(page.items[0].status, "pending");
-    assert_eq!(page.items[0].artwork_count, 0);
+    // dora-pending + franz-pending have status='pending'. franz is the
+    // dedicated E2E admin-decline target — see fixtures/seed.sql.
+    assert_eq!(page.items.len(), 2);
+    let slugs: std::collections::HashSet<&str> =
+        page.items.iter().map(|i| i.slug.as_str()).collect();
+    assert!(slugs.contains("dora-pending"));
+    assert!(slugs.contains("franz-pending"));
+    for it in &page.items {
+        assert_eq!(it.status, "pending");
+        assert_eq!(it.artwork_count, 0);
+    }
 }
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
@@ -96,8 +102,9 @@ async fn admin_list_active_filter(pool: PgPool) {
     let (status, page): (_, ListPage) =
         get_json_authed(app, "/v1/admin/artists?status=active", ADMIN_BEARER).await;
     assert_eq!(status, 200);
-    // alice, bruno, carmen are active in seed.
-    assert_eq!(page.items.len(), 3);
+    // alice, bruno, carmen, greta are active in seed. (greta is the
+    // dedicated E2E pause/unpause target — see fixtures/seed.sql.)
+    assert_eq!(page.items.len(), 4);
     for it in &page.items {
         assert_eq!(it.status, "active");
     }

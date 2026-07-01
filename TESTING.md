@@ -145,7 +145,7 @@ in `e2e/.auth/admin.json`; the `chromium-admin` project picks up
 **Retry policy:** retry failed tests once; two failures = real bug,
 not flakiness.
 
-**Acceptance:** flows pass against the local stack in under 60s. Current: 36 specs (2026-07-01).
+**Acceptance:** flows pass against the local stack in under 60s. Current: 41 specs (2026-07-01).
 
 ### Tier 3 — Vitest units (web)
 

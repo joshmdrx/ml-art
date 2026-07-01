@@ -42,8 +42,9 @@ downgrade to 🚫 with the reason if you decide it's not worth it.
 | FilterBar (medium / price / availability / location) | [`16-filter-bar`](../e2e/tests/16-filter-bar.spec.ts) | ✅ |
 | Visual search modifiers (image_upload_id shell) | [`19-visual-search-modifiers`](../e2e/tests/19-visual-search-modifiers.spec.ts) | 🟡 no real upload — Jina stub gap |
 | Geography map mode (`?map=1`) | [`20-geography-search-map`](../e2e/tests/20-geography-search-map.spec.ts) | 🟡 shell only — seed has no `artist_locations` rows |
-| Artwork image viewer — click main opens lightbox, Escape closes | [`29-artwork-image-viewer`](../e2e/tests/29-artwork-image-viewer.spec.ts) | 🟡 lightbox covered; thumbnail-swap needs a multi-image seeded artwork |
-| Series detail on `/artists/[slug]/series/[seriesSlug]` (T-058.3) | — | ⏳ |
+| Artwork image viewer — click main opens lightbox, Escape closes | [`29-artwork-image-viewer`](../e2e/tests/29-artwork-image-viewer.spec.ts) | ✅ |
+| Artwork image viewer — thumbnail-swap on multi-image work | [`43-artwork-image-viewer-thumbnails`](../e2e/tests/43-artwork-image-viewer-thumbnails.spec.ts) | ✅ uses seed's 2-image Crimson Field |
+| Series detail on `/artists/[slug]/series/[seriesSlug]` (T-058.3) | [`42-series-detail`](../e2e/tests/42-series-detail.spec.ts) | ✅ smoke + unknown-slug 404, uses seed's `blue-period` |
 | "For you" row on homepage (T-056.2) | — | 🚫 personalisation is behind `SEARCH_PERSONALIZE_ENABLED`, deterministic assertion hard; cover once flag is on |
 | Refine-with-text on `/search` (T-082) | — | 🚫 feature-flagged off (`NEXT_PUBLIC_REFINE_ENABLED`) pre-launch; add when flipped on |
 | Medium-taxonomy multi-value filter (T-073) | — | 🟡 covered generically by `16-filter-bar`; multi-value chip behavior not explicitly asserted |
@@ -125,8 +126,8 @@ the `chromium-admin` project consumes it and picks up
 | `/admin/audit-log` renders (T-083.5) | [`37-admin-audit-log-admin-signed-in`](../e2e/tests/37-admin-audit-log-admin-signed-in.spec.ts) | ✅ tolerant of empty/non-empty state so spec ordering doesn't matter |
 | Admin banner on non-active artist page (T-084.2) | [`38-admin-artist-banner-admin-signed-in`](../e2e/tests/38-admin-artist-banner-admin-signed-in.spec.ts) | ✅ uses seed's `edith-paused` |
 | Non-admin visitor to non-active artist → 404 (T-084.2 inverse) | [`39-artist-non-active-blocked-signed-in`](../e2e/tests/39-artist-non-active-blocked-signed-in.spec.ts) | ✅ |
-| Admin decline pending artist | — | ⏳ confirm-dialog path (uses `useConfirm`) not asserted |
-| Admin pause / unpause active artist | — | ⏳ needs to drive both transitions from an active-artist row |
+| Admin decline pending artist (confirm-dialog path) | [`40-admin-artists-decline-admin-signed-in`](../e2e/tests/40-admin-artists-decline-admin-signed-in.spec.ts) | ✅ uses seed's `franz-pending` |
+| Admin pause / unpause round-trip | [`41-admin-artists-pause-admin-signed-in`](../e2e/tests/41-admin-artists-pause-admin-signed-in.spec.ts) | ✅ uses seed's `greta-active` |
 
 ## OG cards + metadata (T-051)
 
@@ -134,7 +135,7 @@ the `chromium-admin` project consumes it and picks up
 |---|---|---|
 | Artwork OG image renders at expected URL | [`30-og-cards`](../e2e/tests/30-og-cards.spec.ts) | ✅ meta URL emitted + fetch returns image/* |
 | Artist OG image renders | [`30-og-cards`](../e2e/tests/30-og-cards.spec.ts) | ✅ same for `/artists/[slug]` |
-| Public-collection OG image | — | ⏳ same pattern, needs a public share-id fixture |
+| Public-collection page + OG image | [`44-public-collection-og`](../e2e/tests/44-public-collection-og.spec.ts) | ✅ uses seed's `test-share-alice` public collection |
 
 ## Prod smoke (T-075)
 
