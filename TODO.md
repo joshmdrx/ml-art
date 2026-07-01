@@ -622,27 +622,10 @@ Not urgent — the current split works and taxonomy stability is already a soft 
 - Browser hits via `wander.gallery` continue to work unchanged.
 - Rotate the secret via SSM; deploy script picks it up.
 
-### `T-084` Operator dashboard — CloudWatch alarms + `/admin/stats` page
-**Where:** `infra/modules/api/main.tf` (or a new `monitoring` submodule) for alarms; new `web/src/app/admin/stats/page.tsx` for the stats view; new `/v1/admin/stats` endpoint or direct psql over the existing pool in the web SSR path.
-**Why:** Pre-launch we have SSM secrets + smoke suite but no live view of "is anything broken" or "who's using it." Sentry (T-065) covers thrown errors; this covers the level below — 5xx counts, error rates, cold-start p95 — plus the level above — DAU, searches, signups, funnel.
+### ~~`T-084` Operator dashboard — CloudWatch alarms + `/admin/stats` page~~ — partial ship 2026-07-01
 
-**Acceptance:**
-
-*Alarms (Terraform)*:
-- `aws_cloudwatch_metric_alarm` — api Lambda 5xx count > 10 over 5min, evaluation-period 1
-- Same for jobs + web Lambdas
-- api Lambda error-rate percentage > 5% over 5min
-- Neon connection failures (from CloudWatch Logs metric filter on the api's `sqlx::pool` error pattern) > 3 over 5min
-- SNS topic → email subscription to `mrjoshuajmatthews@gmail.com`
-- All wired in TF so it's captured in git, not console-configured
-
-*Stats page*:
-- `/admin/stats` — gated by the existing `AdminUser` extractor / layout notFound()
-- Big-number tiles: total artists, published artworks, signed-up users, inquiries submitted (last 7d / 30d / all-time)
-- Search funnel: `search_executed` count → `artwork_viewed` count → `inquiry_started` → `inquiry_submitted`, per week for the last 6 weeks
-- Top-viewed artworks + top-search-queries (7d) — small ordered lists
-- Admin activity: N mutations last 7d (from `admin_audit_log`)
-- SSR-rendered; the underlying data lives in `events`, `users`, `artworks`, `inquiries`, `admin_audit_log`
+- **T-084.1 — `/admin/stats` page.** ✓ Shipped 2026-07-01. Server-rendered admin dashboard with big-number tiles (users / artists / artworks / inquiries, 7d/30d/all-time) + 4-week search→inquiry funnel + admin activity count. One-round-trip via `GET /v1/admin/stats`.
+- **T-084.2 — CloudWatch alarms.** Partially applied 2026-07-01. Committed code covers three alarms: web CloudFront 5xx rate + Neon pool errors (metric filter + alarm on the api Lambda log group). The **Neon alarm applied cleanly** via targeted `terraform apply`. The **web CloudFront alarm is committed but NOT applied** — its `DistributionId` reference walks through `module.web` → `module.dns` → the Cloudflare data source, which requires `CLOUDFLARE_API_TOKEN` for terraform plan/apply. Whoever picks this up needs to `export CLOUDFLARE_API_TOKEN=<token>` and run `terraform apply` from `infra/` — one more resource + it's done.
 
 **Deferred (don't block v1):**
 - Grafana / Datadog dashboards (overkill for pre-launch traffic)
