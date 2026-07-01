@@ -80,6 +80,14 @@ pub struct Config {
     /// personalised results unless they pass `?personalize=off`.
     /// Pre-cohort A/B; flipping this is the operator-side kill switch.
     pub search_personalize_enabled: bool,
+    /// T-082 — feature flag on the refine-with-text 4th RRF channel.
+    /// When `false`, the `refine` query param is silently dropped
+    /// server-side (no embed hit, no CTE fires) regardless of what
+    /// the URL says. Web-side gates the RefineBar affordance on the
+    /// parallel `NEXT_PUBLIC_REFINE_ENABLED` at build time so the
+    /// UI matches the backend. Pre-launch this is off — pending
+    /// a proper A/B once we have signed-in-user volume.
+    pub search_refine_enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +172,9 @@ impl Config {
             search_personalize_enabled: env::var("SEARCH_PERSONALIZE_ENABLED")
                 .map(|s| s == "true")
                 .unwrap_or(false),
+            search_refine_enabled: env::var("SEARCH_REFINE_ENABLED")
+                .map(|s| s == "true")
+                .unwrap_or(false),
         };
 
         // Production sanity checks. Prevent footguns from a missing secret in prod.
@@ -215,6 +226,11 @@ impl Config {
             // Off in tests by default — the T-056.3 toggle tests explicitly
             // flip this on or pass ?personalize=on.
             search_personalize_enabled: false,
+            // ON in tests: refine only fires when `?refine=…` is passed,
+            // so tests that don't care about it are unaffected. Tests
+            // that specifically want to verify the flag-off behaviour
+            // build their own Config with this set to false.
+            search_refine_enabled: true,
         }
     }
 }

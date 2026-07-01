@@ -315,8 +315,14 @@ pub async fn handle(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    // Feature-flag gate: refine only fires when the operator has
+    // explicitly enabled it via `SEARCH_REFINE_ENABLED=true`. Off
+    // pre-launch until A/B evidence justifies flipping it on. When
+    // disabled the URL param is silently ignored — no embed hit, no
+    // CTE, no 400 (bookmarked URLs still work, they just don't do
+    // anything extra).
     let refine_vec: Option<Vector> = match refine_text {
-        Some(r) if has_text || has_visual_anchor => {
+        Some(r) if state.cfg.search_refine_enabled && (has_text || has_visual_anchor) => {
             if r.len() > REFINE_MAX_LEN {
                 return Err(ApiError::BadRequest(format!(
                     "refine: text too long (max {REFINE_MAX_LEN} chars)"

@@ -25,9 +25,21 @@ import { clsx } from "clsx";
 
 const REFINE_MAX_LEN = 500;
 
+/** T-082 — build-time feature flag. Off by default; flip to `true`
+ * in `.env.local` (dev) or the web Lambda's env (prod) to render the
+ * bar. The backend has the parallel `SEARCH_REFINE_ENABLED` gate; if
+ * only one side is flipped the affordance would either lie (UI shows
+ * a bar that does nothing) or hide a working feature. Keep both in
+ * sync when toggling. */
+const REFINE_ENABLED = process.env.NEXT_PUBLIC_REFINE_ENABLED === "true";
+
 export function RefineBar() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  // Feature-flag gate. React discourages an early-return-before-hooks
+  // pattern, but the other hooks below all fire regardless — the flag
+  // just skips the render. The primary-signal gate later in the
+  // function serves the same shape.
   const [isPending, startTransition] = useTransition();
   const [editing, setEditing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -43,6 +55,9 @@ export function RefineBar() {
   useEffect(() => {
     if (editing) inputRef.current?.focus();
   }, [editing]);
+
+  // Feature-flag gate — off by default, mirrors backend.
+  if (!REFINE_ENABLED) return null;
 
   // Gate the bar on the primary-signal presence; mirror the backend.
   const hasText = Boolean(searchParams.get("q")?.trim());
