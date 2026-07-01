@@ -3,6 +3,37 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-07-01 — T-081 REVERTED + T-082 feature-flagged + T-083 admin preview
+
+Three follow-ups on the trio shipped 2026-06-30.
+
+**T-081 reverted.** Four `git revert` commits undo venues + venue_artworks +
+public venue pages + admin venue queue. Migration `0026_drop_venues.sql`
+drops the tables in prod (no venue rows were ever created between
+deploy and revert). v1 will treat gallery / shop owners as regular
+artists using `artist_locations` for their space; one entity type,
+one map source, one page shape. Full rationale in `decisions.md`
+2026-07-01. Git history preserved so re-adding is a `revert-the-
+revert` if we ever want it back.
+
+**T-082 feature-flagged off by default.** New `SEARCH_REFINE_ENABLED`
+env var on the api + `NEXT_PUBLIC_REFINE_ENABLED` on the web. Both
+default false. When off: backend silently ignores `?refine=…`
+(no embed hit, no CTE, no 400); web doesn't render the RefineBar
+affordance. Turn on by flipping both flags in the Lambda env — no
+code change needed. Same shape as the T-056.3 personalize toggle.
+
+**T-083 admin preview via existing endpoints.** No new preview
+page — admins can now visit `/artists/[slug]` and `/artworks/[id]`
+for non-active artists / draft artworks. Backend `/v1/artists/:slug`
+and `/v1/artworks/:id` accept optional `AuthedUser` and lift the
+`status='active'` / `status='published'` filters when `is_admin=true`.
+`ArtistFull.status` now returned on the wire (always "active" for
+non-admin callers). Web `/artists/[slug]` fetches `getMe()` in
+parallel and renders an `AdminArtistBanner` at the top when the
+caller is admin AND artist isn't active — banner surfaces the
+current status word + inline Approve / Decline / Unpause shortcuts.
+
 ## 2026-06-30 — T-083: Admin surface — artist + image queues, audit log
 
 Foundational admin surface so approvals stop happening via direct psql

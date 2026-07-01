@@ -17,6 +17,59 @@ Format:
 
 ---
 
+## 2026-07-01 — T-081 reverted: v1 treats galleries as artists, not a separate entity
+
+**Context:** T-081 shipped four sub-commits: `venues` + `venue_artworks`
+tables, a venue-invites-artwork consent flow, public `/venues` pages,
+admin approval queue. All applied to prod. Zero real venue rows were
+ever created between the deploy and this reversal.
+
+**Reversed:** the entire venues surface. `git revert` on all four
+T-081 commits + `db/migrations/0026_drop_venues.sql` to drop the
+tables in prod.
+
+**Why:** Josh reviewed the shipped surface + thought about the actual
+v1 shape and made the call: a gallery / shop owner signing up as an
+*artist* covers the same discovery + map + page needs with none of
+the extra machinery. Their space appears via `artist_locations`,
+their artworks appear as their own listings, the map already has
+their pin. What we lose:
+- Explicit "gallery invites artwork" consent (galleries would just
+  list works as their own — which for pre-launch UK galleries
+  showing a handful of pieces is fine).
+- A separate concept for admin approval (galleries go through the
+  same artist-onboarding queue).
+
+**What we keep from the T-081 work:**
+- The admin approval queue pattern (T-083) — galleries signing up
+  as artists still flow through `pending → active` there.
+- `JobEvent::VenueGeocode` variant + `geocode_and_update_venue`
+  helper were reverted with the rest.
+- `ArtworkFull.venues` field on the wire — reverted; the artwork
+  page shows `artist_locations` on the artist's own page instead.
+
+**Alternatives considered before reverting:**
+- **Keep venues, add nav links** — my original suggestion. Rejected
+  because the concept overlap with `artist_locations` was going to
+  bite us either in docs (explaining the difference to users) or
+  in a bigger refactor later. Cheaper to remove now while nobody
+  depends on it.
+- **Subsume `artist_locations` into venues** — the "right" long-
+  term answer, but a big refactor for a feature no user has asked
+  for. Deferred indefinitely; may become relevant when a real
+  gallery user asks "how do I represent multiple artists here?"
+
+**Reversibility of the reversion:** High. The git history preserves
+the full venues implementation across the reverted commits. If we
+ever want it back, we `git revert` the reverts — no code needs to
+be rewritten. The schema is dropped so we'd need a re-add
+migration, but that's mechanical.
+
+**What this closes:** Josh's original concern about too many concepts
+in v1. Reduces the launch surface + keeps `/studio` uncluttered.
+
+---
+
 ## 2026-06-30 — T-083: admin surface — column over table, audit-before-mutate, layout-level 404 gate
 
 **Context:** Three queues need human approval before going public —
