@@ -125,7 +125,17 @@ At a glance, the suite covers:
 Clerk user per run via the `*+clerk_test@*` test-email convention.
 Storage state (cookies + localStorage) is persisted to
 `e2e/.auth/user.json` and consumed by the `chromium-authed` project;
-tests opt in by matching the filename pattern `*signed-in*.spec.ts`.
+tests opt in by matching the filename pattern `*signed-in*.spec.ts`
+(excluding `*admin-signed-in*` which routes to `chromium-admin`).
+
+**Admin test infrastructure**: `admin.setup.ts` mirrors the flow with
+an email suffixed `-admin+clerk_test@example.com`. The API's
+`is_seeded_admin_email` matches that suffix against the
+`WANDER_ADMIN_EMAIL_ALLOWLIST` env var (set by `scripts/dev.sh` +
+`.github/workflows/e2e.yml`); the user is auto-promoted to
+`is_admin=true` on first authenticated request. Storage state lives
+in `e2e/.auth/admin.json`; the `chromium-admin` project picks up
+`*admin-signed-in*.spec.ts`.
 
 **Where:**
 - `e2e/playwright.config.ts` — config + reporters
@@ -135,7 +145,7 @@ tests opt in by matching the filename pattern `*signed-in*.spec.ts`.
 **Retry policy:** retry failed tests once; two failures = real bug,
 not flakiness.
 
-**Acceptance:** flows pass against the local stack in under 60s. Current: 27 specs (2026-07-01).
+**Acceptance:** flows pass against the local stack in under 60s. Current: 31 specs (2026-07-01).
 
 ### Tier 3 — Vitest units (web)
 

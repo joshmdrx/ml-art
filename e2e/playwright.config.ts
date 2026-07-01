@@ -42,24 +42,32 @@ export default defineConfig({
   },
 
   projects: [
-    // 1. One-shot Clerk sign-up; saves storageState for downstream projects.
+    // 1. One-shot Clerk sign-up (regular user); saves storageState for
+    //    the `chromium-authed` project.
     {
       name: "setup",
       testMatch: /auth\.setup\.ts/,
     },
 
-    // 2. Anonymous tests (most of the suite). Default state — fresh
-    //    browser, no cookies.
+    // 2. One-shot Clerk sign-up (admin user); saves storageState for
+    //    the `chromium-admin` project. Requires the API to be running
+    //    with `WANDER_ADMIN_EMAIL_ALLOWLIST=-admin+clerk_test@example.com`
+    //    (set by `scripts/dev.sh` locally + the e2e workflow in CI).
+    {
+      name: "admin-setup",
+      testMatch: /admin\.setup\.ts/,
+    },
+
+    // 3. Anonymous tests. Default state — fresh browser, no cookies.
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
-      // Skip auth setup if no signed-in tests run; harmless either way.
       dependencies: ["setup"],
       testIgnore: /.*signed-in.*\.spec\.ts/,
     },
 
-    // 3. Signed-in tests. Files matching `*signed-in*.spec.ts` run with
-    //    the saved Clerk session.
+    // 4. Signed-in-as-regular-user tests. Match `*-signed-in*.spec.ts`
+    //    but exclude the admin variant, which routes to `chromium-admin`.
     {
       name: "chromium-authed",
       use: {
@@ -68,6 +76,18 @@ export default defineConfig({
       },
       dependencies: ["setup"],
       testMatch: /.*signed-in.*\.spec\.ts/,
+      testIgnore: /.*admin-signed-in.*\.spec\.ts/,
+    },
+
+    // 5. Signed-in-as-admin tests. Match `*-admin-signed-in*.spec.ts`.
+    {
+      name: "chromium-admin",
+      use: {
+        ...devices["Desktop Chrome"],
+        storageState: "e2e/.auth/admin.json",
+      },
+      dependencies: ["admin-setup"],
+      testMatch: /.*admin-signed-in.*\.spec\.ts/,
     },
   ],
 });

@@ -59,7 +59,16 @@ echo "→ starting api (logs: /tmp/api.log)  [auto-reloads on *.rs / *.sql]"
   # cargo-watch rebuilds + restarts the binary on changes to Rust sources
   # and SQL migrations. `--why` prints the changed path into /tmp/api.log
   # so a confused restart is easy to trace.
-  PORT=9100 cargo watch \
+  # WANDER_ADMIN_EMAIL_ALLOWLIST is a comma-separated list of email
+  # suffixes; any user whose email ends with one is auto-promoted to
+  # is_admin=true on first sign-in. The E2E harness randomises a
+  # prefix + tacks on `-admin+clerk_test@example.com`, so this seam
+  # lets admin specs drive the /admin surface locally without a
+  # post-signup psql edit. Empty in prod. Clerk's test-email
+  # convention already blocks these literals in a real signup.
+  PORT=9100 \
+  WANDER_ADMIN_EMAIL_ALLOWLIST=-admin+clerk_test@example.com \
+  cargo watch \
     --why \
     --watch crates \
     --watch ../db/migrations \

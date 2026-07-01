@@ -108,6 +108,11 @@ jobs:
         working-directory: api
         env:
           PORT: 9100
+          # Suffix-match: any Clerk test email ending with this
+          # pattern is auto-promoted to is_admin=true on first
+          # sign-in. Empty in prod. Kept in sync with
+          # e2e/tests/admin.setup.ts and docs/e2e-coverage.md.
+          WANDER_ADMIN_EMAIL_ALLOWLIST: "-admin+clerk_test@example.com"
 
       - name: Wait for API
         run: |

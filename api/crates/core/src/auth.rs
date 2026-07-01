@@ -378,9 +378,29 @@ fn parse_bearer(headers: &axum::http::HeaderMap) -> Result<String, ApiError> {
 /// `==` check so there's no per-row cost at scale.
 pub const ADMIN_EMAILS: &[&str] = &["mrjoshuajmatthews@gmail.com"];
 
+/// Optional env-var-driven allowlist that supplements `ADMIN_EMAILS`.
+/// Comma-separated list of email suffixes; any user whose email ends
+/// with one of them is auto-promoted to `is_admin = true`. Empty
+/// (unset) in prod — this seam only exists so the E2E harness can
+/// promote a per-run randomized test user (matching the suffix
+/// `-admin+clerk_test@example.com`) to admin without hardcoding
+/// a test literal into the production const. See
+/// `docs/e2e-coverage.md` → "Admin" for the register.
+const ADMIN_ALLOWLIST_ENV: &str = "WANDER_ADMIN_EMAIL_ALLOWLIST";
+
 fn is_seeded_admin_email(email: &str) -> bool {
     let lower = email.to_ascii_lowercase();
-    ADMIN_EMAILS.iter().any(|e| *e == lower)
+    if ADMIN_EMAILS.iter().any(|e| *e == lower) {
+        return true;
+    }
+    match std::env::var(ADMIN_ALLOWLIST_ENV) {
+        Ok(extra) => extra
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .any(|suffix| lower.ends_with(&suffix.to_ascii_lowercase())),
+        Err(_) => false,
+    }
 }
 
 /// Insert the user if we haven't seen this `clerk_user_id` before; either

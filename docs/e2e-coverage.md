@@ -106,20 +106,24 @@ downgrade to 🚫 with the reason if you decide it's not worth it.
 
 ## Admin (T-083 / T-084)
 
+**Admin fixture:** `admin.setup.ts` signs up a fresh Clerk user whose
+email ends with `-admin+clerk_test@example.com`. `is_seeded_admin_email`
+matches that suffix against `WANDER_ADMIN_EMAIL_ALLOWLIST` (set to
+`-admin+clerk_test@example.com` in `scripts/dev.sh` +
+`.github/workflows/e2e.yml`), so the user is auto-promoted on first
+authenticated request. Storage state lives in `e2e/.auth/admin.json`;
+the `chromium-admin` project consumes it and picks up
+`*-admin-signed-in.spec.ts`.
+
 | Feature | Spec | Status |
 |---|---|---|
-| Non-admin visits `/admin` → 404 | — | ⏳ |
-| Admin approve pending artist → artist becomes publicly listed | — | ⏳ needs admin fixture (see below) |
-| Admin override image rejection → image visible | — | ⏳ |
-| `/admin/audit-log` renders recent mutations | — | ⏳ |
-| `/admin/stats` renders tiles + funnel (T-084.1) | — | ⏳ |
-| Admin banner shows on non-active artist page (T-084.2 admin bypass) | — | ⏳ |
-
-**Blocker for the whole admin block:** signed-in tests use a fresh
-Clerk user per run with `is_admin=false`. Adding admin coverage means
-either (a) a `chromium-admin` project with a pre-seeded admin Clerk
-user + storageState fixture, or (b) an API-side dev-only endpoint
-that flips `is_admin=true` for the current user. Neither exists yet.
+| Non-admin visits `/admin` → 404 | [`34-admin-blocked-signed-in`](../e2e/tests/34-admin-blocked-signed-in.spec.ts) | ✅ |
+| Admin sees `/admin` index tiles + queue links (T-083) | [`32-admin-index-admin-signed-in`](../e2e/tests/32-admin-index-admin-signed-in.spec.ts) | ✅ |
+| `/admin/stats` renders tiles + funnel (T-084.1) | [`33-admin-stats-admin-signed-in`](../e2e/tests/33-admin-stats-admin-signed-in.spec.ts) | ✅ |
+| Admin approve pending artist → artist becomes publicly listed | — | ⏳ needs a pending-artist DB fixture — the seed lacks one; either extend the seed or drive it via /onboarding as a second Clerk user |
+| Admin override image rejection → image visible | — | ⏳ same shape — needs a rejected-image seeded row |
+| `/admin/audit-log` renders recent mutations | — | ⏳ trivial to add once we're OK asserting on either an empty or non-empty log |
+| Admin banner shows on non-active artist page (T-084.2 admin bypass) | — | ⏳ needs a non-active artist in seed |
 
 ## OG cards + metadata (T-051)
 
