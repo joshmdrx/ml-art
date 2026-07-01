@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
-import { TopNav } from "@/components/TopNav";
 import { StudioPortfolio } from "@/components/StudioPortfolio";
 import { getStudioMe, listMyArtworks } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
@@ -72,49 +70,23 @@ export default async function StudioPage({
 
   return (
     <>
-      <TopNav />
-      <main className="flex-1 mx-auto w-full max-w-screen-2xl px-6 py-12">
-        <header className="flex items-baseline justify-between mb-8">
-          <div>
-            <h1 className="font-serif text-3xl tracking-tight">Studio</h1>
-            <p className="mt-2 text-sm text-muted">
-              {artist
-                ? `${artist.display_name} — ${artist.status === "active" ? "Published" : "Unpublished"}`
-                : "Your portfolio"}
-            </p>
-            {/* T-052 — follower count surfaced on the dashboard.
-                Defaults to 0 if the API hasn't been redeployed yet. */}
-            {(artist.follower_count ?? 0) > 0 && (
-              <p className="mt-1 text-xs text-muted">
-                {artist.follower_count}{" "}
-                {artist.follower_count === 1 ? "follower" : "followers"}
-              </p>
-            )}
-          </div>
-          <nav className="flex items-center gap-4">
-            <Link
-              href="/studio/series"
-              className="text-sm underline underline-offset-2 text-muted hover:text-foreground"
-            >
-              Series →
-            </Link>
-            <Link
-              href="/studio/inquiries"
-              className="text-sm underline underline-offset-2 text-muted hover:text-foreground"
-            >
-              Inquiries →
-            </Link>
-            <Link
-              href="/studio/settings"
-              className="text-sm underline underline-offset-2 text-muted hover:text-foreground"
-            >
-              Settings →
-            </Link>
-          </nav>
-        </header>
+      <header className="mb-8">
+        <h1 className="font-serif text-3xl tracking-tight">Portfolio</h1>
+        <p className="mt-2 text-sm text-muted">
+          {artist.display_name} —{" "}
+          {artist.status === "active" ? "Published" : "Unpublished"}
+        </p>
+        {/* T-052 — follower count surfaced on the dashboard.
+            Defaults to 0 if the API hasn't been redeployed yet. */}
+        {(artist.follower_count ?? 0) > 0 && (
+          <p className="mt-1 text-xs text-muted">
+            {artist.follower_count}{" "}
+            {artist.follower_count === 1 ? "follower" : "followers"}
+          </p>
+        )}
+      </header>
 
-        <StudioPortfolio artist={artist} items={items} status={status} />
-      </main>
+      <StudioPortfolio artist={artist} items={items} status={status} />
     </>
   );
 }

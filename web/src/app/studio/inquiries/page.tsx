@@ -3,7 +3,6 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import clsx from "clsx";
 import { auth } from "@clerk/nextjs/server";
-import { TopNav } from "@/components/TopNav";
 import { InquiryInbox } from "@/components/studio/InquiryInbox";
 import { getStudioMe, listStudioInquiries } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
@@ -69,60 +68,49 @@ export default async function StudioInquiriesPage({
 
   return (
     <>
-      <TopNav />
-      <main className="flex-1 mx-auto w-full max-w-screen-2xl px-6 py-12">
-        <header className="flex items-baseline justify-between mb-8">
-          <div>
-            <h1 className="font-serif text-3xl tracking-tight">Inquiries</h1>
-            <p className="mt-2 text-sm text-muted">
-              {artist.display_name} — messages about your work
-            </p>
-          </div>
-          <Link
-            href="/studio"
-            className="text-sm underline underline-offset-2 text-muted hover:text-foreground"
-          >
-            ← Back to studio
-          </Link>
-        </header>
+      <header className="mb-8">
+        <h1 className="font-serif text-3xl tracking-tight">Inquiries</h1>
+        <p className="mt-2 text-sm text-muted">
+          {artist.display_name} — messages about your work
+        </p>
+      </header>
 
-        <div className="flex items-center justify-between mb-6">
-          <div
-            role="toolbar"
-            aria-label="Filter by status"
-            className="flex gap-2"
-          >
-            {FILTERS.map((f) => {
-              const href =
-                f.token === "all"
-                  ? "/studio/inquiries"
-                  : `/studio/inquiries?status=${f.token}`;
-              const active = status === f.token;
-              return (
-                <Link
-                  key={f.token}
-                  href={href}
-                  aria-current={active ? "page" : undefined}
-                  className={clsx(
-                    "px-3 py-1.5 text-sm border",
-                    active
-                      ? "border-foreground bg-foreground text-background"
-                      : "border-border bg-surface hover:bg-background"
-                  )}
-                >
-                  {f.label}
-                </Link>
-              );
-            })}
-          </div>
+      <div className="flex items-center justify-between mb-6">
+        <div
+          role="toolbar"
+          aria-label="Filter by status"
+          className="flex gap-2"
+        >
+          {FILTERS.map((f) => {
+            const href =
+              f.token === "all"
+                ? "/studio/inquiries"
+                : `/studio/inquiries?status=${f.token}`;
+            const active = status === f.token;
+            return (
+              <Link
+                key={f.token}
+                href={href}
+                aria-current={active ? "page" : undefined}
+                className={clsx(
+                  "px-3 py-1.5 text-sm border",
+                  active
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-border bg-surface hover:bg-background"
+                )}
+              >
+                {f.label}
+              </Link>
+            );
+          })}
         </div>
+      </div>
 
-        {items.length === 0 ? (
-          <EmptyState status={status} />
-        ) : (
-          <InquiryInbox initialItems={items} />
-        )}
-      </main>
+      {items.length === 0 ? (
+        <EmptyState status={status} />
+      ) : (
+        <InquiryInbox initialItems={items} />
+      )}
     </>
   );
 }

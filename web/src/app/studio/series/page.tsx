@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
-import { TopNav } from "@/components/TopNav";
 import { StudioSeriesManager } from "@/components/StudioSeriesManager";
 import {
   getStudioMe,
@@ -56,30 +54,19 @@ export default async function StudioSeriesPage() {
 
   return (
     <>
-      <TopNav />
-      <main className="flex-1 mx-auto w-full max-w-screen-2xl px-6 py-12">
-        <header className="flex items-baseline justify-between mb-8">
-          <div>
-            <h1 className="font-serif text-3xl tracking-tight">Series</h1>
-            <p className="mt-2 text-sm text-muted">
-              Group your work into projects or themes. Each series gets its
-              own page on your artist profile.
-            </p>
-          </div>
-          <Link
-            href="/studio"
-            className="text-sm underline underline-offset-2 text-muted hover:text-foreground"
-          >
-            ← Back to portfolio
-          </Link>
-        </header>
+      <header className="mb-8">
+        <h1 className="font-serif text-3xl tracking-tight">Series</h1>
+        <p className="mt-2 text-sm text-muted">
+          Group your work into projects or themes. Each series gets its
+          own page on your artist profile.
+        </p>
+      </header>
 
-        <StudioSeriesManager
-          artist={artist}
-          initialSeries={items}
-          artworks={allArtworks}
-        />
-      </main>
+      <StudioSeriesManager
+        artist={artist}
+        initialSeries={items}
+        artworks={allArtworks}
+      />
     </>
   );
 }

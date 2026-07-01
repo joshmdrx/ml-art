@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
-import { TopNav } from "@/components/TopNav";
 import { StudioSettingsForm } from "@/components/StudioSettingsForm";
 import { StudioLocationsManager } from "@/components/StudioLocationsManager";
 import { getStudioMe, listStudioLocations } from "@/lib/api";
@@ -47,19 +46,16 @@ export default async function StudioSettingsPage() {
   }
 
   return (
-    <>
-      <TopNav />
-      <main className="flex-1 mx-auto w-full max-w-3xl px-6 py-12">
-        <header className="mb-8">
-          <h1 className="font-serif text-3xl tracking-tight">Studio settings</h1>
-          <p className="mt-2 text-sm text-muted">
-            Edit your profile, statement, and visibility.
-          </p>
-        </header>
+    <div className="max-w-3xl">
+      <header className="mb-8">
+        <h1 className="font-serif text-3xl tracking-tight">Settings</h1>
+        <p className="mt-2 text-sm text-muted">
+          Edit your profile, statement, and visibility.
+        </p>
+      </header>
 
-        <StudioSettingsForm initial={artist} />
-        <StudioLocationsManager initial={locations ?? []} />
-      </main>
-    </>
+      <StudioSettingsForm initial={artist} />
+      <StudioLocationsManager initial={locations ?? []} />
+    </div>
   );
 }
