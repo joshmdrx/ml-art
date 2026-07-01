@@ -649,15 +649,22 @@ Not urgent — the current split works and taxonomy stability is already a soft 
 - Synthetic uptime monitor running the smoke suite on a schedule (nice-to-have; T-075 works at deploy time)
 - p95 latency SLO tracking with alerts (do once traffic exists)
 
-### `T-065` Re-attempt `@sentry/nextjs` on the web tier
+### `T-065` Re-attempt `@sentry/nextjs` on the web tier — 2 attempts failed
 **Where:** `web/next.config.ts`, `web/instrumentation.ts` (new), Sentry init.
-**Why:** We deferred web Sentry in May because `@sentry/nextjs` 10.x injected a page-router `_error` stub during its post-build pass which OpenNext 4.0's `copyTracedFiles` couldn't reconcile. Both have shipped releases since. Today web errors only surface in CloudWatch Logs — Sentry on the Rust API + jobs already works, so we're flying half-blind on the bigger surface.
-**Acceptance:**
-- `pnpm add @sentry/nextjs`, `web/instrumentation.ts` + `web/instrumentation-client.ts` per Sentry's app-router docs.
-- `next build` + `npx open-next build` succeed (the historical breakage point).
-- Lambda env: `SENTRY_DSN_WEB` populated via `deploy-web.sh` SSM fetch (we already have the param).
-- Verify an intentional `throw new Error("sentry-canary")` in a route surfaces in Sentry's wander-web project.
-- Source maps uploaded to Sentry on build (Sentry's Webpack plugin handles it; OpenNext compat-check needed).
+**Why:** Web errors currently only surface in CloudWatch Logs — grep-able but not alertable. Sentry on the Rust API + jobs already works.
+
+**Attempt 1 (May 2026):** `@sentry/nextjs` 10.x injected a page-router `_error` stub that OpenNext's `copyTracedFiles` couldn't reconcile.
+
+**Attempt 2 (2026-07-01):** shipped end-to-end (instrumentation.ts + instrumentation-client.ts + withSentryConfig wrap + DSN wiring). Hit **two** cascading Next 16 + turbopack + Sentry issues:
+- (a) Next 16's `output: 'standalone'` doesn't include `instrumentation.js` or its chunks in `.next/standalone/`. Worked around with a `cp -Rn .next/server/. .next/standalone/.next/server/` shim in deploy-web.sh + a no-op `buildCommand` in `open-next.config.ts` so OpenNext doesn't rebuild + clobber the fix.
+- (b) **Blocker:** at runtime the Lambda 500's with `Cannot find module 'require-in-the-middle-a99415fa67232f7f'`. Turbopack hashes external module references (`require-in-the-middle` is a Sentry dep for OpenTelemetry-style require-time instrumentation) but doesn't bundle the resolved module. Prod was down; **reverted** 2026-07-01 via `git revert 69839b5`.
+
+**Next attempt should try:**
+- Switch web build to webpack instead of turbopack for prod builds (`--no-turbopack` flag, or Next config). Turbopack + Sentry is the known incompat point.
+- OR: pin @sentry/nextjs to a version that doesn't use `require-in-the-middle` (Sentry's browser-only mode without the server-side `nodeAsyncContextStrategy`).
+- OR: wait for @sentry/nextjs to ship native turbopack support (tracked upstream).
+
+Files that came + went in attempt 2 are in git history (revert commit `69839b5`). If you're re-attempting, `git show a357597` has the shipped-then-reverted setup as a starting point. Don't re-deploy without verifying with `pnpm exec open-next build && node .open-next/server-functions/default/index.mjs` locally first — the failure mode is at Lambda init, not at build.
 
 ### `T-066` Consolidate Lambda config loading
 **Where:** `scripts/deploy-web.sh` (drop the Python SSM-fetch + env-merge hack); web Lambda runtime gets the same in-process SSM fetch as api/jobs (or move to AWS Parameters & Secrets Lambda Extension if cold-start latency feels bad).
