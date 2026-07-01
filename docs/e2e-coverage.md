@@ -60,7 +60,7 @@ downgrade to 🚫 with the reason if you decide it's not worth it.
 | Signed-in inquire (no verify step) | [`13-inquire-signed-in`](../e2e/tests/13-inquire-signed-in.spec.ts) | ✅ |
 | Studio inbox (two-pane, URL-driven `?id=`) | [`22-studio-inquiries-signed-in`](../e2e/tests/22-studio-inquiries-signed-in.spec.ts) | 🟡 predates 2026-07-01 UX rewrite — reload + selection persistence not asserted |
 | Inbound email reply appears in thread (T-054) | — | 🚫 needs local SMTP + Worker; deferred to smoke tier |
-| Unread inquiry badge on TopNav (T-074) | — | ⏳ send-inquiry → open studio → badge shows |
+| Unread inquiry badge on TopNav (T-074) | — | ⏳ needs (a) an artwork under the fixture artist and (b) a delivered inquiry to it. Drafts don't show on public pages so anon can't inquire; blocked on either a test-only `POST /v1/testfixtures/*` seam, a psql-in-test helper, or extending `artist.setup.ts` to publish an artwork with an image (real image upload = moderation flakes) |
 
 ## Save + collections
 
@@ -102,6 +102,8 @@ project picks up `*artist-signed-in*.spec.ts`.
 | Feature | Spec | Status |
 |---|---|---|
 | `/studio/settings` auto-provisions artist row (T-012 P1) | [`17-studio-settings-signed-in`](../e2e/tests/17-studio-settings-signed-in.spec.ts) | ✅ |
+| `/studio/settings` bio edit persists across reload | [`47-studio-settings-edit-artist-signed-in`](../e2e/tests/47-studio-settings-edit-artist-signed-in.spec.ts) | ✅ |
+| Onboarding review-step shows "View your profile" for already-active artist | [`48-onboarding-review-active-artist-signed-in`](../e2e/tests/48-onboarding-review-active-artist-signed-in.spec.ts) | ✅ |
 | `/studio` portfolio for a fresh Clerk user (T-011 P3) | [`18-studio-portfolio-signed-in`](../e2e/tests/18-studio-portfolio-signed-in.spec.ts) | ✅ |
 | Onboarding wizard identity step (T-012 P1) | [`21-onboarding-signed-in`](../e2e/tests/21-onboarding-signed-in.spec.ts) | 🟡 identity step only; steps 2–5 not covered |
 | `/studio/series` non-artist redirects to onboarding (T-058.2) | [`28-studio-series-signed-in`](../e2e/tests/28-studio-series-signed-in.spec.ts) | ✅ |

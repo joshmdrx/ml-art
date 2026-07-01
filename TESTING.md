@@ -154,7 +154,7 @@ up `*artist-signed-in*.spec.ts`.
 **Retry policy:** retry failed tests once; two failures = real bug,
 not flakiness.
 
-**Acceptance:** flows pass against the local stack in under 60s. Current: 43 specs + 3 setup fixtures (2026-07-01).
+**Acceptance:** flows pass against the local stack in under 60s. Current: 45 specs + 3 setup fixtures (2026-07-01).
 
 ### Tier 3 — Vitest units (web)
 
