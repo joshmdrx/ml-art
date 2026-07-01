@@ -3,6 +3,55 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-07-01 — Studio + artwork UX polish
+
+Four adjacent improvements on the studio + artwork-detail surfaces
+based on user review of what shipped in the trio.
+
+**Artwork image viewer** (`web/src/components/ArtworkImageViewer.tsx`).
+Replaces the ad-hoc "primary + strip of thumbs" layout on
+`/artworks/[id]` with a proper viewer:
+- Main image capped at `max-h-[calc(100vh-8rem)]` with object-contain
+  so tall works stay in view (previously overflowed the fold).
+- Click the main image → Radix Dialog lightbox at up to 95vw/95vh.
+- Multi-image works get a thumbnail strip below the main viewer.
+  Click a thumb → it swaps into the primary slot with an outline
+  marking the current selection.
+- Initial selection prefers the `is_primary` flag; falls back to
+  index 0 so shape hasn't changed for single-image works.
+
+**Studio sidebar** (`web/src/app/studio/layout.tsx`,
+`web/src/components/StudioSidebar.tsx`). Replaces the floating
+"Series → Inquiries → Settings →" links in the /studio header with
+a persistent sidebar that renders on every studio subpage:
+- Desktop (lg+): fixed 14rem left column, sticky, with utility
+  links at the bottom.
+- Mobile: horizontal tab strip above the content — same links,
+  same active-state styling, less vertical noise.
+- Inquiries item badges the unread count (previously only on the
+  TopNav Studio link).
+- "View public page ↗" link at the bottom (opens the artist's
+  `/artists/[slug]` in a new tab) + "← Back to site" for exit.
+  The public-page link is hidden for signed-in-non-artist users.
+
+**Two-pane inquiry inbox** (`web/src/components/studio/InquiryInbox.tsx`).
+Rewrite from a stack-of-cards to a Gmail-style list + thread:
+- Left pane (20rem md+): compact list, unread dot + bold when
+  unread, artwork thumb + sender + snippet + timestamp per row.
+- Right pane: full thread with reply form; empty-state prompt when
+  nothing is selected.
+- URL-driven via `?id=<inquiry_id>`, preserving `?status=` across
+  selections. Bookmark + back-button friendly.
+- Mobile stacks the panes: no `?id=` → list only; `?id=` set →
+  thread only with a "← All inquiries" back link.
+- Sort by latest activity (newest reply first), computed once per
+  items identity so optimistic reply appends don't scramble mid-
+  session.
+- Read/unread behaviour change: previously (T-011 Phase 4b) every
+  loaded inquiry was marked read on page render. Now only the
+  currently-selected thread is marked as read when opened.
+  Preserves the "which of these still needs attention" signal.
+
 ## 2026-07-01 — T-081 REVERTED + T-082 feature-flagged + T-083 admin preview
 
 Three follow-ups on the trio shipped 2026-06-30.

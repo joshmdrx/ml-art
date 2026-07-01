@@ -17,6 +17,53 @@ Format:
 
 ---
 
+## 2026-07-01 — Studio inbox: two-pane list + thread, URL-driven selection, mark-read-on-open
+
+**Context:** Inquiry inbox originally rendered as a stack of full-
+sized cards (T-011 Phase 4b). Fine for 1–3 inquiries; unusable at
+10+ — no way to focus on one thread, unread state doesn't help
+because everything gets marked read on page render.
+
+**Decided:** Rebuild as a Gmail-style two-pane inbox — compact list
+on the left, selected thread on the right. Selection is URL-driven
+(`?id=<inquiry_id>`), preserving the `?status=` filter across
+selections. Mobile stacks the panes: `?id=` present → thread view;
+absent → list view.
+
+**Alternatives considered:**
+
+1. **Keep the stack, add pagination.** Rejected. Pagination
+   doesn't solve the "compare threads" problem — a viewer needs to
+   see multiple in-progress conversations at once, not page
+   through them.
+2. **List-then-detail navigation (Facebook Messenger web pattern).**
+   Rejected. Round-trip navigation on desktop feels heavy when
+   there's screen real estate for both panes side-by-side. Fine on
+   mobile — which is why the pattern collapses to exactly this
+   shape on small screens.
+3. **Drawer opens over the list (Slack pattern).** Rejected. Adds
+   a modal-vs-page cognitive layer without benefit at Wander's
+   scale.
+
+**Mark-as-read behaviour change:** T-011 Phase 4b marked every
+loaded inquiry as read on the initial render. That killed the
+"which of these still needs attention" signal — one page visit
+zeroed the sidebar badge whether the user actually read the
+messages or not. New behaviour: only the currently-selected
+thread is marked as read when opened.
+
+Also: sort by latest activity (newest reply first, falling back to
+`created_at`), computed once per items-identity so optimistic reply
+appends don't scramble the list mid-session. That's Gmail's default
+and matches what an inbox is *for* — surfacing the freshest thread.
+
+**Reversibility:** High. The client-side rework doesn't touch the
+API or DB. If we ever want to bring back the stacked view for a
+specific use case (e.g. printing / bulk-triage), the components
+are still cleanly separable.
+
+---
+
 ## 2026-07-01 — T-081 reverted: v1 treats galleries as artists, not a separate entity
 
 **Context:** T-081 shipped four sub-commits: `venues` + `venue_artworks`
