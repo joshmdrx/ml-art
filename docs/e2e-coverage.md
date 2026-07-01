@@ -42,13 +42,13 @@ downgrade to 🚫 with the reason if you decide it's not worth it.
 | FilterBar (medium / price / availability / location) | [`16-filter-bar`](../e2e/tests/16-filter-bar.spec.ts) | ✅ |
 | Visual search modifiers (image_upload_id shell) | [`19-visual-search-modifiers`](../e2e/tests/19-visual-search-modifiers.spec.ts) | 🟡 no real upload — Jina stub gap |
 | Geography map mode (`?map=1`) | [`20-geography-search-map`](../e2e/tests/20-geography-search-map.spec.ts) | 🟡 shell only — seed has no `artist_locations` rows |
-| Artwork image viewer — thumbnails swap main, click main opens lightbox | — | ⏳ recent UX (2026-07-01), high-visibility |
+| Artwork image viewer — click main opens lightbox, Escape closes | [`29-artwork-image-viewer`](../e2e/tests/29-artwork-image-viewer.spec.ts) | 🟡 lightbox covered; thumbnail-swap needs a multi-image seeded artwork |
 | Series detail on `/artists/[slug]/series/[seriesSlug]` (T-058.3) | — | ⏳ |
 | "For you" row on homepage (T-056.2) | — | 🚫 personalisation is behind `SEARCH_PERSONALIZE_ENABLED`, deterministic assertion hard; cover once flag is on |
 | Refine-with-text on `/search` (T-082) | — | 🚫 feature-flagged off (`NEXT_PUBLIC_REFINE_ENABLED`) pre-launch; add when flipped on |
 | Medium-taxonomy multi-value filter (T-073) | — | 🟡 covered generically by `16-filter-bar`; multi-value chip behavior not explicitly asserted |
 | Size-band chips (T-070) | — | 🟡 same — chips exist under FilterBar tests but no explicit assertion |
-| Currency-aware price filter (T-080) | — | ⏳ verify GBP-canonical price range narrows results |
+| Currency-aware price filter — bucket click (T-080) | [`31-price-filter`](../e2e/tests/31-price-filter.spec.ts) | ✅ |
 
 ## Inquire
 
@@ -125,9 +125,9 @@ that flips `is_admin=true` for the current user. Neither exists yet.
 
 | Feature | Spec | Status |
 |---|---|---|
-| Artwork OG image renders at expected URL | — | ⏳ `HEAD /og/artwork/[id]` returns 200 + image/* |
-| Artist OG image renders | — | ⏳ same for `/og/artist/[slug]` |
-| Metadata tags present on artwork / artist pages | — | ⏳ inspect `<meta property="og:image">` head tags |
+| Artwork OG image renders at expected URL | [`30-og-cards`](../e2e/tests/30-og-cards.spec.ts) | ✅ meta URL emitted + fetch returns image/* |
+| Artist OG image renders | [`30-og-cards`](../e2e/tests/30-og-cards.spec.ts) | ✅ same for `/artists/[slug]` |
+| Public-collection OG image | — | ⏳ same pattern, needs a public share-id fixture |
 
 ## Prod smoke (T-075)
 
