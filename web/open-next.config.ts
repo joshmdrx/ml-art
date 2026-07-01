@@ -16,16 +16,10 @@
  */
 import type { OpenNextConfig } from "@opennextjs/aws/types/open-next";
 
-// T-065 — buildCommand override. Next 16 doesn't copy
-// `instrumentation.js` into the standalone output (only its .nft.json
-// trace), which makes OpenNext's `copyTracedFiles` throw. Workaround:
-// let `deploy-web.sh` run `pnpm build` itself, copy the missing file
-// into the standalone dir, then invoke OpenNext with `buildCommand`
-// pointed at a no-op so OpenNext doesn't clobber the fix by
-// rebuilding. The no-op reads `.next/standalone/.next/server/…`
-// as-is.
+// Empty `default` block = stock OpenNext defaults, which already
+// skip the warmer lambda. Add overrides here when we need ISR,
+// edge runtime, or image-optimization function.
 const config: OpenNextConfig = {
-  buildCommand: "echo 'skipping open-next internal build (pre-built by deploy-web.sh)'",
   default: {},
 };
 
