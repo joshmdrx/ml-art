@@ -112,11 +112,6 @@ pub enum JobEvent {
     /// price filter operates on current values. Cron not live yet;
     /// manual invoke via `jobs-worker --enqueue` until artists onboard.
     FxRatesRefresh {},
-    /// T-081 — forward-geocode a single `venues` row. Same shape as
-    /// `ArtistLocationGeocode` but against the venues table. The
-    /// studio create + patch endpoints enqueue this whenever an
-    /// address changes.
-    VenueGeocode { venue_id: Uuid },
 }
 
 impl JobEvent {
@@ -139,7 +134,6 @@ impl JobEvent {
             JobEvent::UserProfileRefresh { .. } => "user_profile_refresh",
             JobEvent::UserProfileRefreshKickoff {} => "user_profile_refresh_kickoff",
             JobEvent::FxRatesRefresh {} => "fx_rates_refresh",
-            JobEvent::VenueGeocode { .. } => "venue_geocode",
         }
     }
 }
@@ -632,14 +626,6 @@ pub async fn handle(event: JobEvent, deps: &JobsDeps) -> Result<(), HandlerError
             crate::fx::refresh_rates(&deps.pool)
                 .await
                 .map_err(|e| HandlerError::Domain(format!("fx_rates_refresh: {e}")))?;
-        }
-        JobEvent::VenueGeocode { venue_id } => {
-            // T-081 — same shape as ArtistLocationGeocode against the
-            // venues table. Resolves the venue's `address` via Mapbox
-            // and writes back lat/lng/city/country/geocoded_at.
-            crate::geocoding::geocode_and_update_venue(&deps.geocoder, &deps.pool, venue_id)
-                .await
-                .map_err(|e| HandlerError::Domain(e.to_string()))?;
         }
     }
     Ok(())
