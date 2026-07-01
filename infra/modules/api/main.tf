@@ -98,7 +98,40 @@ terraform {
     cloudflare = {
       source = "cloudflare/cloudflare"
     }
+    random = {
+      source = "hashicorp/random"
+    }
   }
+}
+
+# ─── T-064 — shared secret between CloudFront and the api Lambda ─────────────
+# CloudFront injects it as a custom origin header; the Rust middleware
+# checks it. Terraform owns both ends (the SSM param the Lambda reads
+# via bootstrap_ssm, AND the CloudFront custom_header value) so they
+# can't drift.
+#
+# Rotate by tainting `random_password.cloudfront_shared_secret` and
+# re-applying. CloudFront edge caches propagate the new header in
+# ~5 min; the Lambda picks up the new SSM value on its next cold
+# start. During the overlap: CloudFront sends new value, Lambda still
+# rejects until it recycles. Bounce it (via
+# `aws lambda update-function-configuration --description "rotate cf-secret"`)
+# to force a fresh cold start.
+resource "random_password" "cloudfront_shared_secret" {
+  length  = 48
+  special = false # SSM value + HTTP header value; avoid escaping surprises.
+}
+
+resource "aws_ssm_parameter" "cloudfront_shared_secret" {
+  # Falls under the same SSM path prefix bootstrap_ssm walks, so the
+  # Lambda reads it as env `CLOUDFRONT_SHARED_SECRET` on cold start.
+  # Terraform-owned value (unlike the placeholder-then-out-of-band
+  # secrets in modules/secrets/main.tf) — no lifecycle.ignore_changes.
+  name        = "${var.config_parameter_path}cloudfront_shared_secret"
+  description = "T-064 — shared secret between CloudFront and the api Lambda."
+  type        = "SecureString"
+  tier        = "Standard"
+  value       = random_password.cloudfront_shared_secret.result
 }
 
 # ─── Placeholder Lambda payload ──────────────────────────────────────────────
@@ -459,6 +492,16 @@ resource "aws_cloudfront_distribution" "api" {
       https_port             = 443
       origin_protocol_policy = "https-only"
       origin_ssl_protocols   = ["TLSv1.2"]
+    }
+
+    # T-064 — shared secret proving the request came through
+    # CloudFront (rather than a direct hit on the execute-api URL).
+    # The Rust `cloudfront_gate` middleware compares this against
+    # `Config.cloudfront_shared_secret` (loaded from the SSM param
+    # above via bootstrap_ssm) and 403s on mismatch.
+    custom_header {
+      name  = "X-CloudFront-Secret"
+      value = random_password.cloudfront_shared_secret.result
     }
   }
 

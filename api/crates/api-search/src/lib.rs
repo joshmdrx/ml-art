@@ -37,7 +37,7 @@ use ml_art_core::{
     embedder::Embedder,
     error::ApiError,
     jobs::JobsBackend,
-    middleware::{inquiry_limit, search_limit, RateLimiters},
+    middleware::{cloudfront_gate, inquiry_limit, search_limit, CloudFrontGate, RateLimiters},
     object_store::ObjectStore,
 };
 use std::sync::Arc;
@@ -322,8 +322,17 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         router
     };
 
+    // T-064 — reject direct hits to the API Gateway URL. Pass-through
+    // when `Config.cloudfront_shared_secret` is unset (dev, CI, E2E);
+    // requires the `X-CloudFront-Secret` header to match in prod.
+    // Layered ABOVE with_state so it wraps every request the router
+    // serves, but below the per-route rate-limit layers so a rejected
+    // caller doesn't consume a rate-limit bucket slot.
+    let gate = CloudFrontGate::new(state.cfg.cloudfront_shared_secret.clone());
+
     router
         .with_state(state)
+        .layer(from_fn_with_state(gate, cloudfront_gate))
         .layer(TraceLayer::new_for_http())
         // CORS: browser-direct calls from the Next dev server / future web
         // origin. `searchMapClient` hits `/v1/search/map` straight from

@@ -88,6 +88,16 @@ pub struct Config {
     /// UI matches the backend. Pre-launch this is off — pending
     /// a proper A/B once we have signed-in-user volume.
     pub search_refine_enabled: bool,
+    /// T-064 — shared secret CloudFront injects on every origin request
+    /// as `X-CloudFront-Secret`. The `cloudfront_gate` middleware
+    /// requires the header to match when this is set. When `None` /
+    /// empty (dev, CI, E2E), the gate is pass-through.
+    ///
+    /// Terraform owns the value: `random_password` in `modules/api/`
+    /// writes to SSM `${prefix}cloudfront_shared_secret` AND wires
+    /// the same value into the CloudFront origin's `custom_header`.
+    /// `bootstrap_ssm` picks up the SSM value at Lambda cold-start.
+    pub cloudfront_shared_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +185,9 @@ impl Config {
             search_refine_enabled: env::var("SEARCH_REFINE_ENABLED")
                 .map(|s| s == "true")
                 .unwrap_or(false),
+            cloudfront_shared_secret: env::var("CLOUDFRONT_SHARED_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty()),
         };
 
         // Production sanity checks. Prevent footguns from a missing secret in prod.
@@ -231,6 +244,10 @@ impl Config {
             // that specifically want to verify the flag-off behaviour
             // build their own Config with this set to false.
             search_refine_enabled: true,
+            // Off in tests → cloudfront_gate is pass-through, no header
+            // required. Tests that specifically want to verify the gate
+            // build their own Config with this set to `Some(...)`.
+            cloudfront_shared_secret: None,
         }
     }
 }
