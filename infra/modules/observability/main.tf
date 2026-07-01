@@ -55,6 +55,11 @@ variable "api_cloudfront_distribution_id" {
   type        = string
 }
 
+variable "web_cloudfront_distribution_id" {
+  description = "Distribution ID for the web CloudFront distribution."
+  type        = string
+}
+
 # ─── SNS topic + email subscription ─────────────────────────────────────────
 # One topic for all alarm comms. Email subscriber confirms via a one-time
 # AWS link the first time apply runs — check the inbox associated with
@@ -159,6 +164,75 @@ resource "aws_cloudwatch_metric_alarm" "api_cloudfront_5xx" {
     DistributionId = var.api_cloudfront_distribution_id
     Region         = "Global"
   }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+}
+
+# T-084.2 — mirror of the api alarm above, on the web distribution.
+# Same 5% threshold — the web tier serves a lot more variety (SSR
+# render errors, static asset 404s from stale CDN caches, etc) so
+# this is a genuine safety net that Lambda-Errors alone doesn't
+# catch (a 502 from APIG doesn't count as a Lambda Error).
+resource "aws_cloudwatch_metric_alarm" "web_cloudfront_5xx" {
+  alarm_name          = "${var.name_prefix}-web-cloudfront-5xx"
+  alarm_description   = "Web CloudFront distribution 5xx rate above 5% over 5 minutes."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "5xxErrorRate"
+  namespace           = "AWS/CloudFront"
+  period              = 300
+  statistic           = "Average"
+  threshold           = 5
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    DistributionId = var.web_cloudfront_distribution_id
+    Region         = "Global"
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+}
+
+# ─── Neon connection failures ───────────────────────────────────────────────
+# T-084.2 — CloudWatch Logs metric filter over the api Lambda logs
+# looking for the two sqlx error patterns that indicate a database
+# problem the Rust code has to surface but the platform-level Lambda
+# alarms miss (they'd count as a handler crash IF a request happened
+# during the outage; we want to know even during idle periods so we
+# don't miss quiet degradations).
+#
+# Pattern grammar: `?A ?B` is CloudWatch's "match A OR B, unquoted"
+# syntax. `"pool timed out"` is sqlx's display for
+# `Error::PoolTimedOut`; `"error connecting to database"` covers the
+# Io variant during Neon cold-start.
+
+resource "aws_cloudwatch_log_metric_filter" "neon_pool_errors" {
+  name           = "${var.name_prefix}-neon-pool-errors"
+  log_group_name = "/aws/lambda/${var.api_lambda_name}"
+  pattern        = "?\"pool timed out\" ?\"error connecting to database\""
+
+  metric_transformation {
+    name          = "NeonPoolErrors"
+    namespace     = "MlArt/Db"
+    value         = "1"
+    default_value = "0"
+    unit          = "Count"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "neon_pool_errors" {
+  alarm_name          = "${var.name_prefix}-neon-pool-errors"
+  alarm_description   = "Api Lambda logged >= 3 Neon pool / connection errors in 5 minutes."
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  metric_name         = "NeonPoolErrors"
+  namespace           = "MlArt/Db"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 3
+  treat_missing_data  = "notBreaching"
 
   alarm_actions = [aws_sns_topic.alerts.arn]
   ok_actions    = [aws_sns_topic.alerts.arn]

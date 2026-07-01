@@ -127,6 +127,7 @@ module "observability" {
   jobs_lambda_name               = module.jobs.lambda_function_name
   jobs_dlq_name                  = module.jobs.dlq_name
   api_cloudfront_distribution_id = module.api.cloudfront_distribution_id
+  web_cloudfront_distribution_id = module.web.cloudfront_distribution_id
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
