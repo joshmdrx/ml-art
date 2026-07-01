@@ -172,13 +172,9 @@ if the item was dropped, with a one-line reason.
 - Per-service spend monitors via scheduled jobs (cron-enqueued `JobEvent`)
 - Pre-launch checklist in `COST.md` satisfied
 
-### `T-034` Edge rate limiting (AWS WAF / CloudFront)
-**Where:** `infra/` (with `T-015`)
-**Why:** API-layer rate limit (`T-007`) protects the paid Jina call but a request that gets 429'd still cold-starts a Lambda. WAF blocks volumetric attacks at the edge before any Lambda invocation.
-**Acceptance:**
-- AWS WAF rate-based rule (or CloudFront viewer-request function w/ KeyValueStore) at ~1000 req / 5 min / IP in front of the Lambda Function URL
-- Logs forwarded to CloudWatch for visibility on what's being shed
-- Sized loosely so legit bursty traffic isn't shed — this is the volumetric tier, not the per-user tier
+### ~~`T-034` Edge rate limiting (AWS WAF / CloudFront)~~ — shipped
+
+Landed with the initial infra apply — both `aws_wafv2_web_acl.api` + `.web` have `rate_based_statement { limit = var.waf_rate_limit_per_5min, aggregate_key_type = "IP" }` (default 1000 req / 5min / IP), attached to their respective CloudFront distributions, with `wafv2_web_acl_logging_configuration` piping to CloudWatch. Rate limit is sized loosely — this is the volumetric tier, not per-user.
 
 ---
 
