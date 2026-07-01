@@ -53,7 +53,7 @@ if the item was dropped, with a one-line reason.
 
 ## Soon (this milestone)
 
-### `T-045` Integrated map + grid layout (Airbnb-style "Where to see them")
+### ~~`T-045` Integrated map + grid layout (Airbnb-style "Where to see them")~~ — shipped 2026-06-08
 **Where:** `web/src/app/search/page.tsx` + `web/src/components/Search{SplitView,SidePanel,MapBlock}.tsx` + `web/src/components/SearchMap/*` hook split.
 
 **Why:** the Works tab and the Where-to-see-them tab show different views of the same query — forcing the user to choose between "what does it look like" and "where can I see it." Merging them into a single split view (grid as side panel + map as main) makes the relationship between an artwork and its venue navigable in one glance.
@@ -531,20 +531,11 @@ Four sub-commits closing the foundational admin surface:
 - Audit retention windowing. The table is tiny in row count for years.
 - Re-pending a declined artist. UI affordance needs designing; not blocking pre-launch.
 
-### `T-080` Currency-aware price filter — canonical GBP
-**Where:** New migration (`fx_rates` table + `artworks.price_gbp_cents` column); `core::fx` module; new `JobEvent::FxRatesRefresh`; `search.rs` filter swap; FilterBar label changes.
-**Why:** The price filter today compares raw `price_cents` regardless of currency — so a `Under £500` filter matches a $500 painting (≈£395) AND a €500 painting (≈£430) as if they're the same value. Wander accepts USD/GBP/EUR/CAD/AUD/JPY on the artwork row; the filter is currency-blind.
+### ~~`T-080` Currency-aware price filter — canonical GBP~~ ✓ shipped 2026-06-30
 
-**Decision: GBP as the canonical platform currency.** Initial focus is UK artists; comparing in GBP is the right anchor. Artwork cards keep showing the artist's native currency (`formatPrice`); only the filter operates in GBP.
+Migration `0023_fx_rates.sql` adds the `fx_rates` table + seeds mid-2026 rates + adds `artworks.price_gbp_cents bigint` + backfills it. `core::fx::refresh_rates` fetches from Frankfurter (free, ECB data, GBP-base, no key) + bulk-recomputes GBP prices; wired through `JobEvent::FxRatesRefresh`. Studio create + patch maintain `price_gbp_cents` at write time. `search.rs` `build_filters` swaps to `price_gbp_cents` for the range comparisons. FilterBar labels + custom range input flipped to `£`. Default artwork currency USD → GBP.
 
-**Acceptance:**
-- New `fx_rates (code text pk, rate_to_gbp numeric, fetched_at timestamptz)` table; seeded with mid-2026 approximations in the migration so day-1 search works.
-- New `artworks.price_gbp_cents bigint` column; backfilled in the migration; indexed for the filter.
-- `core::fx::refresh_rates` fetches from a free FX API (Frankfurter — ECB data, GBP-base, no key), upserts the table, then bulk-recomputes `price_gbp_cents` across all artworks. Wired through `JobEvent::FxRatesRefresh` so it runs on the existing jobs queue.
-- Studio writes (`POST/PATCH /v1/studio/artworks`) maintain `price_gbp_cents` at insert/update time using the current rates.
-- `search.rs` `build_filters` swaps `price_cents` → `price_gbp_cents` for `price_min`/`price_max` comparisons.
-- FilterBar `PRICE_BUCKETS` switch to GBP amounts; pill labels use `£`.
-- Cron not live yet (matches the T-077 deferral): trigger manually until real artists onboard. Daily rate drift is fine.
+**Follow-up (open):** wire the FX cron on a daily schedule once real artists are onboarding. Same trigger condition as T-077. Manual invoke works today via `cargo run -p jobs-worker -- --enqueue '{"kind":"fx_rates_refresh","payload":{}}'`.
 
 ### ~~`T-057` Algorithmic neighbourhoods (HDBSCAN + Claude label)~~ ✓ shipped 2026-06-26
 Pipeline lives at `ml/ml_art/neighborhoods.py`, runnable via `make neighborhoods-build`. HDBSCAN with `cluster_selection_method='leaf'`, `min_cluster_size=15`, `min_samples=2`, euclidean over L2-normalised embeddings — tuned after the initial `eom`/30 default produced one 856-artwork mega-bucket. Claude (Sonnet 4.6) labels each cluster with 5 centroid-nearest sample images; result persisted as `kind='semantic'`, top 3 clusters by size become `is_featured`. Pure-rebuild semantics (drops + re-inserts every run; no Hungarian-matching yet since no real bookmarks pre-launch). Curated set untouched — coexists by `kind` discriminator. Groq + Llama 4 Scout wired as a fallback/iteration provider behind `--provider groq`; baked off, Claude clearly wins on evocative register (`decisions.md` 2026-06-26). First prod build seeded 14 neighbourhoods from ~2000 eligible artworks.
