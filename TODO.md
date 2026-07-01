@@ -622,6 +622,33 @@ Not urgent — the current split works and taxonomy stability is already a soft 
 - Browser hits via `wander.gallery` continue to work unchanged.
 - Rotate the secret via SSM; deploy script picks it up.
 
+### `T-084` Operator dashboard — CloudWatch alarms + `/admin/stats` page
+**Where:** `infra/modules/api/main.tf` (or a new `monitoring` submodule) for alarms; new `web/src/app/admin/stats/page.tsx` for the stats view; new `/v1/admin/stats` endpoint or direct psql over the existing pool in the web SSR path.
+**Why:** Pre-launch we have SSM secrets + smoke suite but no live view of "is anything broken" or "who's using it." Sentry (T-065) covers thrown errors; this covers the level below — 5xx counts, error rates, cold-start p95 — plus the level above — DAU, searches, signups, funnel.
+
+**Acceptance:**
+
+*Alarms (Terraform)*:
+- `aws_cloudwatch_metric_alarm` — api Lambda 5xx count > 10 over 5min, evaluation-period 1
+- Same for jobs + web Lambdas
+- api Lambda error-rate percentage > 5% over 5min
+- Neon connection failures (from CloudWatch Logs metric filter on the api's `sqlx::pool` error pattern) > 3 over 5min
+- SNS topic → email subscription to `mrjoshuajmatthews@gmail.com`
+- All wired in TF so it's captured in git, not console-configured
+
+*Stats page*:
+- `/admin/stats` — gated by the existing `AdminUser` extractor / layout notFound()
+- Big-number tiles: total artists, published artworks, signed-up users, inquiries submitted (last 7d / 30d / all-time)
+- Search funnel: `search_executed` count → `artwork_viewed` count → `inquiry_started` → `inquiry_submitted`, per week for the last 6 weeks
+- Top-viewed artworks + top-search-queries (7d) — small ordered lists
+- Admin activity: N mutations last 7d (from `admin_audit_log`)
+- SSR-rendered; the underlying data lives in `events`, `users`, `artworks`, `inquiries`, `admin_audit_log`
+
+**Deferred (don't block v1):**
+- Grafana / Datadog dashboards (overkill for pre-launch traffic)
+- Synthetic uptime monitor running the smoke suite on a schedule (nice-to-have; T-075 works at deploy time)
+- p95 latency SLO tracking with alerts (do once traffic exists)
+
 ### `T-065` Re-attempt `@sentry/nextjs` on the web tier
 **Where:** `web/next.config.ts`, `web/instrumentation.ts` (new), Sentry init.
 **Why:** We deferred web Sentry in May because `@sentry/nextjs` 10.x injected a page-router `_error` stub during its post-build pass which OpenNext 4.0's `copyTracedFiles` couldn't reconcile. Both have shipped releases since. Today web errors only surface in CloudWatch Logs — Sentry on the Rust API + jobs already works, so we're flying half-blind on the bigger surface.
