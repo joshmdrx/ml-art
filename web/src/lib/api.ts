@@ -1183,52 +1183,6 @@ export interface AuditLogEntry {
   created_at: string;
 }
 
-/** T-081.4 — admin venue queue row. */
-export interface AdminVenueItem {
-  id: string;
-  slug: string;
-  name: string;
-  kind: VenueKind;
-  owner_email: string | null;
-  status: VenueStatus;
-  city: string | null;
-  country: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export async function listAdminVenues(
-  opts: { status?: string; cursor?: string },
-  init?: RequestInit,
-): Promise<Paginated<AdminVenueItem>> {
-  const usp = new URLSearchParams();
-  if (opts.status) usp.set("status", opts.status);
-  if (opts.cursor) usp.set("cursor", opts.cursor);
-  const qs = usp.toString();
-  const res = await apiFetch(`/v1/admin/venues${qs ? `?${qs}` : ""}`, init);
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`admin/venues ${res.status}: ${text || res.statusText}`);
-  }
-  return (await res.json()) as Paginated<AdminVenueItem>;
-}
-
-export async function adminVenueTransition(
-  id: string,
-  decision: "approve" | "decline",
-  init?: RequestInit,
-): Promise<{ id: string; status: string }> {
-  const res = await apiFetch(
-    `/v1/admin/venues/${encodeURIComponent(id)}/${decision}`,
-    { ...init, method: "POST" },
-  );
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`admin/venues ${decision} ${res.status}: ${text || res.statusText}`);
-  }
-  return (await res.json()) as { id: string; status: string };
-}
-
 export async function listAdminAuditLog(
   opts: { cursor?: string },
   init?: RequestInit,
