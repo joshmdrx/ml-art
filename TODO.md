@@ -171,8 +171,9 @@ if the item was dropped, with a one-line reason.
 - ✅ `aws_budgets_budget.monthly` at `$${var.monthly_budget_usd}` with 80% actual + 100% forecast alarms
 - ✅ Observability early-warning at 50% actual (added with T-084.2)
 - ✅ Per-Lambda daily invocations alarm (> 100k / day) — applied via targeted terraform apply 2026-07-01
-- 🔧 Committed but **not applied**: `api_cloudfront_daily_bytes` (20 GB/day) — same `CLOUDFLARE_API_TOKEN` block as the web CloudFront 5xx alarm from T-084.2. Whoever picks this up: `export CLOUDFLARE_API_TOKEN=<token>` + `terraform apply` from `infra/` will land both.
-- ❌ **Not done**: web CloudFront daily bytes alarm. Same CF-token block. Add + apply once the token wiring is settled.
+- ✅ `api_cloudfront_daily_bytes` (20 GB/day) — applied 2026-07-02 alongside T-064.
+- ✅ `web_cloudfront_5xx` (>5% over 5min) — applied 2026-07-02 alongside T-064.
+- ❌ **Not done**: web CloudFront daily bytes alarm. Add + apply next time we're doing infra.
 
 **External-service console clicks (need account access I don't have):**
 - ❌ Anthropic spend cap at $30/mo → https://console.anthropic.com → Billing → spend limits
@@ -616,18 +617,29 @@ Not urgent — the current split works and taxonomy stability is already a soft 
 
 `ArtworkCard` became a client component with a ≥600ms hover threshold that triggers a lazy fetch of 4 similar artworks via `/api/artworks/[id]/similar` (bridge route). Renders as a small tray below the card; clicking a thumb navigates to that artwork.
 
-### `T-064` Lock API Gateway invoke URL to CloudFront-only
-**Where:** `infra/modules/web/main.tf` — add a custom-header check on the integration; CloudFront origin config gains a shared secret header.
-**Why:** The API Gateway invoke URL (`*.execute-api.us-east-1.amazonaws.com`) is publicly reachable today. Two real consequences:
-- Direct hits serve the same Lambda as `wander.gallery` (Host is rewritten to the canonical host by parameter mapping, so content is correct) — but the address bar shows the ugly URL and search engines could index a duplicate-content copy.
-- We initially tried a middleware-layer 308 redirect from API Gateway URL → `wander.gallery`. It produced an infinite loop because API Gateway's response handling rewrites absolute `Location` headers back to relative when the host matches the (rewritten) request Host. The middleware redirect is removed; the proper fix is to block direct hits entirely.
+### ~~`T-064` Lock API Gateway invoke URL to CloudFront-only~~ — shipped 2026-07-02
 
-**Acceptance:**
-- CloudFront origin `custom_header` adds a `X-CloudFront-Secret: <random>` (sourced from SSM).
-- API Gateway integration / route has a request-validation rule (or a small Lambda authorizer) that requires the header and returns 403 otherwise.
-- Direct curl to `https://*.execute-api…/` returns 403 with no body.
-- Browser hits via `wander.gallery` continue to work unchanged.
-- Rotate the secret via SSM; deploy script picks it up.
+Solved at the Rust middleware layer rather than an API Gateway
+validator (simpler; no APIG-vendor lock-in for the check).
+
+- ✅ `random_password.cloudfront_shared_secret` (48-char) in
+  `modules/api/main.tf`; written to SSM
+  `/ml-art-prod/cloudfront_shared_secret`, picked up by
+  `bootstrap_ssm` → `CLOUDFRONT_SHARED_SECRET` env → `Config`.
+- ✅ CloudFront origin `custom_header` injects the same value as
+  `X-CloudFront-Secret` on every request.
+- ✅ `core::middleware::cloudfront_gate` layered above `with_state`
+  on the api-search router. Constant-time compare; 403 with no
+  body on mismatch; pass-through when the secret is unset
+  (dev / CI / E2E on localhost). 5 unit tests.
+- ✅ Verified live: direct `execute-api.us-east-1.amazonaws.com/v1/health`
+  → 403; canonical `api.wander.gallery/v1/health` → 200.
+
+**Rotate:** taint the random_password + apply; then bounce the
+Lambda (`aws lambda update-function-configuration --description "rotate cf-secret"`)
+to force a cold-start that re-reads SSM. CloudFront edge propagation
+is ~5min; during the overlap CloudFront sends new value while
+Lambda still enforces old until the bounce.
 
 ### ~~`T-084` Operator dashboard — CloudWatch alarms + `/admin/stats` page~~ — partial ship 2026-07-01
 
