@@ -60,8 +60,12 @@ export default async function Home() {
       <TopNav hideSearch />
 
       <main className="flex-1">
-        {/* Hero search — text + visual side-by-side. */}
-        <section className="py-24 md:py-32 flex flex-col items-center gap-4 px-6">
+        {/* Hero — value-prop headline sits above the search input so a
+            new visitor knows what Wander is before they type. */}
+        <section className="pt-16 md:pt-24 pb-16 md:pb-24 flex flex-col items-center gap-8 md:gap-10 px-6">
+          <h1 className="font-serif text-3xl md:text-5xl tracking-tight leading-tight text-center max-w-3xl">
+            Discover independent artists and galleries near you or across the world
+          </h1>
           <div className="flex w-full max-w-2xl items-stretch gap-2">
             <div className="flex-1">
               <SearchBar size="hero" />
@@ -108,6 +112,30 @@ export default async function Home() {
             </div>
           </section>
         )}
+
+        {/* Value-prop strip — four claims mirroring the hero, sitting
+            between neighborhoods and the recent/for-you row. Kept
+            typographic rather than icon-driven to match the editorial
+            feel. Update copy in one place as features change (e.g.
+            "tailored" reflects the T-055 + T-061 + T-056.2 chain being
+            live for signed-in visitors). */}
+        <section className="border-y border-border bg-surface">
+          <div className="mx-auto max-w-screen-2xl px-6 py-12 md:py-16 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8 md:gap-10">
+            {[
+              "Find original artwork tailored to you",
+              "Connect directly with local artists",
+              "Discover spaces to see art around the globe",
+              "Intelligent search by image, mood or phrase",
+            ].map((claim) => (
+              <p
+                key={claim}
+                className="font-serif text-lg md:text-xl leading-snug tracking-tight text-center md:text-left"
+              >
+                {claim}
+              </p>
+            ))}
+          </div>
+        </section>
 
         {/* For-you / Recently-added — same slot. Picked by eligibility:
             signed-in users with a taste vector + ≥5 interactions see
