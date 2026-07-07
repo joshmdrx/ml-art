@@ -186,10 +186,15 @@ export default async function ArtistPage({
             section disappears entirely for artists without any. */}
         <ArtistLocationsMap locations={locations} artistSlug={artist.slug} />
 
-        {/* Statement (optional) */}
+        {/* Statement (optional). T-085 — heading swaps for galleries;
+            the field itself is shared. */}
         {artist.artist_statement && (
           <section className="max-w-2xl mb-12 md:mb-16">
-            <h2 className="font-serif text-xl mb-3">Artist statement</h2>
+            <h2 className="font-serif text-xl mb-3">
+              {artist.entity_type === "gallery"
+                ? "Curatorial statement"
+                : "Artist statement"}
+            </h2>
             <p className="text-base leading-relaxed whitespace-pre-line">
               {artist.artist_statement}
             </p>
@@ -211,7 +216,9 @@ export default async function ArtistPage({
             <SeriesGrid series={series} artistSlug={slug} />
           ) : artworks.items.length === 0 ? (
             <p className="text-muted text-sm">
-              This artist hasn’t published any work yet.
+              {artist.entity_type === "gallery"
+                ? "This gallery hasn’t listed any works yet."
+                : "This artist hasn’t published any work yet."}
             </p>
           ) : (
             <ArtworkGrid items={artworks.items} />

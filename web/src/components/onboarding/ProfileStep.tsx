@@ -72,11 +72,18 @@ export function ProfileStep({ initial }: Props) {
     });
   }
 
+  // T-085 — gallery-vs-individual copy tweaks. Same fields, different
+  // labels + prompts. Keep the branching inline (not a copy map) so a
+  // reader scanning the JSX can see both variants side by side.
+  const isGallery = initial.entity_type === "gallery";
+
   return (
     <form onSubmit={onSubmit} className="space-y-5 max-w-2xl">
       <div>
         <h2 className="font-serif text-2xl tracking-tight">
-          Tell collectors about your work
+          {isGallery
+            ? "Tell collectors about the gallery"
+            : "Tell collectors about your work"}
         </h2>
         <p className="mt-2 text-sm text-muted">
           All optional. You can come back and edit these any time.
@@ -84,25 +91,37 @@ export function ProfileStep({ initial }: Props) {
       </div>
 
       <label className="block text-sm">
-        <span className="block mb-1 text-muted">Bio</span>
+        <span className="block mb-1 text-muted">
+          {isGallery ? "About the gallery" : "Bio"}
+        </span>
         <textarea
           value={bio}
           onChange={(e) => setBio(e.target.value)}
           rows={3}
           maxLength={4000}
-          placeholder="A few sentences about you and your practice."
+          placeholder={
+            isGallery
+              ? "A few sentences about the space and the artists you show."
+              : "A few sentences about you and your practice."
+          }
           className="w-full border border-border bg-bg px-3 py-2"
         />
       </label>
 
       <label className="block text-sm">
-        <span className="block mb-1 text-muted">Artist statement</span>
+        <span className="block mb-1 text-muted">
+          {isGallery ? "Curatorial statement" : "Artist statement"}
+        </span>
         <textarea
           value={statement}
           onChange={(e) => setStatement(e.target.value)}
           rows={6}
           maxLength={8000}
-          placeholder="Longer-form: themes, materials, what you're exploring."
+          placeholder={
+            isGallery
+              ? "Longer-form: your programme, the artists you champion, upcoming shows."
+              : "Longer-form: themes, materials, what you're exploring."
+          }
           className="w-full border border-border bg-bg px-3 py-2"
         />
       </label>
