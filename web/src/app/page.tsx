@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { auth } from "@clerk/nextjs/server";
+import { Compass, MessageCircle, Search, Sparkles } from "lucide-react";
 import { TopNav } from "@/components/TopNav";
 import { NearMeButton } from "@/components/NearMeButton";
 import { SearchBar } from "@/components/SearchBar";
@@ -114,25 +115,35 @@ export default async function Home() {
         )}
 
         {/* Value-prop strip — four claims mirroring the hero, sitting
-            between neighborhoods and the recent/for-you row. Kept
-            typographic rather than icon-driven to match the editorial
-            feel. Update copy in one place as features change (e.g.
-            "tailored" reflects the T-055 + T-061 + T-056.2 chain being
-            live for signed-in visitors). */}
+            between neighborhoods and the recent/for-you row. Muted
+            monoline icons give each claim a visual anchor without
+            leaning into consumer-app colouring. Update copy in one
+            place as features change (e.g. "tailored" reflects the
+            T-055 + T-061 + T-056.2 chain being live for signed-in
+            visitors). */}
         <section className="border-y border-border bg-surface">
-          <div className="mx-auto max-w-screen-2xl px-6 py-12 md:py-16 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8 md:gap-10">
-            {[
-              "Find original artwork tailored to you",
-              "Connect directly with local artists",
-              "Discover spaces to see art around the globe",
-              "Intelligent search by image, mood or phrase",
-            ].map((claim) => (
-              <p
-                key={claim}
-                className="font-serif text-lg md:text-xl leading-snug tracking-tight text-center md:text-left"
+          <div className="mx-auto max-w-screen-2xl px-6 py-16 md:py-20 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-10 md:gap-8">
+            {(
+              [
+                { icon: Sparkles, text: "Find original artwork tailored to you" },
+                { icon: MessageCircle, text: "Connect directly with local artists" },
+                { icon: Compass, text: "Discover spaces to see art around the globe" },
+                { icon: Search, text: "Intelligent search by image, mood or phrase" },
+              ] as const
+            ).map(({ icon: Icon, text }) => (
+              <div
+                key={text}
+                className="flex flex-col items-center md:items-start gap-3 text-center md:text-left"
               >
-                {claim}
-              </p>
+                <Icon
+                  className="h-6 w-6 text-muted"
+                  strokeWidth={1.5}
+                  aria-hidden
+                />
+                <p className="font-serif text-lg md:text-xl leading-snug tracking-tight">
+                  {text}
+                </p>
+              </div>
             ))}
           </div>
         </section>
