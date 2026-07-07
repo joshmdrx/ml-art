@@ -12,7 +12,14 @@
 SHELL          := /bin/bash
 .SHELLFLAGS    := -eu -o pipefail -c
 
-COMPOSE        := docker compose -f docker-compose.dev.yml
+# Base compose file is committed + shared. `docker-compose.local.yml`
+# is a gitignored per-machine override (e.g. shifting host ports when
+# running alongside another stack that binds 9000/9001). Auto-include
+# it when present so `make up` / `make dev` pick it up without a
+# COMPOSE_FILE env dance. Without this, host-port drift silently
+# broke image URLs — see decisions.md.
+LOCAL_COMPOSE  := $(wildcard docker-compose.local.yml)
+COMPOSE        := docker compose -f docker-compose.dev.yml $(if $(LOCAL_COMPOSE),-f $(LOCAL_COMPOSE),)
 DB_URL         := postgres://ml_art:dev@localhost:5433/ml_art_dev
 WIKIART_DIR    := spikes/2026-05-modifier-deltas/data/wikiart
 
@@ -74,7 +81,8 @@ help:
 .PHONY: up
 up:
 	@$(COMPOSE) up -d
-	@echo "✔ docker services up — postgres:5433, minio:9000/9001, mailhog:2025/8025"
+	@echo "✔ docker services up$(if $(LOCAL_COMPOSE), (with docker-compose.local.yml overrides),)"
+	@docker ps --filter label=com.docker.compose.project=ml-art --format '   {{.Names}} → {{.Ports}}' 2>/dev/null | sed 's|0.0.0.0:||g; s|, :::[^,]*||g' | head -6
 
 .PHONY: down
 down:

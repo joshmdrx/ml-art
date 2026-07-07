@@ -51,6 +51,30 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# ─── preflight: image bucket reachable at the URL api/.env promises? ────────
+# The Rust API embeds `IMAGE_BASE_URL` into every artwork response so the
+# browser can render <img src>. If MinIO is bound at a different host
+# port than .env expects — a drift pattern that's silently broken image
+# rendering more than once — placeholders quietly appear everywhere.
+# Fail here with a clear message so a fresh `make dev` never ships that
+# footgun to the browser.
+IMAGE_BASE_URL_LOCAL="$(grep -E '^IMAGE_BASE_URL=' api/.env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'")"
+IMAGE_BASE_URL_LOCAL="${IMAGE_BASE_URL_LOCAL:-http://localhost:9000/artworks}"
+IMAGE_BASE_URL_ORIGIN="$(printf '%s' "$IMAGE_BASE_URL_LOCAL" | sed -E 's#(https?://[^/]+).*#\1#')"
+if ! curl -sSf --max-time 2 -o /dev/null "$IMAGE_BASE_URL_ORIGIN/minio/health/live" 2>/dev/null; then
+  cat >&2 <<EOF
+✘ image bucket not reachable at $IMAGE_BASE_URL_ORIGIN
+  → api/.env: IMAGE_BASE_URL=$IMAGE_BASE_URL_LOCAL
+  → docker  : $(docker ps --filter name=minio --format '{{.Ports}}' 2>/dev/null || echo 'minio container not found')
+
+  Common cause: docker-compose.local.yml shifts MinIO to a non-default
+  host port but was not loaded when the stack came up. Fix by:
+     make down && make up
+  which now auto-detects docker-compose.local.yml (see Makefile COMPOSE).
+EOF
+  exit 1
+fi
+
 # ─── api ────────────────────────────────────────────────────────────────────
 echo "→ starting api (logs: /tmp/api.log)  [auto-reloads on *.rs / *.sql]"
 (
