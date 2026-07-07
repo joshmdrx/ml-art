@@ -190,6 +190,84 @@ Landed with the initial infra apply — both `aws_wafv2_web_acl.api` + `.web` ha
 
 ---
 
+## Marketplace track (opt-in direct sales) — scoped, not yet triggered
+
+See [`plans/marketplace.md`](./plans/marketplace.md) for the full
+design (payment provider, schema, state machine, idempotency,
+notifications, refunds, admin surface, legal, E2E plan). Ticket
+breakdown below is a summary; the plan doc is the source of truth.
+
+**Trigger to start:** ≥50% of the first 5–10 onboarded artists say
+they'd rather sell direct than inquiry-only. Until then, the inquiry
+flow handles offline settlement fine — no need to eat the ~5-week
+build + ~2-week legal spend speculatively.
+
+**Provisional decisions** (revisit at trigger time):
+- Payment: **Stripe Connect Express** (artist KYC in Stripe's hosted flow, Wander is platform-of-record)
+- Commission: **15% flat** for v1 (aggressive vs Artfinder ~33% / Saatchi ~30%, room to lower with scale)
+- Refunds: **admin-initiated only** — no auto-refund for buyer requests
+- Legal: **buy a UK marketplace-lawyer T&Cs template**, do not DIY
+
+### `M-01` Stripe Connect Express — artist onboarding
+Hosted-link endpoint (`POST /v1/studio/stripe/onboarding-link`),
+`stripe_account_id` + `stripe_charges_enabled` + `stripe_payouts_enabled`
+on `artists`, `account.updated` webhook that flips the flags.
+**Est:** 3 days.
+
+### `M-02` Orders + webhook_events schema + Rust models
+Migration 0028 (orders) + 0029 (artists stripe columns + artwork
+weight/ships_from) + 0030 (stripe_webhook_events). Rust models,
+`FromRow`, `Serialize`. **Est:** 1 day.
+
+### `M-03` Stripe webhook handler + idempotency
+`POST /v1/webhooks/stripe` — Stripe signature verify + dedupe on
+`event_id`. Dispatches on `checkout.session.completed`,
+`payment_intent.succeeded`, `charge.dispute.created`,
+`refund.updated`, `account.updated`. Same replay-idempotent pattern
+as T-054's inbound-email webhook. **Est:** 2 days.
+
+### `M-04` Checkout session creation + address capture
+`POST /v1/artworks/:id/buy` — validates artwork is sellable, mints
+Checkout session with `transfer_data.destination`, captures shipping
+address. Idempotent per `(buyer, artwork)` within 30min. **Est:** 2 days.
+
+### `M-05` Buy button + buy flow pages
+`/artworks/[id]` grows a Buy button (visible only when sellable).
+`/artworks/[id]/buy` — shipping address form + summary. Redirect to
+Stripe Checkout. `/orders/[id]` — post-checkout confirmation.
+**Est:** 3 days.
+
+### `M-06` Studio sales dashboard
+`/studio/orders` — list + filter by status. `/studio/orders/[id]` —
+buyer name, shipping address, mark-shipped dialog (carrier + tracking).
+Payout timing indicator. **Est:** 3 days.
+
+### `M-07` Notification templates + JobEvent variants
+Nine new templates (see plans/marketplace.md → Notifications table).
+Same Resend + JobEvent pattern as inquiry emails. **Est:** 2 days.
+
+### `M-08` Admin orders queue + refund flow
+`/admin/orders` — list, filter, sort. `/admin/orders/[id]` — refund
+button + reason picker, Stripe deep-link for dispute evidence.
+`/admin/stats` extends with GMV + refund-rate tiles. **Est:** 3 days.
+
+### `M-09` Legal — T&Cs + artist agreement
+External work (~2 weeks in parallel with build). Buy a UK marketplace
+template (~£1-2k), solicitor review, integrate acceptance into
+`M-01`'s Stripe onboarding flow. **Est:** external / parallel.
+
+### `M-10` E2E specs — buy / ship / refund
+Extend `testfixtures.rs` with `POST /v1/testfixtures/order` +
+`POST /v1/testfixtures/enable-payouts`. Playwright: buy happy path
+(Stripe test-mode card), studio mark-shipped, admin refund.
+**Est:** 2 days.
+
+### `M-11` Buyer `/orders` list page
+Signed-in buyer's list of past orders (status, amount, artwork
+thumb, artist name). Links to `/orders/[id]`. **Est:** 1 day.
+
+---
+
 ## Post-launch tracks (v1.x — retention + ML)
 
 The retention loop + ML discovery surface, defined as a coherent body of
