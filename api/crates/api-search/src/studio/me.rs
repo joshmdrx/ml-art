@@ -34,6 +34,10 @@ pub struct StudioArtist {
     pub commissioning_preferences: Option<serde_json::Value>,
     pub inquiry_preferences: serde_json::Value,
     pub status: String,
+    /// T-085 — "individual" (default) or "gallery". Drives copy on
+    /// public artist page + onboarding, but no downstream routing
+    /// fork: same admin queue, same artwork model, same URLs.
+    pub entity_type: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -65,7 +69,7 @@ pub async fn current_artist(
             id, slug, display_name, bio, artist_statement,
             location, city, country, website_url,
             socials, commissioning_preferences, inquiry_preferences,
-            status, created_at, updated_at
+            status, entity_type, created_at, updated_at
         FROM artists
         WHERE user_id = $1
           AND deleted_at IS NULL

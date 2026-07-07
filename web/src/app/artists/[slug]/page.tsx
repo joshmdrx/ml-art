@@ -107,6 +107,15 @@ export default async function ArtistPage({
         <header className="max-w-3xl mb-12 md:mb-16">
           <div className="flex items-start justify-between gap-6">
             <div>
+              {/* T-085 — Gallery / space entity-type chip. Small,
+                  above the headline so it reads as a category rather
+                  than a label. Individual artists get no chip
+                  (default state — nothing to shout about). */}
+              {artist.entity_type === "gallery" && (
+                <p className="mb-2 inline-block text-xs uppercase tracking-wide text-muted border border-border px-2 py-0.5">
+                  Gallery
+                </p>
+              )}
               <h1 className="font-serif text-4xl md:text-5xl tracking-tight">
                 {artist.display_name}
               </h1>

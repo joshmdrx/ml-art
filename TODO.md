@@ -641,6 +641,33 @@ to force a cold-start that re-reads SSM. CloudFront edge propagation
 is ~5min; during the overlap CloudFront sends new value while
 Lambda still enforces old until the bounce.
 
+### ~~`T-085` Artist entity_type (individual / gallery)~~ — shipped 2026-07-02
+
+Direct sequel to the T-081 revert: v1 keeps galleries as artists
+downstream, but surfaces the distinction in onboarding + on the
+public profile.
+
+- ✅ Migration `0027_artist_entity_type.sql` — single enum column
+  with a CHECK constraint (`'individual' | 'gallery'`), DEFAULT
+  `'individual'` so existing rows keep working. Partial index for
+  future gallery-scoped filtering.
+- ✅ `StartBody.entity_type` validated on the Rust side + wired
+  through the INSERT + RETURNING for all four artist SELECT sites
+  (onboarding start / complete, /studio/me, /studio/settings PATCH,
+  public artist detail).
+- ✅ Onboarding IdentityStep — segmented control ("individual /
+  gallery") at the top; label + placeholder + helper copy adapt.
+- ✅ Public artist page — small "Gallery" chip above the headline
+  when entity_type='gallery'. Individuals get no chip.
+
+**What's NOT in v1** (deliberate):
+- No `/venues/[slug]` route — same URLs for everyone.
+- No fork in admin queue, artwork model, or studio flow.
+- entity_type isn't editable post-onboarding via settings UI. Direct
+  psql for now if someone needs to change it.
+- Gallery-specific fields (opening hours, staff) — put in bio for
+  now; add structured support only when a real gallery asks.
+
 ### ~~`T-084` Operator dashboard — CloudWatch alarms + `/admin/stats` page~~ — partial ship 2026-07-01
 
 - **T-084.1 — `/admin/stats` page.** ✓ Shipped 2026-07-01. Server-rendered admin dashboard with big-number tiles (users / artists / artworks / inquiries, 7d/30d/all-time) + 4-week search→inquiry funnel + admin activity count. One-round-trip via `GET /v1/admin/stats`.

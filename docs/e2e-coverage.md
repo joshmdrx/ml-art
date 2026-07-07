@@ -114,6 +114,8 @@ Clerk image-upload paths. Used by specs 49–51.
 | Onboarding review-step shows "View your profile" for already-active artist | [`48-onboarding-review-active-artist-signed-in`](../e2e/tests/48-onboarding-review-active-artist-signed-in.spec.ts) | ✅ |
 | `/studio` portfolio for a fresh Clerk user (T-011 P3) | [`18-studio-portfolio-signed-in`](../e2e/tests/18-studio-portfolio-signed-in.spec.ts) | ✅ |
 | Onboarding wizard identity step (T-012 P1) | [`21-onboarding-signed-in`](../e2e/tests/21-onboarding-signed-in.spec.ts) | 🟡 identity step only; steps 2–5 not covered |
+| Onboarding — individual vs gallery entity-type toggle (T-085) | — | ⏳ small extension of spec 21; assert toggle renders + gallery branch changes label copy |
+| Public artist page — "Gallery" chip for `entity_type='gallery'` (T-085) | — | ⏳ needs a gallery-type fixture artist (via testfixtures seam or artist.setup with a flag) |
 | `/studio/series` non-artist redirects to onboarding (T-058.2) | [`28-studio-series-signed-in`](../e2e/tests/28-studio-series-signed-in.spec.ts) | ✅ |
 | Studio sidebar nav (2026-07-01 UX rewrite) | [`46-studio-sidebar-artist-signed-in`](../e2e/tests/46-studio-sidebar-artist-signed-in.spec.ts) | ✅ 4 nav items + aria-current follows route (uses artist fixture) |
 | Artwork edit modal — URL-driven lifecycle (`?id=<uuid>`) | [`50-studio-artwork-modal-artist-signed-in`](../e2e/tests/50-studio-artwork-modal-artist-signed-in.spec.ts) | ✅ modal opens on direct nav, Escape strips param |

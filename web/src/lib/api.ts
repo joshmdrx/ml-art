@@ -57,6 +57,9 @@ export interface ArtistFull {
    * (they can't see non-active artists). Admins see the true status
    * so the web layer can render an "Admin view" banner. */
   status: "pending" | "active" | "paused" | "rejected";
+  /** T-085 — "individual" (default) or "gallery". Drives the
+   * "Gallery" chip on the profile header. */
+  entity_type: "individual" | "gallery";
 }
 
 export interface ArtistDetail {
@@ -243,6 +246,9 @@ export interface StudioArtist {
   /** `pending`, `active`, `paused`, `rejected`. Self-serve toggle only
    * accepts `active` ↔ `paused`. */
   status: "pending" | "active" | "paused" | "rejected";
+  /** T-085 — "individual" (default) or "gallery". Drives copy on
+   * public artist page + onboarding. No downstream routing fork. */
+  entity_type: "individual" | "gallery";
   created_at: string;
   updated_at: string;
   /** T-052 — number of followers across all signed-in users. Surfaced on
@@ -955,6 +961,9 @@ export { formatDimensions, formatPrice } from "@/lib/format";
 export interface StartOnboardingBody {
   display_name: string;
   location?: string;
+  /** T-085 — "individual" (default) or "gallery". Omit to keep the
+   * DB default of 'individual'. */
+  entity_type?: "individual" | "gallery";
 }
 
 /** `POST /v1/onboarding/start` — creates the caller's `artists` row with

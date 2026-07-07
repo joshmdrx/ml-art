@@ -82,6 +82,10 @@ pub struct ArtistFull {
     /// can't see other statuses at all). Web layer keys the
     /// "Admin view" banner on this + the caller's is_admin flag.
     pub status: String,
+    /// T-085 — "individual" (default) or "gallery". Drives the
+    /// "Gallery" chip on the profile header + a copy tweak in
+    /// onboarding. No downstream routing fork.
+    pub entity_type: String,
 }
 
 /// Composite response for `/v1/artists/:slug`: profile + first page of artworks.

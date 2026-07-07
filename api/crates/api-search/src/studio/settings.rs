@@ -162,7 +162,7 @@ pub async fn patch(
             id, slug, display_name, bio, artist_statement,
             location, city, country, website_url,
             socials, commissioning_preferences, inquiry_preferences,
-            status, created_at, updated_at
+            status, entity_type, created_at, updated_at
         "#,
     )
     .bind(artist_id)

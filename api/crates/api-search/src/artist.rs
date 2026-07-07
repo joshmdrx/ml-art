@@ -50,7 +50,7 @@ pub async fn handle(
             SELECT
                 id, slug, display_name, bio, artist_statement,
                 location, city, country, lat, lng,
-                website_url, socials, commissioning_preferences, status
+                website_url, socials, commissioning_preferences, status, entity_type
             FROM artists
             WHERE slug = $1 AND deleted_at IS NULL
             "#,
@@ -61,7 +61,7 @@ pub async fn handle(
             SELECT
                 id, slug, display_name, bio, artist_statement,
                 location, city, country, lat, lng,
-                website_url, socials, commissioning_preferences, status
+                website_url, socials, commissioning_preferences, status, entity_type
             FROM artists
             WHERE slug = $1
               AND deleted_at IS NULL
@@ -186,6 +186,7 @@ pub async fn handle(
         commissioning_preferences: artist.commissioning_preferences,
         representative_image_urls,
         status: artist.status,
+        entity_type: artist.entity_type,
     };
 
     // 4. Follow graph state (T-052): follower count + this caller's
@@ -259,6 +260,7 @@ struct ArtistRow {
     socials: Option<serde_json::Value>,
     commissioning_preferences: Option<serde_json::Value>,
     status: String,
+    entity_type: String,
 }
 
 #[derive(FromRow)]

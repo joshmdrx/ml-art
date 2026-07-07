@@ -47,6 +47,11 @@ pub struct StartBody {
     /// Inngest runtime lands; for now the row keeps the raw string).
     #[serde(default)]
     pub location: Option<String>,
+    /// T-085 — "individual" (default) or "gallery". Validated against
+    /// the DB's CHECK constraint; unknown values 400. Rows keep the
+    /// DEFAULT when omitted.
+    #[serde(default)]
+    pub entity_type: Option<String>,
 }
 
 pub async fn start(
@@ -76,6 +81,22 @@ pub async fn start(
         }
     }
 
+    // T-085 — entity_type. Enum-validated on the Rust side too so a
+    // 400 fires before we hit the CHECK constraint (which would
+    // surface as a 500). Keep the vocabulary in sync with migration
+    // 0027_artist_entity_type.sql.
+    let entity_type = body
+        .entity_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("individual");
+    if !matches!(entity_type, "individual" | "gallery") {
+        return Err(ApiError::BadRequest(
+            "entity_type must be 'individual' or 'gallery'".into(),
+        ));
+    }
+
     // Already an artist? Bail with a 400 + clear detail. We don't use
     // 409 Conflict because `ApiError` doesn't carry that variant yet;
     // a follow-up can sharpen it if we get a real call-site that needs
@@ -101,20 +122,21 @@ pub async fn start(
         r#"
         INSERT INTO artists (
             user_id, slug, display_name, location,
-            inquiry_preferences, status
+            inquiry_preferences, status, entity_type
         )
-        VALUES ($1, $2, $3, $4, '{"type":"platform"}'::jsonb, 'pending')
+        VALUES ($1, $2, $3, $4, '{"type":"platform"}'::jsonb, 'pending', $5)
         RETURNING
             id, slug, display_name, bio, artist_statement,
             location, city, country, website_url,
             socials, commissioning_preferences, inquiry_preferences,
-            status, created_at, updated_at
+            status, entity_type, created_at, updated_at
         "#,
     )
     .bind(user.id)
     .bind(&slug)
     .bind(display_name)
     .bind(location)
+    .bind(entity_type)
     .fetch_one(&state.pool)
     .await?;
 
@@ -146,7 +168,7 @@ pub async fn complete(
             id, slug, display_name, bio, artist_statement,
             location, city, country, website_url,
             socials, commissioning_preferences, inquiry_preferences,
-            status, created_at, updated_at
+            status, entity_type, created_at, updated_at
         "#,
     )
     .bind(user.id)
