@@ -36,6 +36,9 @@ export function CalibratePanel({ pairs }: { pairs: CalibratePair[] }) {
   const [shouldShow, setShouldShow] = useState(false);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [state, setState] = useState<DoneState>("active");
+  // Transient "picked" state so the user sees their tap register before
+  // the pair advances. Cleared on next-pair transition.
+  const [pickedSide, setPickedSide] = useState<"left" | "right" | null>(null);
 
   useEffect(() => {
     // Reading localStorage isn't possible during SSR, so we flip
@@ -79,35 +82,49 @@ export function CalibratePanel({ pairs }: { pairs: CalibratePair[] }) {
 
   const pair = pairs[currentIdx];
 
-  const sendPick = async (chosenSide: "left" | "right") => {
+  const sendPick = (chosenSide: "left" | "right") => {
+    // Guard against double-taps: once a side is picked, ignore further
+    // clicks until we advance.
+    if (pickedSide !== null) return;
+    setPickedSide(chosenSide);
+
     const chosen = chosenSide === "left" ? pair.left : pair.right;
     const rejected = chosenSide === "left" ? pair.right : pair.left;
-    try {
-      await fetch("/api/calibrate/pick", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          pair_id: pair.id,
-          chosen_artwork_id: chosen.artwork_id,
-          rejected_artwork_id: rejected.artwork_id,
-        }),
-        keepalive: true,
-      });
-    } catch (e) {
-      // Don't block the UI on a network blip — the next refresh will
-      // still pick up the prior picks. Log so we notice systemic issues.
+
+    // Fire-and-forget: `keepalive` on the request lets the browser
+    // finish it even if we navigate away. We DON'T await — the
+    // perceived-latency win is the whole point. Errors are logged,
+    // not surfaced (a missed pick isn't user-actionable).
+    fetch("/api/calibrate/pick", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        pair_id: pair.id,
+        chosen_artwork_id: chosen.artwork_id,
+        rejected_artwork_id: rejected.artwork_id,
+      }),
+      keepalive: true,
+    }).catch((e) => {
       reportError(e, { surface: "calibrate", pair_id: pair.id });
-    }
-    if (currentIdx + 1 >= pairs.length) {
-      try {
-        window.localStorage.setItem(STORAGE_KEY, "done");
-      } catch {
-        /* ignore */
+    });
+
+    // Hold the "picked" visual for 300ms so the user actually sees
+    // their tap register, then advance. Total perceived latency ≈
+    // 300ms of intentional feedback rather than the previous
+    // 500-1500ms of network-round-trip dead air.
+    window.setTimeout(() => {
+      setPickedSide(null);
+      if (currentIdx + 1 >= pairs.length) {
+        try {
+          window.localStorage.setItem(STORAGE_KEY, "done");
+        } catch {
+          /* ignore */
+        }
+        setState("completed");
+      } else {
+        setCurrentIdx((i) => i + 1);
       }
-      setState("completed");
-    } else {
-      setCurrentIdx((i) => i + 1);
-    }
+    }, 300);
   };
 
   const skip = () => {
@@ -137,19 +154,53 @@ export function CalibratePanel({ pairs }: { pairs: CalibratePair[] }) {
             Skip
           </button>
         </div>
-        <p className="text-sm text-muted mb-6">
-          Tap the one that pulls you in. {currentIdx + 1} of {pairs.length}.
-        </p>
+        <div className="flex items-center gap-3 mb-6 text-sm text-muted">
+          <span>Tap the one that pulls you in.</span>
+          {/* Visual progress dots so the user gets a preview of how
+              many rounds are left without having to read "N of 5". */}
+          <span
+            className="inline-flex items-center gap-1"
+            aria-label={`Round ${currentIdx + 1} of ${pairs.length}`}
+          >
+            {pairs.map((_, i) => (
+              <span
+                key={i}
+                aria-hidden
+                className={
+                  "inline-block h-1.5 w-1.5 rounded-full transition-colors " +
+                  (i < currentIdx
+                    ? "bg-foreground"
+                    : i === currentIdx
+                      ? "bg-foreground/60"
+                      : "bg-border")
+                }
+              />
+            ))}
+            <span className="ml-2 tabular-nums">
+              {currentIdx + 1} of {pairs.length}
+            </span>
+          </span>
+        </div>
 
-        <div className="grid grid-cols-2 gap-3 md:gap-6">
+        {/* Cap the pair width so each image is a comfortable ~350px
+            on a 1440px viewport rather than swallowing half the
+            screen. Kept on the grid, not the outer panel, so the
+            heading + skip button keep their generous width. */}
+        <div className="grid grid-cols-2 gap-3 md:gap-6 max-w-3xl mx-auto">
           <CalibrateCard
             side="left"
             artwork={pair.left}
+            picked={pickedSide === "left"}
+            dimmed={pickedSide === "right"}
+            disabled={pickedSide !== null}
             onPick={() => sendPick("left")}
           />
           <CalibrateCard
             side="right"
             artwork={pair.right}
+            picked={pickedSide === "right"}
+            dimmed={pickedSide === "left"}
+            disabled={pickedSide !== null}
             onPick={() => sendPick("right")}
           />
         </div>
@@ -161,20 +212,40 @@ export function CalibratePanel({ pairs }: { pairs: CalibratePair[] }) {
 function CalibrateCard({
   side,
   artwork,
+  picked,
+  dimmed,
+  disabled,
   onPick,
 }: {
   side: "left" | "right";
   artwork: CalibratePair["left"];
+  /** This side was just chosen — highlight it. */
+  picked: boolean;
+  /** The OTHER side was just chosen — fade this one back. */
+  dimmed: boolean;
+  /** A pick is in flight; block further clicks. */
+  disabled: boolean;
   onPick: () => void;
 }) {
   return (
     <button
       type="button"
       onClick={onPick}
+      disabled={disabled}
       aria-label={`Choose ${side}: ${artwork.title ?? "untitled"} by ${artwork.artist_name}`}
-      className="group flex flex-col text-left hover:opacity-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground"
+      className={
+        "group flex flex-col text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground transition-opacity " +
+        (dimmed ? "opacity-40" : "opacity-100")
+      }
     >
-      <div className="relative aspect-square w-full overflow-hidden bg-surface-2">
+      <div
+        className={
+          "relative aspect-square w-full overflow-hidden bg-surface-2 border-2 transition-colors " +
+          (picked
+            ? "border-foreground"
+            : "border-transparent group-hover:border-foreground/60")
+        }
+      >
         {/* Plain <img> — next/image needs a remote-host allowlist;
             follow the ArtworkCard convention until that's wired up. */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -182,8 +253,21 @@ function CalibrateCard({
           src={artwork.image_url}
           alt={artwork.title ?? "Untitled"}
           loading="lazy"
-          className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
+          className={
+            "w-full h-full object-cover transition-transform " +
+            (picked ? "scale-[1.03]" : "group-hover:scale-[1.02]")
+          }
         />
+        {/* Picked chip: small ✓ so the tap is unambiguous. Only
+            renders when picked so the default state stays clean. */}
+        {picked && (
+          <span
+            aria-hidden
+            className="absolute top-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full bg-foreground text-background text-xs"
+          >
+            ✓
+          </span>
+        )}
       </div>
       <div className="pt-2 text-sm">
         <div className="line-clamp-1">{artwork.title ?? "Untitled"}</div>
