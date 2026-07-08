@@ -64,6 +64,16 @@ locals {
     # Lambda compares against it (constant-time); both api + jobs
     # Config::load require it in prod. Generate with `openssl rand -hex 32`.
     "inbound_email_secret",
+    # M-01 — Stripe platform account secret key. Starts sk_test_ in
+    # test mode, sk_live_ in prod. Set out-of-band from the Stripe
+    # dashboard after creating the Wander Connect platform. Empty
+    # placeholder = marketplace endpoints 503 (safe default).
+    "stripe_secret_key",
+    # M-03 — Stripe webhook signing secret. Starts whsec_. Set
+    # out-of-band after registering the webhook endpoint URL
+    # (api.wander.gallery/v1/webhooks/stripe) in the Stripe
+    # dashboard. Empty = webhook verification fails closed.
+    "stripe_webhook_secret",
   ]
 }
 

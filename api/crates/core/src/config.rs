@@ -98,6 +98,18 @@ pub struct Config {
     /// the same value into the CloudFront origin's `custom_header`.
     /// `bootstrap_ssm` picks up the SSM value at Lambda cold-start.
     pub cloudfront_shared_secret: Option<String>,
+    /// M-01 — Stripe secret key for the platform account (starts with
+    /// `sk_test_` in test mode, `sk_live_` in prod). Used to call
+    /// Stripe's REST API for account creation, checkout sessions,
+    /// refunds. When `None`, every marketplace endpoint 503s at the
+    /// entry — dev instances without Stripe credentials keep
+    /// building non-marketplace features.
+    pub stripe_secret_key: Option<String>,
+    /// M-03 — Stripe webhook signing secret (starts with `whsec_`).
+    /// Used to verify inbound webhook signatures on
+    /// `/v1/webhooks/stripe`. Required in prod once marketplace
+    /// ships; None in dev short-circuits webhook verification.
+    pub stripe_webhook_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,6 +200,12 @@ impl Config {
             cloudfront_shared_secret: env::var("CLOUDFRONT_SHARED_SECRET")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            stripe_secret_key: env::var("STRIPE_SECRET_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            stripe_webhook_secret: env::var("STRIPE_WEBHOOK_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty()),
         };
 
         // Production sanity checks. Prevent footguns from a missing secret in prod.
@@ -248,6 +266,12 @@ impl Config {
             // required. Tests that specifically want to verify the gate
             // build their own Config with this set to `Some(...)`.
             cloudfront_shared_secret: None,
+            // Off in tests → marketplace endpoints 503 without setup.
+            // Marketplace tests build a Config with real Stripe test-mode
+            // keys or use the httpmock pattern (see M-01 tests when they
+            // land).
+            stripe_secret_key: None,
+            stripe_webhook_secret: None,
         }
     }
 }
