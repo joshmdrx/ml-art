@@ -16,6 +16,7 @@ pub mod locations;
 pub mod me;
 pub mod series;
 pub mod settings;
+pub mod stripe;
 
 use ml_art_core::{auth::User, db::Pool, error::ApiError};
 use uuid::Uuid;
