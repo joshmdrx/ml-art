@@ -14,6 +14,7 @@ pub mod me;
 pub mod meta;
 pub mod neighborhoods;
 pub mod onboarding;
+pub mod orders;
 pub mod recommendations;
 pub mod search;
 pub mod search_map;
@@ -101,6 +102,10 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route("/v1/artists/:slug/series/:series_slug", get(series::detail))
         .route("/v1/artworks/:id", get(artwork::detail))
         .route("/v1/artworks/:id/similar", get(artwork::similar))
+        // M-04 — buyer checkout. Authed; creates a pending order + opens
+        // a Stripe Checkout Session (Connect destination charge). See
+        // `orders::create_checkout`.
+        .route("/v1/artworks/:id/checkout", post(orders::create_checkout))
         .route("/v1/neighborhoods", get(neighborhoods::index))
         .route("/v1/neighborhoods/:slug", get(neighborhoods::detail))
         // T-061 first-session calibrator. GET samples pairs from
