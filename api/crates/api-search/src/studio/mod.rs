@@ -14,6 +14,7 @@ pub mod artworks;
 pub mod inquiries;
 pub mod locations;
 pub mod me;
+pub mod orders;
 pub mod series;
 pub mod settings;
 pub mod stripe;

@@ -238,13 +238,21 @@ pub fn build_app(state: Arc<AppState>) -> Router {
             "/v1/studio/settings",
             axum::routing::patch(studio::settings::patch),
         )
-        // ── Marketplace (M-01): Stripe Connect Express onboarding.
-        // Returns a hosted-onboarding URL; creates + persists the
-        // artist's connected account on first call, reuses it after.
+        // ── Marketplace (M-01/M-06): Stripe Connect Express onboarding +
+        // payout status for the studio payouts settings page.
         .route(
             "/v1/studio/stripe/onboarding-link",
             post(studio::stripe::onboarding_link),
         )
+        .route(
+            "/v1/studio/stripe/payouts",
+            get(studio::stripe::payout_status),
+        )
+        // ── Studio sales dashboard (M-06): the artist's orders + the
+        // mark-shipped transition.
+        .route("/v1/studio/orders", get(studio::orders::list))
+        .route("/v1/studio/orders/:id", get(studio::orders::detail))
+        .route("/v1/studio/orders/:id/ship", post(studio::orders::ship))
         // ── Studio series (T-058). Artist-curated groupings of their
         // own works. Multi-select membership via PUT (replace
         // semantics). Single-artwork series assignment also possible

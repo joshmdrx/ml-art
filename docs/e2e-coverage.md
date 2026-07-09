@@ -162,8 +162,8 @@ both landing with **M-10** — hence the ⏳ rows below.
 | Buy flow: shipping form → Stripe Checkout → `/orders/[id]` confirmation (M-05) | — | ⏳ M-10. Signed-in buyer fills address, redirected to Stripe test checkout, pays with `4242…`, returns to order confirmation. Needs the Stripe test loop. |
 | Buy page gates: signed-out → `/sign-in`, not-purchasable → back to artwork (M-05) | — | ⏳ M-10. Deep-link `/artworks/[id]/buy` while signed-out and for a non-purchasable work. |
 | Order confirmation renders status-aware copy (M-05) | — | ⏳ M-10. `/orders/[id]` for the buyer shows the right headline per status; another user gets 404 (ownership is Tier-1 tested in `marketplace_buy_test`). |
-| Studio: artist enables direct sales via Stripe onboarding (M-01/M-06) | — | ⏳ M-06 ships the studio surface; assert the onboarding-link CTA + return state. |
-| Studio: mark order shipped (M-06) | — | ⏳ M-06. |
+| Studio: artist enables direct sales via Stripe onboarding (M-01/M-06) | — | ⏳ M-10. Built: `/studio/settings/payouts` + `EnableSalesButton`. Assert the CTA opens onboarding + the status copy per `payout_status` (Tier-1 tested in `studio_orders_test`). Needs the Stripe onboarding redirect. |
+| Studio: mark order shipped (M-06) | — | ⏳ M-10. Built: `/studio/orders` + `/studio/orders/[id]` + `MarkShippedForm`. Assert paid→shipped flip + tracking capture (the transition, ownership, and paid-guard are Tier-1 tested in `studio_orders_test`). |
 | Admin: refund an order (M-08) | — | ⏳ M-08. |
 | Buyer order history `/orders` (M-11) | — | ⏳ M-11. |
 

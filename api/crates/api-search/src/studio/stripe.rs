@@ -84,3 +84,39 @@ pub async fn onboarding_link(
 
     Ok(Json(OnboardingLink { url: link.url }))
 }
+
+/// M-06 — the artist's Stripe payout status, for the payouts settings
+/// page. Reflects what `account.updated` has synced so far: whether
+/// onboarding was started, and whether charges + payouts are live.
+#[derive(Debug, Serialize)]
+pub struct PayoutStatus {
+    /// A Connect account exists (onboarding has at least been started).
+    pub onboarding_started: bool,
+    /// Stripe has enabled charges — the artist's works become purchasable.
+    pub charges_enabled: bool,
+    /// Payouts to the artist's bank are enabled.
+    pub payouts_enabled: bool,
+}
+
+pub async fn payout_status(
+    State(state): State<Arc<AppState>>,
+    AuthedUser(user): AuthedUser,
+) -> Result<Json<PayoutStatus>, ApiError> {
+    let row: Option<(Option<String>, bool, bool)> = sqlx::query_as(
+        r#"
+        SELECT stripe_account_id, stripe_charges_enabled, stripe_payouts_enabled
+        FROM artists
+        WHERE user_id = $1 AND deleted_at IS NULL
+        "#,
+    )
+    .bind(user.id)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    let (account_id, charges_enabled, payouts_enabled) = row.ok_or(ApiError::NotFound)?;
+    Ok(Json(PayoutStatus {
+        onboarding_started: account_id.is_some(),
+        charges_enabled,
+        payouts_enabled,
+    }))
+}

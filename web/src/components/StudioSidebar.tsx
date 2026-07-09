@@ -47,6 +47,7 @@ export function StudioSidebar({
     { href: "/studio", label: "Portfolio", exact: true },
     { href: "/studio/series", label: "Series" },
     { href: "/studio/inquiries", label: "Inquiries", count: unreadInquiries },
+    { href: "/studio/orders", label: "Orders" },
     { href: "/studio/settings", label: "Settings" },
   ];
 

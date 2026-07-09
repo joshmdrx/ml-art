@@ -851,6 +851,118 @@ export async function getOrder(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Marketplace — studio (artist-side, authed)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PayoutStatus {
+  onboarding_started: boolean;
+  charges_enabled: boolean;
+  payouts_enabled: boolean;
+}
+
+/** M-06 — the artist's Stripe payout status. `null` on 401 / no artist. */
+export async function getPayoutStatus(
+  init?: RequestInit
+): Promise<PayoutStatus | null> {
+  const res = await apiFetch("/v1/studio/stripe/payouts", init);
+  if (res.status === 401 || res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`payout status ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as PayoutStatus;
+}
+
+/** M-01/M-06 — start (or resume) Stripe Connect onboarding. Returns the
+ * hosted-onboarding URL to redirect the artist to. */
+export async function getStripeOnboardingLink(): Promise<{ url: string }> {
+  const res = await apiFetch("/v1/studio/stripe/onboarding-link", {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`onboarding ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as { url: string };
+}
+
+export interface StudioOrderSummary {
+  id: string;
+  status: OrderStatus;
+  amount_cents_gbp: number;
+  commission_cents_gbp: number;
+  buyer_name: string | null;
+  artwork_title: string | null;
+  created_at: string;
+}
+
+export interface StudioOrderDetail {
+  id: string;
+  status: OrderStatus;
+  amount_cents_gbp: number;
+  commission_cents_gbp: number;
+  payout_cents_gbp: number | null;
+  created_at: string;
+  shipped_at: string | null;
+  tracking_carrier: string | null;
+  tracking_number: string | null;
+  buyer_name: string | null;
+  buyer_email: string | null;
+  shipping_address: ShippingAddress;
+  artwork: { id: string; title: string | null; image_url: string | null };
+}
+
+export async function listStudioOrders(
+  init?: RequestInit
+): Promise<StudioOrderSummary[]> {
+  const res = await apiFetch("/v1/studio/orders", init);
+  if (res.status === 401 || res.status === 404) return [];
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`studio orders ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as StudioOrderSummary[];
+}
+
+export async function getStudioOrder(
+  id: string,
+  init?: RequestInit
+): Promise<StudioOrderDetail | null> {
+  const res = await apiFetch(
+    `/v1/studio/orders/${encodeURIComponent(id)}`,
+    init
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`studio order ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as StudioOrderDetail;
+}
+
+/** M-06 — mark a paid order shipped with carrier + tracking. Throws with
+ * the API message on a non-2xx (e.g. 409 if not in `paid`). */
+export async function markOrderShipped(
+  id: string,
+  carrier: string,
+  trackingNumber: string
+): Promise<{ status: string }> {
+  const res = await apiFetch(
+    `/v1/studio/orders/${encodeURIComponent(id)}/ship`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ carrier, tracking_number: trackingNumber }),
+    }
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`ship ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as { status: string };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Collections (authed)
 // ─────────────────────────────────────────────────────────────────────────────
 
