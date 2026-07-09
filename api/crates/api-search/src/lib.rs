@@ -189,6 +189,11 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         // Email Worker authenticates with a shared-secret header. See
         // `webhooks::inbound_email`.
         .route("/v1/webhooks/email/inbound", post(webhooks::inbound_email))
+        // M-03 — Stripe marketplace events. Unauthenticated; the
+        // `Stripe-Signature` HMAC over the raw body is the credential.
+        // Replay-idempotent via `stripe_webhook_events`. See
+        // `webhooks::stripe::handle`.
+        .route("/v1/webhooks/stripe", post(webhooks::stripe::handle))
         // T-050.3 — batched client-side events. Rate-limited by the
         // same per-anon search-tier policy (browsing intensity tracks
         // event volume well). Server derives identity from the
