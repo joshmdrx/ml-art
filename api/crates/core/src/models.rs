@@ -155,6 +155,11 @@ pub struct ArtworkFull {
     pub availability: String,
     pub external_url: Option<String>,
     pub published_at: Option<DateTime<Utc>>,
+    /// M-05 — true iff this artwork can be bought directly right now:
+    /// available + priced (GBP) + has dimensions, weight, and ships-from
+    /// country + the artist has completed Stripe onboarding. Drives the
+    /// Buy button; the checkout endpoint re-checks server-side.
+    pub purchasable: bool,
     pub artist: ArtworkArtist,
     pub images: Vec<ArtworkImage>,
 }

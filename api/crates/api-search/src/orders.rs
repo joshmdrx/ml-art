@@ -24,8 +24,10 @@ use axum::{
     extract::{Path, State},
     Json,
 };
+use chrono::{DateTime, Utc};
 use ml_art_core::{
     error::ApiError,
+    images::url_for_s3_key,
     stripe::{CheckoutSessionRequest, StripeClient, StripeShipping},
 };
 use serde::{Deserialize, Serialize};
@@ -217,6 +219,92 @@ pub async fn create_checkout(
     Ok(Json(CheckoutResponse {
         checkout_url,
         order_id,
+    }))
+}
+
+// ─────────────────────────────── Order detail ─────────────────────────────
+//
+// GET /v1/orders/:id — the buyer's own order. Powers the post-checkout
+// confirmation page (`/orders/[id]`). Scoped to the caller: an order that
+// isn't theirs is a 404, not a 403.
+
+#[derive(Debug, Serialize)]
+pub struct OrderDetail {
+    pub id: Uuid,
+    /// pending | paid | shipped | delivered | cancelled | refunded | disputed
+    pub status: String,
+    pub amount_cents_gbp: i64,
+    /// Always `"gbp"` for v1 — orders settle in the canonical currency.
+    pub currency: &'static str,
+    pub created_at: DateTime<Utc>,
+    pub shipping_address: serde_json::Value,
+    pub artwork: OrderArtwork,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OrderArtwork {
+    pub id: Uuid,
+    pub title: Option<String>,
+    pub image_url: Option<String>,
+    pub artist_name: String,
+    pub artist_slug: String,
+}
+
+#[derive(FromRow)]
+struct OrderRow {
+    id: Uuid,
+    status: String,
+    amount_cents_gbp: i64,
+    created_at: DateTime<Utc>,
+    shipping_address: serde_json::Value,
+    artwork_id: Uuid,
+    artwork_title: Option<String>,
+    image_s3_key: Option<String>,
+    artist_name: String,
+    artist_slug: String,
+}
+
+pub async fn get_order(
+    State(state): State<Arc<AppState>>,
+    AuthedUser(user): AuthedUser,
+    Path(order_id): Path<Uuid>,
+) -> Result<Json<OrderDetail>, ApiError> {
+    let row: OrderRow = sqlx::query_as(
+        r#"
+        SELECT
+            o.id, o.status, o.amount_cents_gbp, o.created_at, o.shipping_address,
+            a.id AS artwork_id, a.title AS artwork_title,
+            (SELECT s3_key FROM artwork_images
+             WHERE artwork_id = a.id AND moderation_status = 'approved'
+             ORDER BY is_primary DESC, display_order ASC
+             LIMIT 1) AS image_s3_key,
+            ar.display_name AS artist_name, ar.slug AS artist_slug
+        FROM orders o
+        JOIN artworks a  ON a.id  = o.artwork_id
+        JOIN artists  ar ON ar.id = o.artist_id
+        WHERE o.id = $1 AND o.buyer_user_id = $2
+        "#,
+    )
+    .bind(order_id)
+    .bind(user.id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+
+    Ok(Json(OrderDetail {
+        id: row.id,
+        status: row.status,
+        amount_cents_gbp: row.amount_cents_gbp,
+        currency: "gbp",
+        created_at: row.created_at,
+        shipping_address: row.shipping_address,
+        artwork: OrderArtwork {
+            id: row.artwork_id,
+            title: row.artwork_title,
+            image_url: row.image_s3_key.as_deref().map(url_for_s3_key),
+            artist_name: row.artist_name,
+            artist_slug: row.artist_slug,
+        },
     }))
 }
 

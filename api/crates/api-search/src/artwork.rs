@@ -47,7 +47,13 @@ pub async fn detail(
             a.price_cents, a.currency, a.availability,
             a.external_url, a.published_at,
             ar.id AS artist_id, ar.slug AS artist_slug,
-            ar.display_name AS artist_name, ar.location AS artist_location
+            ar.display_name AS artist_name, ar.location AS artist_location,
+            (a.availability = 'available'
+             AND a.price_gbp_cents IS NOT NULL
+             AND a.dimensions IS NOT NULL
+             AND a.weight_grams IS NOT NULL
+             AND a.ships_from_country IS NOT NULL
+             AND ar.stripe_charges_enabled) AS purchasable
         FROM artworks a
         JOIN artists ar ON ar.id = a.artist_id
         WHERE a.id = $1
@@ -62,7 +68,13 @@ pub async fn detail(
             a.price_cents, a.currency, a.availability,
             a.external_url, a.published_at,
             ar.id AS artist_id, ar.slug AS artist_slug,
-            ar.display_name AS artist_name, ar.location AS artist_location
+            ar.display_name AS artist_name, ar.location AS artist_location,
+            (a.availability = 'available'
+             AND a.price_gbp_cents IS NOT NULL
+             AND a.dimensions IS NOT NULL
+             AND a.weight_grams IS NOT NULL
+             AND a.ships_from_country IS NOT NULL
+             AND ar.stripe_charges_enabled) AS purchasable
         FROM artworks a
         JOIN artists ar ON ar.id = a.artist_id
         WHERE a.id = $1
@@ -225,6 +237,7 @@ struct ArtworkRow {
     availability: String,
     external_url: Option<String>,
     published_at: Option<DateTime<Utc>>,
+    purchasable: bool,
     artist_id: Uuid,
     artist_slug: String,
     artist_name: String,
@@ -246,6 +259,7 @@ impl ArtworkRow {
             availability: self.availability,
             external_url: self.external_url,
             published_at: self.published_at,
+            purchasable: self.purchasable,
             artist: ArtworkArtist {
                 id: self.artist_id,
                 slug: self.artist_slug,

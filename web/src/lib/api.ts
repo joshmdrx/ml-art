@@ -198,6 +198,10 @@ export interface ArtworkFull {
   availability: Availability;
   external_url: string | null;
   published_at: string | null;
+  /** M-05 — true iff this artwork can be bought directly right now
+   * (available + priced + shippable + artist onboarded to Stripe).
+   * Drives the Buy button; the checkout endpoint re-checks server-side. */
+  purchasable: boolean;
   artist: ArtworkArtist;
   images: ArtworkImage[];
 }
@@ -763,6 +767,87 @@ export async function verifyInquiry(
     throw new Error(`verify ${res.status}: ${text || res.statusText}`);
   }
   return (await res.json()) as { status: string };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Marketplace — checkout + orders (authed)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ShippingAddress {
+  name: string;
+  line1: string;
+  line2?: string;
+  city: string;
+  postal_code: string;
+  /** ISO-3166 alpha-2. */
+  country: string;
+}
+
+export interface CheckoutResponse {
+  /** Stripe hosted-checkout URL to redirect the buyer to. */
+  checkout_url: string;
+  order_id: string;
+}
+
+/** M-04/M-05 — open a Stripe Checkout Session for an artwork. Throws with
+ * the API's message on a non-2xx (e.g. artwork not purchasable). */
+export async function createCheckout(
+  artworkId: string,
+  shipping: ShippingAddress
+): Promise<CheckoutResponse> {
+  const res = await apiFetch(
+    `/v1/artworks/${encodeURIComponent(artworkId)}/checkout`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shipping_address: shipping }),
+    }
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`checkout ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as CheckoutResponse;
+}
+
+export type OrderStatus =
+  | "pending"
+  | "paid"
+  | "shipped"
+  | "delivered"
+  | "cancelled"
+  | "refunded"
+  | "disputed";
+
+export interface OrderDetail {
+  id: string;
+  status: OrderStatus;
+  amount_cents_gbp: number;
+  currency: string;
+  created_at: string;
+  shipping_address: ShippingAddress;
+  artwork: {
+    id: string;
+    title: string | null;
+    image_url: string | null;
+    artist_name: string;
+    artist_slug: string;
+  };
+}
+
+/** M-05 — the buyer's own order (confirmation page). `null` on 404
+ * (not found, or not the caller's order). */
+export async function getOrder(
+  id: string,
+  init?: RequestInit
+): Promise<OrderDetail | null> {
+  const res = await apiFetch(`/v1/orders/${encodeURIComponent(id)}`, init);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`order ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as OrderDetail;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

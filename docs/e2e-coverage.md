@@ -148,6 +148,25 @@ the `chromium-admin` project consumes it and picks up
 | Admin decline pending artist (confirm-dialog path) | [`40-admin-artists-decline-admin-signed-in`](../e2e/tests/40-admin-artists-decline-admin-signed-in.spec.ts) | ✅ uses seed's `franz-pending` |
 | Admin pause / unpause round-trip | [`41-admin-artists-pause-admin-signed-in`](../e2e/tests/41-admin-artists-pause-admin-signed-in.spec.ts) | ✅ uses seed's `greta-active` |
 
+## Marketplace — direct sales (M-01..M-11)
+
+Backend is covered at Tier 1 (`stripe_webhook_test`, `marketplace_buy_test`
++ `core::stripe` unit tests). Tier-2 specs need the Stripe test-mode loop
+(`stripe listen` + a Connect account that's completed onboarding) and the
+test-fixtures seam (`POST /v1/testfixtures/order` + `enable-payouts`),
+both landing with **M-10** — hence the ⏳ rows below.
+
+| Feature | Spec | Status |
+|---|---|---|
+| Buy button shows on a purchasable artwork, hidden otherwise (M-05) | — | ⏳ M-10. Assert: seed artwork w/ price+dims+weight+ships-from + artist `stripe_charges_enabled` shows "Buy now"; a non-onboarded artist's work shows only Inquire. `purchasable` is Tier-1 tested in `marketplace_buy_test`. |
+| Buy flow: shipping form → Stripe Checkout → `/orders/[id]` confirmation (M-05) | — | ⏳ M-10. Signed-in buyer fills address, redirected to Stripe test checkout, pays with `4242…`, returns to order confirmation. Needs the Stripe test loop. |
+| Buy page gates: signed-out → `/sign-in`, not-purchasable → back to artwork (M-05) | — | ⏳ M-10. Deep-link `/artworks/[id]/buy` while signed-out and for a non-purchasable work. |
+| Order confirmation renders status-aware copy (M-05) | — | ⏳ M-10. `/orders/[id]` for the buyer shows the right headline per status; another user gets 404 (ownership is Tier-1 tested in `marketplace_buy_test`). |
+| Studio: artist enables direct sales via Stripe onboarding (M-01/M-06) | — | ⏳ M-06 ships the studio surface; assert the onboarding-link CTA + return state. |
+| Studio: mark order shipped (M-06) | — | ⏳ M-06. |
+| Admin: refund an order (M-08) | — | ⏳ M-08. |
+| Buyer order history `/orders` (M-11) | — | ⏳ M-11. |
+
 ## OG cards + metadata (T-051)
 
 | Feature | Spec | Status |

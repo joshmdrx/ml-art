@@ -6,6 +6,7 @@ import { ArtworkGrid } from "@/components/ArtworkGrid";
 import { ArtworkImageViewer } from "@/components/ArtworkImageViewer";
 import { BackToSearchLink } from "@/components/BackToSearchLink";
 import { InquireButton } from "@/components/InquireButton";
+import { BuyButton } from "@/components/BuyButton";
 import { SaveButton } from "@/components/SaveButton";
 import { formatMedium } from "@/lib/medium";
 import {
@@ -123,9 +124,14 @@ export default async function ArtworkPage({ params }: { params: Params }) {
             )}
 
             <div className="mt-8 flex flex-col gap-3">
+              {/* M-05 — Buy is the primary CTA when the work is
+                  purchasable; Inquire drops to secondary. Otherwise
+                  Inquire stays primary. */}
+              {artwork.purchasable && <BuyButton artworkId={artwork.id} />}
               <InquireButton
                 artworkId={artwork.id}
                 artistName={artwork.artist.display_name}
+                variant={artwork.purchasable ? "secondary" : "primary"}
               />
               <SaveButton artworkId={artwork.id} />
               {/* Routes the user through the full search surface

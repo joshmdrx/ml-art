@@ -106,6 +106,8 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         // a Stripe Checkout Session (Connect destination charge). See
         // `orders::create_checkout`.
         .route("/v1/artworks/:id/checkout", post(orders::create_checkout))
+        // M-05 — buyer's own order (post-checkout confirmation page).
+        .route("/v1/orders/:id", get(orders::get_order))
         .route("/v1/neighborhoods", get(neighborhoods::index))
         .route("/v1/neighborhoods/:slug", get(neighborhoods::detail))
         // T-061 first-session calibrator. GET samples pairs from
