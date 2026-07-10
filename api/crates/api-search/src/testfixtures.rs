@@ -285,7 +285,9 @@ pub async fn enable_payouts(
     let rows = sqlx::query(
         r#"
         UPDATE artists SET
-            stripe_account_id = COALESCE(stripe_account_id, 'acct_test_fixture'),
+            -- `stripe_account_id` is UNIQUE, and each E2E run mints a new
+            -- artist, so derive a per-artist id rather than a constant.
+            stripe_account_id = COALESCE(stripe_account_id, 'acct_test_' || substr(md5(slug), 1, 16)),
             stripe_charges_enabled = true,
             stripe_payouts_enabled = true,
             stripe_onboarded_at = COALESCE(stripe_onboarded_at, now()),
@@ -343,9 +345,15 @@ pub async fn make_sellable(
 
 #[derive(Debug, Deserialize)]
 pub struct CreateOrderBody {
-    /// Buyer, resolved by email → `users.id`.
-    pub buyer_email: String,
-    pub artwork_id: Uuid,
+    /// Buyer, resolved by email → `users.id`. Omit to pick any user
+    /// (when the buyer's identity doesn't matter, e.g. mark-shipped).
+    #[serde(default)]
+    pub buyer_email: Option<String>,
+    /// Artwork to attach. Omit to pick any published artwork — lets
+    /// buyer-side specs seed an order without knowing a specific id
+    /// (the dev DB isn't the test seed).
+    #[serde(default)]
+    pub artwork_id: Option<Uuid>,
     /// Any order status. Defaults to `paid` (the common fulfilment case).
     #[serde(default = "default_order_status")]
     pub status: String,
@@ -374,16 +382,33 @@ pub async fn create_order(
     if !is_enabled() {
         return Err(ApiError::NotFound);
     }
-    let buyer_id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
-        .bind(&body.buyer_email)
+    let buyer_id: Uuid = match &body.buyer_email {
+        Some(email) => sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+            .bind(email)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(|| ApiError::BadRequest(format!("no user with email {email}")))?,
+        None => sqlx::query_scalar("SELECT id FROM users ORDER BY created_at DESC LIMIT 1")
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(|| ApiError::BadRequest("no users to attach as buyer".into()))?,
+    };
+    // Resolve the artwork (explicit id, or any published one) + its artist.
+    let (artwork_id, artist_id): (Uuid, Uuid) = match body.artwork_id {
+        Some(id) => sqlx::query_as("SELECT id, artist_id FROM artworks WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or(ApiError::NotFound)?,
+        None => sqlx::query_as(
+            "SELECT id, artist_id FROM artworks
+             WHERE deleted_at IS NULL AND status = 'published'
+             ORDER BY created_at DESC LIMIT 1",
+        )
         .fetch_optional(&state.pool)
         .await?
-        .ok_or_else(|| ApiError::BadRequest(format!("no user with email {}", body.buyer_email)))?;
-    let artist_id: Uuid = sqlx::query_scalar("SELECT artist_id FROM artworks WHERE id = $1")
-        .bind(body.artwork_id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+        .ok_or_else(|| ApiError::BadRequest("no published artwork to attach".into()))?,
+    };
 
     let commission = body.amount_cents_gbp * 15 / 100;
     let id: Uuid = sqlx::query_scalar(
@@ -401,7 +426,7 @@ pub async fn create_order(
         "#,
     )
     .bind(buyer_id)
-    .bind(body.artwork_id)
+    .bind(artwork_id)
     .bind(artist_id)
     .bind(body.amount_cents_gbp)
     .bind(commission)

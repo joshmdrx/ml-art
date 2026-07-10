@@ -19,10 +19,9 @@ test("buyer-orders-signed-in: /orders lists the buyer's order", async ({
     readFileSync("e2e/.auth/user-meta.json", "utf8"),
   ) as { email: string };
 
-  // Seed's "Blue Morning" by Alice Test.
+  // Attach any published artwork — the dev DB isn't the test seed.
   const order = await createOrder({
     buyerEmail: meta.email,
-    artworkId: "bbb11111-1111-1111-1111-111111111111",
     status: "paid",
   });
 

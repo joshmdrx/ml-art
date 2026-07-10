@@ -27,8 +27,8 @@ test("studio-mark-shipped-artist-signed-in: paid order flips to shipped", async 
     currency: "GBP",
     status: "published",
   });
+  // Buyer identity doesn't matter here — the fixture attaches any user.
   const order = await createOrder({
-    buyerEmail: "test@example.com", // seed's Test User
     artworkId: artwork.id,
     status: "paid",
   });

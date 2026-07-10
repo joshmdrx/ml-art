@@ -134,8 +134,10 @@ export async function makeSellable(artworkId: string): Promise<void> {
 }
 
 export interface CreateOrderOpts {
-  buyerEmail: string;
-  artworkId: string;
+  /** Omit to attach any user as buyer (when identity doesn't matter). */
+  buyerEmail?: string;
+  /** Omit to attach any published artwork (dev DB isn't the test seed). */
+  artworkId?: string;
   /** Any order status; defaults to `paid`. */
   status?: string;
   amountCentsGbp?: number;
