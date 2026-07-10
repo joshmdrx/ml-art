@@ -11,18 +11,21 @@ import { InquiryModal } from "./InquiryModal";
 export function InquireButton({
   artworkId,
   artistName,
+  variant = "primary",
 }: {
   artworkId: string;
   artistName: string;
+  /** "secondary" (outline) when a primary Buy button sits above it. */
+  variant?: "primary" | "secondary";
 }) {
   const [open, setOpen] = useState(false);
+  const className =
+    variant === "secondary"
+      ? "w-full py-3 px-4 border border-border bg-surface text-sm hover:bg-background transition-colors"
+      : "w-full py-3 px-4 bg-foreground text-background text-sm hover:bg-foreground/90 transition-colors";
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="w-full py-3 px-4 bg-foreground text-background text-sm hover:bg-foreground/90 transition-colors"
-      >
+      <button type="button" onClick={() => setOpen(true)} className={className}>
         Inquire
       </button>
       <InquiryModal

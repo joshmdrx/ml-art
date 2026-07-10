@@ -13,8 +13,10 @@ import {
   createStudioLocation,
   deleteStudioArtwork,
   deleteStudioLocation,
+  getStripeOnboardingLink,
   getStudioArtwork,
   listStudioLocations,
+  markOrderShipped,
   patchStudioArtwork,
   patchStudioLocation,
   removeStudioArtworkImage,
@@ -167,4 +169,25 @@ export async function patchLocation(
 export async function deleteLocation(id: string): Promise<void> {
   await deleteStudioLocation(id);
   revalidatePath("/studio/settings");
+}
+
+// ── Marketplace (M-06) ──────────────────────────────────────────────
+
+/** Start (or resume) Stripe Connect onboarding; returns the hosted URL
+ * for the client to redirect to. */
+export async function startPayoutOnboarding(): Promise<{ url: string }> {
+  return getStripeOnboardingLink();
+}
+
+/** Mark a paid order shipped. Revalidates the orders surfaces so the
+ * status flip shows on navigate-back. */
+export async function shipOrder(
+  id: string,
+  carrier: string,
+  trackingNumber: string
+): Promise<{ status: string }> {
+  const ack = await markOrderShipped(id, carrier, trackingNumber);
+  revalidatePath("/studio/orders");
+  revalidatePath(`/studio/orders/${id}`);
+  return ack;
 }

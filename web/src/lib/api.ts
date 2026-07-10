@@ -198,6 +198,10 @@ export interface ArtworkFull {
   availability: Availability;
   external_url: string | null;
   published_at: string | null;
+  /** M-05 — true iff this artwork can be bought directly right now
+   * (available + priced + shippable + artist onboarded to Stripe).
+   * Drives the Buy button; the checkout endpoint re-checks server-side. */
+  purchasable: boolean;
   artist: ArtworkArtist;
   images: ArtworkImage[];
 }
@@ -763,6 +767,306 @@ export async function verifyInquiry(
     throw new Error(`verify ${res.status}: ${text || res.statusText}`);
   }
   return (await res.json()) as { status: string };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Marketplace — checkout + orders (authed)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ShippingAddress {
+  name: string;
+  line1: string;
+  line2?: string;
+  city: string;
+  postal_code: string;
+  /** ISO-3166 alpha-2. */
+  country: string;
+}
+
+export interface CheckoutResponse {
+  /** Stripe hosted-checkout URL to redirect the buyer to. */
+  checkout_url: string;
+  order_id: string;
+}
+
+/** M-04/M-05 — open a Stripe Checkout Session for an artwork. Throws with
+ * the API's message on a non-2xx (e.g. artwork not purchasable). */
+export async function createCheckout(
+  artworkId: string,
+  shipping: ShippingAddress
+): Promise<CheckoutResponse> {
+  const res = await apiFetch(
+    `/v1/artworks/${encodeURIComponent(artworkId)}/checkout`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shipping_address: shipping }),
+    }
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`checkout ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as CheckoutResponse;
+}
+
+export type OrderStatus =
+  | "pending"
+  | "paid"
+  | "shipped"
+  | "delivered"
+  | "cancelled"
+  | "refunded"
+  | "disputed";
+
+export interface OrderDetail {
+  id: string;
+  status: OrderStatus;
+  amount_cents_gbp: number;
+  currency: string;
+  created_at: string;
+  shipping_address: ShippingAddress;
+  artwork: {
+    id: string;
+    title: string | null;
+    image_url: string | null;
+    artist_name: string;
+    artist_slug: string;
+  };
+}
+
+export interface BuyerOrderSummary {
+  id: string;
+  status: OrderStatus;
+  amount_cents_gbp: number;
+  created_at: string;
+  artwork: {
+    id: string;
+    title: string | null;
+    image_url: string | null;
+    artist_name: string;
+    artist_slug: string;
+  };
+}
+
+/** M-11 — the buyer's order history (newest first). `[]` on 401. */
+export async function listMyOrders(
+  init?: RequestInit
+): Promise<BuyerOrderSummary[]> {
+  const res = await apiFetch("/v1/me/orders", init);
+  if (res.status === 401) return [];
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`my orders ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as BuyerOrderSummary[];
+}
+
+/** M-05 — the buyer's own order (confirmation page). `null` on 404
+ * (not found, or not the caller's order). */
+export async function getOrder(
+  id: string,
+  init?: RequestInit
+): Promise<OrderDetail | null> {
+  const res = await apiFetch(`/v1/orders/${encodeURIComponent(id)}`, init);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`order ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as OrderDetail;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Marketplace — studio (artist-side, authed)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PayoutStatus {
+  onboarding_started: boolean;
+  charges_enabled: boolean;
+  payouts_enabled: boolean;
+}
+
+/** M-06 — the artist's Stripe payout status. `null` on 401 / no artist. */
+export async function getPayoutStatus(
+  init?: RequestInit
+): Promise<PayoutStatus | null> {
+  const res = await apiFetch("/v1/studio/stripe/payouts", init);
+  if (res.status === 401 || res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`payout status ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as PayoutStatus;
+}
+
+/** M-01/M-06 — start (or resume) Stripe Connect onboarding. Returns the
+ * hosted-onboarding URL to redirect the artist to. */
+export async function getStripeOnboardingLink(): Promise<{ url: string }> {
+  const res = await apiFetch("/v1/studio/stripe/onboarding-link", {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`onboarding ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as { url: string };
+}
+
+export interface StudioOrderSummary {
+  id: string;
+  status: OrderStatus;
+  amount_cents_gbp: number;
+  commission_cents_gbp: number;
+  buyer_name: string | null;
+  artwork_title: string | null;
+  created_at: string;
+}
+
+export interface StudioOrderDetail {
+  id: string;
+  status: OrderStatus;
+  amount_cents_gbp: number;
+  commission_cents_gbp: number;
+  payout_cents_gbp: number | null;
+  created_at: string;
+  shipped_at: string | null;
+  tracking_carrier: string | null;
+  tracking_number: string | null;
+  buyer_name: string | null;
+  buyer_email: string | null;
+  shipping_address: ShippingAddress;
+  artwork: { id: string; title: string | null; image_url: string | null };
+}
+
+export async function listStudioOrders(
+  init?: RequestInit
+): Promise<StudioOrderSummary[]> {
+  const res = await apiFetch("/v1/studio/orders", init);
+  if (res.status === 401 || res.status === 404) return [];
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`studio orders ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as StudioOrderSummary[];
+}
+
+export async function getStudioOrder(
+  id: string,
+  init?: RequestInit
+): Promise<StudioOrderDetail | null> {
+  const res = await apiFetch(
+    `/v1/studio/orders/${encodeURIComponent(id)}`,
+    init
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`studio order ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as StudioOrderDetail;
+}
+
+/** M-06 — mark a paid order shipped with carrier + tracking. Throws with
+ * the API message on a non-2xx (e.g. 409 if not in `paid`). */
+export async function markOrderShipped(
+  id: string,
+  carrier: string,
+  trackingNumber: string
+): Promise<{ status: string }> {
+  const res = await apiFetch(
+    `/v1/studio/orders/${encodeURIComponent(id)}/ship`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ carrier, tracking_number: trackingNumber }),
+    }
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`ship ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as { status: string };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Marketplace — admin (M-08)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AdminOrderSummary {
+  id: string;
+  status: OrderStatus;
+  amount_cents_gbp: number;
+  commission_cents_gbp: number;
+  buyer_name: string | null;
+  artist_name: string;
+  artwork_title: string | null;
+  created_at: string;
+}
+
+export interface AdminOrderDetail {
+  id: string;
+  status: OrderStatus;
+  amount_cents_gbp: number;
+  commission_cents_gbp: number;
+  payout_cents_gbp: number | null;
+  stripe_payment_intent_id: string | null;
+  refund_reason: string | null;
+  tracking_carrier: string | null;
+  tracking_number: string | null;
+  created_at: string;
+  shipping_address: ShippingAddress;
+  buyer_name: string | null;
+  buyer_email: string | null;
+  artist_name: string;
+  artwork: { id: string; title: string | null; image_url: string | null };
+}
+
+export async function listAdminOrders(
+  status?: string,
+  init?: RequestInit
+): Promise<AdminOrderSummary[]> {
+  const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+  const res = await apiFetch(`/v1/admin/orders${qs}`, init);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`admin orders ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as AdminOrderSummary[];
+}
+
+export async function getAdminOrder(
+  id: string,
+  init?: RequestInit
+): Promise<AdminOrderDetail | null> {
+  const res = await apiFetch(`/v1/admin/orders/${encodeURIComponent(id)}`, init);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`admin order ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as AdminOrderDetail;
+}
+
+/** M-08 — fire an admin refund. Throws with the API message on non-2xx
+ * (e.g. 409 if the order isn't refundable). */
+export async function refundOrder(
+  id: string,
+  reason: string
+): Promise<{ refund_id: string; status: string }> {
+  const res = await apiFetch(
+    `/v1/admin/orders/${encodeURIComponent(id)}/refund`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason }),
+    }
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`refund ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as { refund_id: string; status: string };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -431,6 +431,161 @@ pub mod templates {
         (subject, body)
     }
 
+    // ── Marketplace order emails (M-07) ────────────────────────────────
+
+    /// Format GBP minor units as `£1,234.50`. Simple thousands grouping;
+    /// v1 is UK-only so a fixed locale is fine.
+    fn format_gbp(cents: i64) -> String {
+        let pounds = cents / 100;
+        let pence = (cents % 100).abs();
+        // Group the integer part with commas.
+        let s = pounds.abs().to_string();
+        let mut grouped = String::new();
+        for (i, ch) in s.chars().enumerate() {
+            if i > 0 && (s.len() - i).is_multiple_of(3) {
+                grouped.push(',');
+            }
+            grouped.push(ch);
+        }
+        let sign = if cents < 0 { "-" } else { "" };
+        format!("{sign}£{grouped}.{pence:02}")
+    }
+
+    fn thumb(image_url: Option<&str>) -> String {
+        match image_url {
+            Some(u) => format!(
+                r#"<img src="{u}" alt="" style="width: 100%; max-width: 360px; display: block; margin-bottom: 16px;" />"#,
+            ),
+            None => String::new(),
+        }
+    }
+
+    /// Buyer — order confirmation after payment (M-07, `BuyerPaid`).
+    pub fn order_confirmation(
+        artwork_url: &str,
+        artwork_title: Option<&str>,
+        image_url: Option<&str>,
+        artist_display_name: &str,
+        amount_cents: i64,
+    ) -> (String, String) {
+        let title = artwork_title.unwrap_or("your order");
+        let subject = format!("Order confirmed: {title}");
+        let body = format!(
+            r#"<div style="font-family: -apple-system, system-ui, sans-serif; max-width: 560px; margin: 0 auto;">
+  {thumb}
+  <p>Thanks for your purchase — your order is confirmed.</p>
+  <p style="font-size: 14px; color: #444;"><a href="{url}" style="color: #111;">{title}</a> by {artist}</p>
+  <p style="font-size: 16px; margin: 12px 0;"><strong>{amount}</strong></p>
+  <p style="font-size: 13px; color: #666;">{artist} will arrange shipping and you'll get tracking by email. Questions? Just reply.</p>
+</div>"#,
+            thumb = thumb(image_url),
+            url = artwork_url,
+            title = escape_html(title),
+            artist = escape_html(artist_display_name),
+            amount = format_gbp(amount_cents),
+        );
+        (subject, body)
+    }
+
+    /// Artist — you made a sale (M-07, `ArtistSale`). `address` is the
+    /// pre-formatted multi-line shipping block; `payout_cents` is what
+    /// lands after commission.
+    pub fn sale_notification(
+        studio_order_url: &str,
+        artwork_title: Option<&str>,
+        image_url: Option<&str>,
+        buyer_name: Option<&str>,
+        address: &str,
+        payout_cents: i64,
+    ) -> (String, String) {
+        let title = artwork_title.unwrap_or("one of your works");
+        let subject = format!("You sold {title}");
+        let buyer = buyer_name.unwrap_or("A collector");
+        let body = format!(
+            r#"<div style="font-family: -apple-system, system-ui, sans-serif; max-width: 560px; margin: 0 auto;">
+  {thumb}
+  <p><strong>{buyer}</strong> just bought <strong>{title}</strong>. 🎉</p>
+  <p style="font-size: 16px; margin: 12px 0;">Your payout: <strong>{payout}</strong> <span style="color:#666; font-size: 13px;">(after Wander's 15% commission)</span></p>
+  <p style="font-size: 14px; color: #444; margin: 16px 0 4px;"><strong>Ship to:</strong></p>
+  <pre style="font-family: inherit; font-size: 14px; color: #333; margin: 0 0 16px; white-space: pre-wrap;">{address}</pre>
+  <p style="margin: 20px 0;">
+    <a href="{url}" style="display: inline-block; padding: 10px 18px; background: #111; color: #fff; text-decoration: none;">Mark as shipped</a>
+  </p>
+  <p style="font-size: 13px; color: #666;">Please ship within a few days and add tracking so the buyer knows it's on the way.</p>
+</div>"#,
+            thumb = thumb(image_url),
+            buyer = escape_html(buyer),
+            title = escape_html(title),
+            payout = format_gbp(payout_cents),
+            address = escape_html(address),
+            url = studio_order_url,
+        );
+        (subject, body)
+    }
+
+    /// Buyer — the artist marked it shipped (M-07, `BuyerShipped`).
+    pub fn order_shipped(
+        artwork_url: &str,
+        artwork_title: Option<&str>,
+        carrier: Option<&str>,
+        tracking: Option<&str>,
+    ) -> (String, String) {
+        let title = artwork_title.unwrap_or("your order");
+        let subject = format!("{title} is on its way");
+        let tracking_line = match (carrier, tracking) {
+            (Some(c), Some(t)) if !t.trim().is_empty() => format!(
+                r#"<p style="font-size: 14px; color: #444;"><strong>{c}</strong> · {t}</p>"#,
+                c = escape_html(c),
+                t = escape_html(t),
+            ),
+            _ => String::new(),
+        };
+        let body = format!(
+            r#"<div style="font-family: -apple-system, system-ui, sans-serif; max-width: 560px; margin: 0 auto;">
+  <p>Good news — <a href="{url}" style="color: #111;">{title}</a> has shipped.</p>
+  {tracking_line}
+  <p style="font-size: 13px; color: #666;">Track it with the carrier above. Let us know if anything's not right.</p>
+</div>"#,
+            url = artwork_url,
+            title = escape_html(title),
+            tracking_line = tracking_line,
+        );
+        (subject, body)
+    }
+
+    /// Buyer — refund processed (M-07, `BuyerRefunded`).
+    pub fn order_refunded_buyer(
+        artwork_title: Option<&str>,
+        amount_cents: i64,
+    ) -> (String, String) {
+        let title = artwork_title.unwrap_or("your order");
+        let subject = format!("Refund processed: {title}");
+        let body = format!(
+            r#"<div style="font-family: -apple-system, system-ui, sans-serif; max-width: 560px; margin: 0 auto;">
+  <p>We've refunded your order for <strong>{title}</strong>.</p>
+  <p style="font-size: 16px; margin: 12px 0;"><strong>{amount}</strong></p>
+  <p style="font-size: 13px; color: #666;">It can take a few business days to appear on your statement, depending on your bank.</p>
+</div>"#,
+            title = escape_html(title),
+            amount = format_gbp(amount_cents),
+        );
+        (subject, body)
+    }
+
+    /// Artist — an order was refunded + pulled back (M-07, `ArtistRefunded`).
+    pub fn order_refunded_artist(artwork_title: Option<&str>) -> (String, String) {
+        let title = artwork_title.unwrap_or("one of your works");
+        let subject = format!("Order refunded: {title}");
+        let body = format!(
+            r#"<div style="font-family: -apple-system, system-ui, sans-serif; max-width: 560px; margin: 0 auto;">
+  <p>An order for <strong>{title}</strong> has been refunded, so the sale has been reversed and the payout won't be made.</p>
+  <p style="font-size: 13px; color: #666;">If you'd already shipped, reach out and we'll help sort it out.</p>
+</div>"#,
+            title = escape_html(title),
+        );
+        (subject, body)
+    }
+
     /// T-052b — daily digest of new works from the artists this user
     /// follows. `groups` is already ordered the way it'll appear in
     /// the email (most-recently-published artist first, works within
@@ -636,5 +791,47 @@ mod tests {
             None,
         );
         assert!(body.contains("line 1<br />line 2"));
+    }
+
+    #[test]
+    fn order_confirmation_formats_gbp_amount() {
+        let (subject, body) = templates::order_confirmation(
+            "https://ml-art.example/artworks/1",
+            Some("Blue Morning"),
+            None,
+            "Alice Test",
+            123_450, // £1,234.50
+        );
+        assert!(subject.contains("Blue Morning"));
+        assert!(body.contains("£1,234.50"), "body: {body}");
+        assert!(body.contains("Alice Test"));
+    }
+
+    #[test]
+    fn sale_notification_shows_payout_and_address() {
+        let (subject, body) = templates::sale_notification(
+            "https://ml-art.example/studio/orders/1",
+            Some("Blue Morning"),
+            None,
+            Some("Jane Buyer"),
+            "Jane Buyer\n1 Test St\nLondon, E1 6AN\nGB",
+            85_000, // £850.00 payout
+        );
+        assert!(subject.contains("Blue Morning"));
+        assert!(body.contains("£850.00"));
+        assert!(body.contains("Jane Buyer"));
+        assert!(body.contains("Mark as shipped"));
+    }
+
+    #[test]
+    fn order_shipped_includes_tracking() {
+        let (_, body) = templates::order_shipped(
+            "https://ml-art.example/artworks/1",
+            Some("Blue Morning"),
+            Some("Royal Mail"),
+            Some("RM123"),
+        );
+        assert!(body.contains("Royal Mail"));
+        assert!(body.contains("RM123"));
     }
 }

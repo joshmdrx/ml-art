@@ -149,11 +149,12 @@ up `*artist-signed-in*.spec.ts`.
 **Test-fixture insert seam**: two POST routes in `api-search`
 (`/v1/testfixtures/artwork` + `/v1/testfixtures/inquiry`), guarded
 by `WANDER_TEST_FIXTURES_ENABLED=1`. Routes never register in prod.
-Wrapped by `e2e/lib/fixtures.ts` (`createArtwork` + `createInquiry`)
-so specs can seed world state under the fixture artist without
-driving through image-upload / moderation / Jina paths that make
-E2E flaky. Currently used by specs 49–51 (unread badge, URL-driven
-modal, publish nudge).
+Wrapped by `e2e/lib/fixtures.ts` (`createArtwork`, `createInquiry`,
+and the M-10 marketplace seams `enablePayouts` / `makeSellable` /
+`createOrder`) so specs can seed world state under the fixture artist
+without driving through image-upload / moderation / Jina paths that
+make E2E flaky. Currently used by specs 49–54 (unread badge, URL-driven
+modal, publish nudge, Buy-button visibility, mark-shipped, buyer orders).
 
 **Where:**
 - `e2e/playwright.config.ts` — config + reporters
@@ -163,7 +164,7 @@ modal, publish nudge).
 **Retry policy:** retry failed tests once; two failures = real bug,
 not flakiness.
 
-**Acceptance:** flows pass against the local stack in under 60s. Current: 48 specs + 3 setup fixtures (2026-07-01).
+**Acceptance:** flows pass against the local stack in under 60s. Current: 53 specs (2 marketplace specs — buy-happy-path, admin-refund — skipped behind `STRIPE_E2E`, needing the live Stripe test-mode loop) + 3 setup fixtures (2026-07-10).
 
 ### Tier 3 — Vitest units (web)
 

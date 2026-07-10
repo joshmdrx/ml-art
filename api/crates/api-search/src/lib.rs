@@ -14,6 +14,7 @@ pub mod me;
 pub mod meta;
 pub mod neighborhoods;
 pub mod onboarding;
+pub mod orders;
 pub mod recommendations;
 pub mod search;
 pub mod search_map;
@@ -101,6 +102,14 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route("/v1/artists/:slug/series/:series_slug", get(series::detail))
         .route("/v1/artworks/:id", get(artwork::detail))
         .route("/v1/artworks/:id/similar", get(artwork::similar))
+        // M-04 — buyer checkout. Authed; creates a pending order + opens
+        // a Stripe Checkout Session (Connect destination charge). See
+        // `orders::create_checkout`.
+        .route("/v1/artworks/:id/checkout", post(orders::create_checkout))
+        // M-05 — buyer's own order (post-checkout confirmation page).
+        .route("/v1/orders/:id", get(orders::get_order))
+        // M-11 — buyer's order history.
+        .route("/v1/me/orders", get(orders::list_my_orders))
         .route("/v1/neighborhoods", get(neighborhoods::index))
         .route("/v1/neighborhoods/:slug", get(neighborhoods::detail))
         // T-061 first-session calibrator. GET samples pairs from
@@ -189,6 +198,11 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         // Email Worker authenticates with a shared-secret header. See
         // `webhooks::inbound_email`.
         .route("/v1/webhooks/email/inbound", post(webhooks::inbound_email))
+        // M-03 — Stripe marketplace events. Unauthenticated; the
+        // `Stripe-Signature` HMAC over the raw body is the credential.
+        // Replay-idempotent via `stripe_webhook_events`. See
+        // `webhooks::stripe::handle`.
+        .route("/v1/webhooks/stripe", post(webhooks::stripe::handle))
         // T-050.3 — batched client-side events. Rate-limited by the
         // same per-anon search-tier policy (browsing intensity tracks
         // event volume well). Server derives identity from the
@@ -226,6 +240,21 @@ pub fn build_app(state: Arc<AppState>) -> Router {
             "/v1/studio/settings",
             axum::routing::patch(studio::settings::patch),
         )
+        // ── Marketplace (M-01/M-06): Stripe Connect Express onboarding +
+        // payout status for the studio payouts settings page.
+        .route(
+            "/v1/studio/stripe/onboarding-link",
+            post(studio::stripe::onboarding_link),
+        )
+        .route(
+            "/v1/studio/stripe/payouts",
+            get(studio::stripe::payout_status),
+        )
+        // ── Studio sales dashboard (M-06): the artist's orders + the
+        // mark-shipped transition.
+        .route("/v1/studio/orders", get(studio::orders::list))
+        .route("/v1/studio/orders/:id", get(studio::orders::detail))
+        .route("/v1/studio/orders/:id/ship", post(studio::orders::ship))
         // ── Studio series (T-058). Artist-curated groupings of their
         // own works. Multi-select membership via PUT (replace
         // semantics). Single-artwork series assignment also possible
@@ -311,7 +340,11 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         // T-084.1 — operator stats page. One-round-trip aggregate
         // over users / artists / artworks / inquiries + a 4-week
         // events funnel + recent admin activity.
-        .route("/v1/admin/stats", get(admin::stats::handle));
+        .route("/v1/admin/stats", get(admin::stats::handle))
+        // M-08 — admin marketplace order queue + refund flow.
+        .route("/v1/admin/orders", get(admin::orders::list))
+        .route("/v1/admin/orders/:id", get(admin::orders::detail))
+        .route("/v1/admin/orders/:id/refund", post(admin::orders::refund));
 
     // Test-fixture insert routes — only registered when
     // `WANDER_TEST_FIXTURES_ENABLED` is set (E2E only; empty in prod).

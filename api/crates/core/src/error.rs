@@ -29,6 +29,14 @@ pub enum ApiError {
     #[error("rate limited; retry after {retry_after_secs}s")]
     RateLimited { retry_after_secs: u64 },
 
+    /// A required external dependency isn't configured/available, so the
+    /// endpoint can't serve. Renders as 503. The marketplace endpoints
+    /// return this when `STRIPE_SECRET_KEY` is unset (M-01) — dev
+    /// instances without Stripe credentials answer 503 at the entry
+    /// rather than 500-ing deeper in.
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
+
     #[error("internal error: {0}")]
     Internal(#[from] anyhow::Error),
 
@@ -45,6 +53,7 @@ impl ApiError {
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
             ApiError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
+            ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Internal(_) | ApiError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -57,6 +66,7 @@ impl ApiError {
             ApiError::NotFound => "Not Found",
             ApiError::Conflict(_) => "Conflict",
             ApiError::RateLimited { .. } => "Too Many Requests",
+            ApiError::ServiceUnavailable(_) => "Service Unavailable",
             ApiError::Internal(_) | ApiError::Database(_) => "Internal Server Error",
         }
     }

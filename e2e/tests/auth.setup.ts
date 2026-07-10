@@ -16,10 +16,13 @@
 
 import { test as setup, expect } from "@playwright/test";
 import { clerkSetup, setupClerkTestingToken } from "@clerk/testing/playwright";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 const AUTH_FILE = "e2e/.auth/user.json";
+// M-10 — the buyer's email, so marketplace specs can seed an order for
+// this exact signed-in user via the `create-order` fixture.
+const META_FILE = "e2e/.auth/user-meta.json";
 
 // One user per run. Unique enough to avoid Clerk's "already exists" errors
 // across re-runs; short enough to fit Clerk's email constraints.
@@ -120,6 +123,7 @@ setup("authenticate as a fresh test user", async ({ page }) => {
   });
 
   await page.context().storageState({ path: AUTH_FILE });
+  writeFileSync(META_FILE, JSON.stringify({ email }), "utf8");
   // eslint-disable-next-line no-console
   console.log(`signed up as ${email}, auth state → ${AUTH_FILE}`);
 });

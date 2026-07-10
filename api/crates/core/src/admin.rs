@@ -82,6 +82,8 @@ pub mod action {
     pub const IMAGE_OVERRIDE_APPROVE: &str = "image.override_approve";
     pub const VENUE_APPROVE: &str = "venue.approve";
     pub const VENUE_DECLINE: &str = "venue.decline";
+    /// M-08 — admin-initiated marketplace refund.
+    pub const ORDER_REFUND: &str = "order.refund";
 }
 
 pub mod target {
@@ -89,4 +91,5 @@ pub mod target {
     pub const IMAGE: &str = "image";
     pub const VENUE: &str = "venue";
     pub const USER: &str = "user";
+    pub const ORDER: &str = "order";
 }

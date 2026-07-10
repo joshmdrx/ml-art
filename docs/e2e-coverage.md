@@ -148,6 +148,28 @@ the `chromium-admin` project consumes it and picks up
 | Admin decline pending artist (confirm-dialog path) | [`40-admin-artists-decline-admin-signed-in`](../e2e/tests/40-admin-artists-decline-admin-signed-in.spec.ts) | ✅ uses seed's `franz-pending` |
 | Admin pause / unpause round-trip | [`41-admin-artists-pause-admin-signed-in`](../e2e/tests/41-admin-artists-pause-admin-signed-in.spec.ts) | ✅ uses seed's `greta-active` |
 
+## Marketplace — direct sales (M-01..M-11)
+
+Backend is covered at Tier 1 (`stripe_webhook_test`, `marketplace_buy_test`,
+`studio_orders_test`, `admin_orders_test` + `core::stripe` unit tests).
+M-10 landed the test-fixtures seam (`enable-payouts`, `make-sellable`,
+`order`) + the specs that run without Stripe. Two flows still need the
+live Stripe test-mode loop (`stripe listen` + a Connect account that's
+**completed** onboarding) — they're written but skipped behind
+`STRIPE_E2E`, since the fixture's fake `acct_test_fixture` /
+`pi_test_*` can't take a real destination charge or refund.
+
+| Feature | Spec | Status |
+|---|---|---|
+| Buy button shows on a purchasable artwork, hidden otherwise (M-05) | [`52-buy-button`](../e2e/tests/52-buy-button-artist-signed-in.spec.ts) | ✅ fixtures `enable-payouts` + `make-sellable`; asserts Buy vs Inquire-only. |
+| Buy flow: shipping form → Stripe Checkout → `/orders/[id]` confirmation (M-05) | [`55-buy-happy-path`](../e2e/tests/55-buy-happy-path-signed-in.spec.ts) | ⏳ written, skipped behind `STRIPE_E2E` — needs an onboarded Connect account + `stripe listen`. |
+| Buy page gates: signed-out → `/sign-in`, not-purchasable → back to artwork (M-05) | — | ⏳ Deep-link `/artworks/[id]/buy` while signed-out and for a non-purchasable work. |
+| Order confirmation renders status-aware copy (M-05) | — | ⏳ folded into `55-buy-happy-path`; ownership 404 is Tier-1 tested in `marketplace_buy_test`. |
+| Studio: artist enables direct sales via Stripe onboarding (M-01/M-06) | — | ⏳ `/studio/settings/payouts` + `EnableSalesButton` built; the onboarding *redirect* needs Stripe. `payout_status` Tier-1 tested in `studio_orders_test`. |
+| Studio: mark order shipped (M-06) | [`53-studio-mark-shipped`](../e2e/tests/53-studio-mark-shipped-artist-signed-in.spec.ts) | ✅ seeds a paid order via fixture, fills tracking, asserts the success toast. |
+| Admin: refund an order + dispute banner (M-08) | [`56-admin-refund`](../e2e/tests/56-admin-refund-admin-signed-in.spec.ts) | ⏳ written, skipped behind `STRIPE_E2E` — the refund calls Stripe on a real charge. List/detail/gates Tier-1 tested in `admin_orders_test`. |
+| Buyer order history `/orders` (M-11) | [`54-buyer-orders`](../e2e/tests/54-buyer-orders-signed-in.spec.ts) | ✅ seeds an order for the signed-in buyer, asserts it lists with a link. |
+
 ## OG cards + metadata (T-051)
 
 | Feature | Spec | Status |

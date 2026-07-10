@@ -34,6 +34,24 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
+/// M-07 — which marketplace-order email a `JobEvent::OrderNotify` sends.
+/// One reason per recipient; the call site's idempotency key is
+/// `order_notify:{order_id}:{kind}` so a webhook replay never double-sends.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OrderNotifyKind {
+    /// Buyer — order confirmation after payment.
+    BuyerPaid,
+    /// Artist — you made a sale (buyer + shipping address, ship soon).
+    ArtistSale,
+    /// Buyer — the artist marked it shipped (carrier + tracking).
+    BuyerShipped,
+    /// Buyer — refund processed.
+    BuyerRefunded,
+    /// Artist — an order was refunded + pulled back.
+    ArtistRefunded,
+}
+
 /// Every kind of background work the system can enqueue. Tagged by
 /// `kind` so the on-the-wire shape works for both `jobs.payload`
 /// (jsonb) and SQS message bodies.
@@ -112,6 +130,13 @@ pub enum JobEvent {
     /// price filter operates on current values. Cron not live yet;
     /// manual invoke via `jobs-worker --enqueue` until artists onboard.
     FxRatesRefresh {},
+    /// M-07 — send one marketplace-order email. Enqueued from the Stripe
+    /// webhook (paid / refunded) and the studio ship handler (shipped),
+    /// keyed on `(order_id, kind)` so replays don't double-send.
+    OrderNotify {
+        order_id: Uuid,
+        kind: OrderNotifyKind,
+    },
 }
 
 impl JobEvent {
@@ -134,6 +159,7 @@ impl JobEvent {
             JobEvent::UserProfileRefresh { .. } => "user_profile_refresh",
             JobEvent::UserProfileRefreshKickoff {} => "user_profile_refresh_kickoff",
             JobEvent::FxRatesRefresh {} => "fx_rates_refresh",
+            JobEvent::OrderNotify { .. } => "order_notify",
         }
     }
 }
@@ -627,6 +653,13 @@ pub async fn handle(event: JobEvent, deps: &JobsDeps) -> Result<(), HandlerError
                 .await
                 .map_err(|e| HandlerError::Domain(format!("fx_rates_refresh: {e}")))?;
         }
+        JobEvent::OrderNotify { order_id, kind } => {
+            // M-07 — transactional marketplace-order email. Domain logic
+            // in `order_handlers`; this arm is just dispatch.
+            order_handlers::send(deps, order_id, kind)
+                .await
+                .map_err(|e| HandlerError::Domain(format!("order_notify: {e}")))?;
+        }
     }
     Ok(())
 }
@@ -929,6 +962,165 @@ mod inquiry_handlers {
             "inquiry delivered to artist"
         );
         Ok(())
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Marketplace order email handlers (M-07)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Same shape as `inquiry_handlers`: driven by jobs, DB IO here, pure
+// templates in `core::emails`. One `OrderNotify { order_id, kind }` job
+// per (recipient, reason). Missing recipient email (seeded demo artist
+// with no linked user) → log + succeed; no retry would help.
+
+mod order_handlers {
+    use super::{JobsDeps, OrderNotifyKind};
+    use crate::emails::templates;
+    use crate::images::url_for_s3_key;
+    use sqlx::FromRow;
+    use uuid::Uuid;
+
+    #[derive(FromRow)]
+    struct OrderCtx {
+        amount_cents_gbp: i64,
+        commission_cents_gbp: i64,
+        payout_cents_gbp: Option<i64>,
+        tracking_carrier: Option<String>,
+        tracking_number: Option<String>,
+        shipping_address: serde_json::Value,
+        buyer_email: Option<String>,
+        buyer_name: Option<String>,
+        artist_email: Option<String>,
+        artist_name: String,
+        artwork_id: Uuid,
+        artwork_title: Option<String>,
+        primary_s3_key: Option<String>,
+    }
+
+    async fn load(pool: &crate::db::Pool, order_id: Uuid) -> Result<OrderCtx, sqlx::Error> {
+        sqlx::query_as::<_, OrderCtx>(
+            r#"
+            SELECT
+                o.amount_cents_gbp,
+                o.commission_cents_gbp,
+                o.payout_cents_gbp,
+                o.tracking_carrier,
+                o.tracking_number,
+                o.shipping_address,
+                bu.email        AS buyer_email,
+                bu.display_name AS buyer_name,
+                au.email        AS artist_email,
+                ar.display_name AS artist_name,
+                a.id            AS artwork_id,
+                a.title         AS artwork_title,
+                ai.s3_key       AS primary_s3_key
+            FROM orders o
+            JOIN users    bu ON bu.id = o.buyer_user_id
+            JOIN artists  ar ON ar.id = o.artist_id
+            LEFT JOIN users au ON au.id = ar.user_id
+            JOIN artworks a  ON a.id = o.artwork_id
+            LEFT JOIN artwork_images ai
+                   ON ai.artwork_id = a.id AND ai.is_primary
+            WHERE o.id = $1
+            "#,
+        )
+        .bind(order_id)
+        .fetch_one(pool)
+        .await
+    }
+
+    pub async fn send(
+        deps: &JobsDeps,
+        order_id: Uuid,
+        kind: OrderNotifyKind,
+    ) -> anyhow::Result<()> {
+        let ctx = load(&deps.pool, order_id).await?;
+        let base = deps.web_base_url.trim_end_matches('/');
+        let artwork_url = format!("{base}/artworks/{}", ctx.artwork_id);
+        let title = ctx.artwork_title.as_deref();
+        let image_url = ctx.primary_s3_key.as_deref().map(url_for_s3_key);
+
+        match kind {
+            OrderNotifyKind::BuyerPaid => {
+                let Some(to) = ctx.buyer_email.as_deref() else {
+                    return Ok(());
+                };
+                let (subject, body) = templates::order_confirmation(
+                    &artwork_url,
+                    title,
+                    image_url.as_deref(),
+                    &ctx.artist_name,
+                    ctx.amount_cents_gbp,
+                );
+                deps.emails.send(to, &subject, &body, None).await?;
+            }
+            OrderNotifyKind::ArtistSale => {
+                let Some(to) = ctx.artist_email.as_deref() else {
+                    tracing::warn!(%order_id, "skip artist sale email — no artist user email");
+                    return Ok(());
+                };
+                let studio_url = format!("{base}/studio/orders/{order_id}");
+                let payout = ctx
+                    .payout_cents_gbp
+                    .unwrap_or(ctx.amount_cents_gbp - ctx.commission_cents_gbp);
+                let (subject, body) = templates::sale_notification(
+                    &studio_url,
+                    title,
+                    image_url.as_deref(),
+                    ctx.buyer_name.as_deref(),
+                    &format_address(&ctx.shipping_address),
+                    payout,
+                );
+                deps.emails.send(to, &subject, &body, None).await?;
+            }
+            OrderNotifyKind::BuyerShipped => {
+                let Some(to) = ctx.buyer_email.as_deref() else {
+                    return Ok(());
+                };
+                let (subject, body) = templates::order_shipped(
+                    &artwork_url,
+                    title,
+                    ctx.tracking_carrier.as_deref(),
+                    ctx.tracking_number.as_deref(),
+                );
+                deps.emails.send(to, &subject, &body, None).await?;
+            }
+            OrderNotifyKind::BuyerRefunded => {
+                let Some(to) = ctx.buyer_email.as_deref() else {
+                    return Ok(());
+                };
+                let (subject, body) = templates::order_refunded_buyer(title, ctx.amount_cents_gbp);
+                deps.emails.send(to, &subject, &body, None).await?;
+            }
+            OrderNotifyKind::ArtistRefunded => {
+                let Some(to) = ctx.artist_email.as_deref() else {
+                    return Ok(());
+                };
+                let (subject, body) = templates::order_refunded_artist(title);
+                deps.emails.send(to, &subject, &body, None).await?;
+            }
+        }
+
+        tracing::info!(%order_id, ?kind, "order notification email sent");
+        Ok(())
+    }
+
+    /// Flatten the stored shipping-address jsonb into a display block.
+    fn format_address(v: &serde_json::Value) -> String {
+        let get = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("");
+        let mut lines = vec![get("name").to_string(), get("line1").to_string()];
+        let line2 = get("line2");
+        if !line2.is_empty() {
+            lines.push(line2.to_string());
+        }
+        lines.push(format!("{}, {}", get("city"), get("postal_code")));
+        lines.push(get("country").to_string());
+        lines
+            .into_iter()
+            .filter(|l| !l.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 

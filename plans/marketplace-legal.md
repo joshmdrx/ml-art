@@ -34,25 +34,40 @@ Three documents:
   Stripe Tax handles per-artist VAT if any individual artist crosses
   their own threshold.
 
-## Where to go
+## Where to go — cheapest→safest (2026)
 
-Three tiers, pick one:
+There is **no** fully-automated service that safely covers a marketplace
+taking third-party money. Generators do the privacy/cookie/basic-terms
+boilerplate; they do **not** handle the two risk clauses (chargeback
+liability + the CCR bespoke-exemption). So the game is: cheap draft
+engine for the bulk, one small paid review for the risky bit.
 
-1. **UK marketplace-lawyer template service** (~£1-2k, 1-2 weeks):
-   - **Sparqa Legal** — marketplace-specific templates + solicitor
-     review add-on. https://www.sparqalegal.com
-   - **Farillio** — small-business legal templates including
-     marketplace T&Cs. https://www.farillio.com
-   - **Rocket Lawyer UK** — cheapest but least specific.
-2. **Direct solicitor** (~£3-5k, 2-3 weeks) — commercial-tech
-   solicitor writes bespoke. Overkill for v1 but worth it if we
-   scale.
-3. **DIY + Fiverr review** (~£200, unpredictable quality) — DO NOT
-   RECOMMEND for a marketplace taking third-party money. Chargeback
-   liability alone is a real risk.
+**Recommended (cheapest safe path, ~£25–400, ~1 week):**
 
-**Recommended: Sparqa Legal, marketplace tier + the "solicitor review"
-add-on.**
+1. **Draft with Sparqa Legal** (~£25–40/mo, cancel after) —
+   https://www.sparqalegal.com. It has UK **marketplace-specific**
+   templates (platform T&Cs, seller agreement, buyer terms) *and* an
+   unlimited solicitor Q&A helpline. Use the helpline to get the two
+   risk questions below answered in writing. This is the one-stop "easy
+   service" you're after. One month's subscription usually does it.
+   - Alternatives if you want cheaper drafts: **Genie AI**
+     (https://www.genieai.co — free/low-cost AI drafting, UK marketplace
+     templates) or **Docular / SEQ Legal** (https://docular.net — very
+     cheap template library, marketplace website T&Cs).
+   - **Termly / iubenda** — fine for the privacy policy + cookie banner
+     only. Do NOT rely on them for the marketplace/seller-of-record
+     terms.
+
+2. **Then a fixed-fee solicitor review of just the two risk clauses**
+   (~£150–400, optional if Sparqa's helpline answers them clearly):
+   **LawBite** (https://www.lawbite.co.uk) or **Lexoo** — post the two
+   questions + your drafts, get a commercial-tech solicitor to sign off
+   the chargeback + CCR clauses. Don't pay for a full bespoke draft
+   (~£3–5k) at this stage; you don't have the volume to justify it.
+
+**Do NOT** DIY the whole thing off a generic generator and ship it —
+chargeback liability alone is a real, uncapped risk if the wording is
+wrong.
 
 ## Draft email you can send today
 
