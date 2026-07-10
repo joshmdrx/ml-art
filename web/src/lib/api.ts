@@ -963,6 +963,86 @@ export async function markOrderShipped(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Marketplace — admin (M-08)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AdminOrderSummary {
+  id: string;
+  status: OrderStatus;
+  amount_cents_gbp: number;
+  commission_cents_gbp: number;
+  buyer_name: string | null;
+  artist_name: string;
+  artwork_title: string | null;
+  created_at: string;
+}
+
+export interface AdminOrderDetail {
+  id: string;
+  status: OrderStatus;
+  amount_cents_gbp: number;
+  commission_cents_gbp: number;
+  payout_cents_gbp: number | null;
+  stripe_payment_intent_id: string | null;
+  refund_reason: string | null;
+  tracking_carrier: string | null;
+  tracking_number: string | null;
+  created_at: string;
+  shipping_address: ShippingAddress;
+  buyer_name: string | null;
+  buyer_email: string | null;
+  artist_name: string;
+  artwork: { id: string; title: string | null; image_url: string | null };
+}
+
+export async function listAdminOrders(
+  status?: string,
+  init?: RequestInit
+): Promise<AdminOrderSummary[]> {
+  const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+  const res = await apiFetch(`/v1/admin/orders${qs}`, init);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`admin orders ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as AdminOrderSummary[];
+}
+
+export async function getAdminOrder(
+  id: string,
+  init?: RequestInit
+): Promise<AdminOrderDetail | null> {
+  const res = await apiFetch(`/v1/admin/orders/${encodeURIComponent(id)}`, init);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`admin order ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as AdminOrderDetail;
+}
+
+/** M-08 — fire an admin refund. Throws with the API message on non-2xx
+ * (e.g. 409 if the order isn't refundable). */
+export async function refundOrder(
+  id: string,
+  reason: string
+): Promise<{ refund_id: string; status: string }> {
+  const res = await apiFetch(
+    `/v1/admin/orders/${encodeURIComponent(id)}/refund`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason }),
+    }
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`refund ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as { refund_id: string; status: string };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Collections (authed)
 // ─────────────────────────────────────────────────────────────────────────────
 

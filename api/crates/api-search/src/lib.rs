@@ -338,7 +338,11 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         // T-084.1 — operator stats page. One-round-trip aggregate
         // over users / artists / artworks / inquiries + a 4-week
         // events funnel + recent admin activity.
-        .route("/v1/admin/stats", get(admin::stats::handle));
+        .route("/v1/admin/stats", get(admin::stats::handle))
+        // M-08 — admin marketplace order queue + refund flow.
+        .route("/v1/admin/orders", get(admin::orders::list))
+        .route("/v1/admin/orders/:id", get(admin::orders::detail))
+        .route("/v1/admin/orders/:id/refund", post(admin::orders::refund));
 
     // Test-fixture insert routes — only registered when
     // `WANDER_TEST_FIXTURES_ENABLED` is set (E2E only; empty in prod).

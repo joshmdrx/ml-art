@@ -74,6 +74,13 @@ export default async function AdminIndexPage() {
           </Link>
           {" · "}
           <Link
+            href="/admin/orders"
+            className="text-sm text-muted hover:text-foreground underline underline-offset-2"
+          >
+            Orders →
+          </Link>
+          {" · "}
+          <Link
             href="/admin/stats"
             className="text-sm text-muted hover:text-foreground underline underline-offset-2"
           >

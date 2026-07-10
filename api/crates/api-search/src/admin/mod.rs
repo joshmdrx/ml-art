@@ -15,4 +15,5 @@
 pub mod artists;
 pub mod audit_log;
 pub mod images;
+pub mod orders;
 pub mod stats;

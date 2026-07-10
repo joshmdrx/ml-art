@@ -336,6 +336,25 @@ impl StripeClient {
         .await
     }
 
+    /// M-08 — refund a marketplace order's charge. `reverse_transfer`
+    /// pulls the artist's routed balance back, `refund_application_fee`
+    /// returns Wander's commission too — i.e. a full unwind of the
+    /// destination charge. Idempotency is keyed on the order so an admin
+    /// double-clicking Refund doesn't fire two refunds.
+    pub async fn create_refund(
+        &self,
+        payment_intent: &str,
+        order_id: uuid::Uuid,
+    ) -> Result<Refund, StripeError> {
+        let params = [
+            ("payment_intent", payment_intent.to_string()),
+            ("reverse_transfer", "true".to_string()),
+            ("refund_application_fee", "true".to_string()),
+        ];
+        self.post_form("/v1/refunds", &params, Some(&format!("refund:{order_id}")))
+            .await
+    }
+
     /// Map a response to `Ok(parsed)` on 2xx, `Err(Api{..})` otherwise.
     async fn read<T: serde::de::DeserializeOwned>(
         resp: reqwest::Response,
@@ -400,6 +419,15 @@ pub struct CheckoutSessionRequest<'a> {
     pub success_url: &'a str,
     pub cancel_url: &'a str,
     pub shipping: StripeShipping<'a>,
+}
+
+/// A refund (`re_*`). Returned by [`StripeClient::create_refund`].
+#[derive(Debug, serde::Deserialize)]
+pub struct Refund {
+    pub id: String,
+    /// `pending` | `succeeded` | `failed` | `canceled` — the terminal
+    /// state arrives via the `charge.refunded` webhook.
+    pub status: Option<String>,
 }
 
 /// A Checkout Session. Returned by [`StripeClient::create_checkout_session`].

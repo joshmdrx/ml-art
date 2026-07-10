@@ -16,6 +16,7 @@ import { revalidatePath } from "next/cache";
 import {
   adminArtistTransition,
   adminImageOverride,
+  refundOrder,
   type AdminArtistTransition,
 } from "@/lib/api";
 
@@ -37,5 +38,17 @@ export async function overrideImageRejection(
   const result = await adminImageOverride(id);
   revalidatePath("/admin/images");
   revalidatePath("/admin");
+  return result;
+}
+
+/** M-08 — fire an admin refund; the `charge.refunded` webhook then flips
+ * the order to `refunded` + emails the buyer/artist. */
+export async function refundOrderAction(
+  id: string,
+  reason: string,
+): Promise<{ refund_id: string; status: string }> {
+  const result = await refundOrder(id, reason);
+  revalidatePath(`/admin/orders/${id}`);
+  revalidatePath("/admin/orders");
   return result;
 }
