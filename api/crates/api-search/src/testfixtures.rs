@@ -38,6 +38,10 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/testfixtures/artwork", post(create_artwork))
         .route("/v1/testfixtures/inquiry", post(create_inquiry))
+        // M-10 — marketplace fixtures.
+        .route("/v1/testfixtures/enable-payouts", post(enable_payouts))
+        .route("/v1/testfixtures/make-sellable", post(make_sellable))
+        .route("/v1/testfixtures/order", post(create_order))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -104,12 +108,11 @@ pub async fn create_artwork(
         ));
     }
 
-    let (artist_id,): (Uuid,) =
-        sqlx::query_as("SELECT id FROM artists WHERE slug = $1")
-            .bind(&body.artist_slug)
-            .fetch_optional(&state.pool)
-            .await?
-            .ok_or(ApiError::NotFound)?;
+    let (artist_id,): (Uuid,) = sqlx::query_as("SELECT id FROM artists WHERE slug = $1")
+        .bind(&body.artist_slug)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or(ApiError::NotFound)?;
 
     let (id,): (Uuid,) = sqlx::query_as(
         r#"
@@ -213,12 +216,11 @@ pub async fn create_inquiry(
         ));
     }
 
-    let (artist_id,): (Uuid,) =
-        sqlx::query_as("SELECT artist_id FROM artworks WHERE id = $1")
-            .bind(body.artwork_id)
-            .fetch_optional(&state.pool)
-            .await?
-            .ok_or(ApiError::NotFound)?;
+    let (artist_id,): (Uuid,) = sqlx::query_as("SELECT artist_id FROM artworks WHERE id = $1")
+        .bind(body.artwork_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or(ApiError::NotFound)?;
 
     let (id,): (Uuid,) = if body.state == "delivered" {
         sqlx::query_as(
@@ -259,4 +261,153 @@ pub async fn create_inquiry(
     };
 
     Ok(Json(CreateInquiryResp { id }))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// M-10 — marketplace fixtures
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct EnablePayoutsBody {
+    /// Artist to flip "as if" Stripe onboarding completed.
+    pub artist_slug: String,
+}
+
+/// Flip an artist to charges/payouts-enabled without the real Stripe
+/// Connect flow — the E2E equivalent of `account.updated` arriving.
+pub async fn enable_payouts(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<EnablePayoutsBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !is_enabled() {
+        return Err(ApiError::NotFound);
+    }
+    let rows = sqlx::query(
+        r#"
+        UPDATE artists SET
+            stripe_account_id = COALESCE(stripe_account_id, 'acct_test_fixture'),
+            stripe_charges_enabled = true,
+            stripe_payouts_enabled = true,
+            stripe_onboarded_at = COALESCE(stripe_onboarded_at, now()),
+            updated_at = now()
+        WHERE slug = $1 AND deleted_at IS NULL
+        "#,
+    )
+    .bind(&body.artist_slug)
+    .execute(&state.pool)
+    .await?
+    .rows_affected();
+    if rows == 0 {
+        return Err(ApiError::NotFound);
+    }
+    Ok(Json(serde_json::json!({ "status": "ok" })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MakeSellableBody {
+    pub artwork_id: Uuid,
+}
+
+/// Fill in the fields an artwork needs to be *purchasable* (weight,
+/// ships-from, GBP price, dimensions). Pair with `enable-payouts` on the
+/// owning artist to make the Buy button show.
+pub async fn make_sellable(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<MakeSellableBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !is_enabled() {
+        return Err(ApiError::NotFound);
+    }
+    let rows = sqlx::query(
+        r#"
+        UPDATE artworks SET
+            weight_grams = COALESCE(weight_grams, 1500),
+            ships_from_country = COALESCE(ships_from_country, 'GB'),
+            price_gbp_cents = COALESCE(price_gbp_cents, price_cents, 50000),
+            dimensions = COALESCE(dimensions, '{"width_cm":30,"height_cm":40}'::jsonb),
+            availability = 'available',
+            status = 'published',
+            updated_at = now()
+        WHERE id = $1 AND deleted_at IS NULL
+        "#,
+    )
+    .bind(body.artwork_id)
+    .execute(&state.pool)
+    .await?
+    .rows_affected();
+    if rows == 0 {
+        return Err(ApiError::NotFound);
+    }
+    Ok(Json(serde_json::json!({ "status": "ok" })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateOrderBody {
+    /// Buyer, resolved by email → `users.id`.
+    pub buyer_email: String,
+    pub artwork_id: Uuid,
+    /// Any order status. Defaults to `paid` (the common fulfilment case).
+    #[serde(default = "default_order_status")]
+    pub status: String,
+    #[serde(default = "default_amount_cents")]
+    pub amount_cents_gbp: i64,
+}
+
+fn default_order_status() -> String {
+    "paid".to_string()
+}
+fn default_amount_cents() -> i64 {
+    50_000
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateOrderResp {
+    pub id: Uuid,
+}
+
+/// Insert an order in any state — the seam the buyer-orders, mark-shipped,
+/// and admin-refund specs build on without needing the Stripe loop.
+pub async fn create_order(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<CreateOrderBody>,
+) -> Result<Json<CreateOrderResp>, ApiError> {
+    if !is_enabled() {
+        return Err(ApiError::NotFound);
+    }
+    let buyer_id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind(&body.buyer_email)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest(format!("no user with email {}", body.buyer_email)))?;
+    let artist_id: Uuid = sqlx::query_scalar("SELECT artist_id FROM artworks WHERE id = $1")
+        .bind(body.artwork_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+
+    let commission = body.amount_cents_gbp * 15 / 100;
+    let id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO orders (
+            buyer_user_id, artwork_id, artist_id,
+            amount_cents_gbp, commission_cents_gbp, status,
+            shipping_address, stripe_payment_intent_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6,
+                '{"name":"Test Buyer","line1":"1 Test St","city":"London",
+                  "postal_code":"E1 6AN","country":"GB"}'::jsonb,
+                'pi_test_' || substr(gen_random_uuid()::text, 1, 12))
+        RETURNING id
+        "#,
+    )
+    .bind(buyer_id)
+    .bind(body.artwork_id)
+    .bind(artist_id)
+    .bind(body.amount_cents_gbp)
+    .bind(commission)
+    .bind(&body.status)
+    .fetch_one(&state.pool)
+    .await?;
+
+    Ok(Json(CreateOrderResp { id }))
 }

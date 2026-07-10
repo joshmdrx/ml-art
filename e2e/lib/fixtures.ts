@@ -94,6 +94,81 @@ export async function createArtwork(
 }
 
 /**
+ * M-10 — flip an artist to charges/payouts-enabled without the real
+ * Stripe Connect flow (the E2E stand-in for the `account.updated`
+ * webhook). Makes their sellable works purchasable.
+ */
+export async function enablePayouts(artistSlug: string): Promise<void> {
+  const req = await ctx();
+  try {
+    const resp = await req.post("/v1/testfixtures/enable-payouts", {
+      data: { artist_slug: artistSlug },
+    });
+    expect(
+      resp.ok(),
+      `enablePayouts ${resp.status()} ${await resp.text()}`,
+    ).toBeTruthy();
+  } finally {
+    await req.dispose();
+  }
+}
+
+/**
+ * M-10 — fill in the fields an artwork needs to be purchasable (weight,
+ * ships-from, GBP price, dimensions). Pair with `enablePayouts` on the
+ * owning artist so the Buy button shows.
+ */
+export async function makeSellable(artworkId: string): Promise<void> {
+  const req = await ctx();
+  try {
+    const resp = await req.post("/v1/testfixtures/make-sellable", {
+      data: { artwork_id: artworkId },
+    });
+    expect(
+      resp.ok(),
+      `makeSellable ${resp.status()} ${await resp.text()}`,
+    ).toBeTruthy();
+  } finally {
+    await req.dispose();
+  }
+}
+
+export interface CreateOrderOpts {
+  buyerEmail: string;
+  artworkId: string;
+  /** Any order status; defaults to `paid`. */
+  status?: string;
+  amountCentsGbp?: number;
+}
+
+/**
+ * M-10 — insert an order in any state. The seam the buyer-orders,
+ * mark-shipped, and admin-refund specs build on without the Stripe loop.
+ */
+export async function createOrder(
+  opts: CreateOrderOpts,
+): Promise<{ id: string }> {
+  const req = await ctx();
+  try {
+    const resp = await req.post("/v1/testfixtures/order", {
+      data: {
+        buyer_email: opts.buyerEmail,
+        artwork_id: opts.artworkId,
+        status: opts.status,
+        amount_cents_gbp: opts.amountCentsGbp,
+      },
+    });
+    expect(
+      resp.ok(),
+      `createOrder ${resp.status()} ${await resp.text()}`,
+    ).toBeTruthy();
+    return (await resp.json()) as { id: string };
+  } finally {
+    await req.dispose();
+  }
+}
+
+/**
  * Insert a delivered (default) or pending inquiry against an
  * artwork. Delivered inquiries bump the studio unread-badge count.
  */
