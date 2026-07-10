@@ -108,6 +108,8 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route("/v1/artworks/:id/checkout", post(orders::create_checkout))
         // M-05 — buyer's own order (post-checkout confirmation page).
         .route("/v1/orders/:id", get(orders::get_order))
+        // M-11 — buyer's order history.
+        .route("/v1/me/orders", get(orders::list_my_orders))
         .route("/v1/neighborhoods", get(neighborhoods::index))
         .route("/v1/neighborhoods/:slug", get(neighborhoods::detail))
         // T-061 first-session calibrator. GET samples pairs from

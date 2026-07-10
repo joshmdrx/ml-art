@@ -835,6 +835,33 @@ export interface OrderDetail {
   };
 }
 
+export interface BuyerOrderSummary {
+  id: string;
+  status: OrderStatus;
+  amount_cents_gbp: number;
+  created_at: string;
+  artwork: {
+    id: string;
+    title: string | null;
+    image_url: string | null;
+    artist_name: string;
+    artist_slug: string;
+  };
+}
+
+/** M-11 — the buyer's order history (newest first). `[]` on 401. */
+export async function listMyOrders(
+  init?: RequestInit
+): Promise<BuyerOrderSummary[]> {
+  const res = await apiFetch("/v1/me/orders", init);
+  if (res.status === 401) return [];
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`my orders ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as BuyerOrderSummary[];
+}
+
 /** M-05 — the buyer's own order (confirmation page). `null` on 404
  * (not found, or not the caller's order). */
 export async function getOrder(

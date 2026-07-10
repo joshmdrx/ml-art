@@ -222,6 +222,76 @@ pub async fn create_checkout(
     }))
 }
 
+// ─────────────────────────────── Order list ───────────────────────────────
+//
+// GET /v1/me/orders — the buyer's purchase history (M-11). Newest first.
+
+#[derive(Debug, Serialize)]
+pub struct BuyerOrderSummary {
+    pub id: Uuid,
+    pub status: String,
+    pub amount_cents_gbp: i64,
+    pub created_at: DateTime<Utc>,
+    pub artwork: OrderArtwork,
+}
+
+#[derive(FromRow)]
+struct BuyerOrderRow {
+    id: Uuid,
+    status: String,
+    amount_cents_gbp: i64,
+    created_at: DateTime<Utc>,
+    artwork_id: Uuid,
+    artwork_title: Option<String>,
+    image_s3_key: Option<String>,
+    artist_name: String,
+    artist_slug: String,
+}
+
+pub async fn list_my_orders(
+    State(state): State<Arc<AppState>>,
+    AuthedUser(user): AuthedUser,
+) -> Result<Json<Vec<BuyerOrderSummary>>, ApiError> {
+    let rows: Vec<BuyerOrderRow> = sqlx::query_as(
+        r#"
+        SELECT
+            o.id, o.status, o.amount_cents_gbp, o.created_at,
+            a.id AS artwork_id, a.title AS artwork_title,
+            (SELECT s3_key FROM artwork_images
+             WHERE artwork_id = a.id AND moderation_status = 'approved'
+             ORDER BY is_primary DESC, display_order ASC
+             LIMIT 1) AS image_s3_key,
+            ar.display_name AS artist_name, ar.slug AS artist_slug
+        FROM orders o
+        JOIN artworks a  ON a.id  = o.artwork_id
+        JOIN artists  ar ON ar.id = o.artist_id
+        WHERE o.buyer_user_id = $1
+        ORDER BY o.created_at DESC
+        "#,
+    )
+    .bind(user.id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let orders = rows
+        .into_iter()
+        .map(|r| BuyerOrderSummary {
+            id: r.id,
+            status: r.status,
+            amount_cents_gbp: r.amount_cents_gbp,
+            created_at: r.created_at,
+            artwork: OrderArtwork {
+                id: r.artwork_id,
+                title: r.artwork_title,
+                image_url: r.image_s3_key.as_deref().map(url_for_s3_key),
+                artist_name: r.artist_name,
+                artist_slug: r.artist_slug,
+            },
+        })
+        .collect();
+    Ok(Json(orders))
+}
+
 // ─────────────────────────────── Order detail ─────────────────────────────
 //
 // GET /v1/orders/:id — the buyer's own order. Powers the post-checkout

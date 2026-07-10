@@ -114,6 +114,24 @@ async fn order_detail_visible_to_buyer(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn my_orders_lists_only_own_orders(pool: PgPool) {
+    insert_pending_order(&pool).await;
+
+    // Buyer sees their order.
+    let app = app_with_test_auth(pool.clone());
+    let (status, body): (_, Value) = get_json_authed(app, "/v1/me/orders", BUYER_BEARER).await;
+    assert_eq!(status, 200);
+    let orders = body.as_array().unwrap();
+    assert_eq!(orders.len(), 1);
+    assert_eq!(orders[0]["artwork"]["artist_name"], "Alice Test");
+
+    // A different user sees none of it.
+    let app = app_with_test_auth(pool.clone());
+    let (_, body): (_, Value) = get_json_authed(app, "/v1/me/orders", BOB_BEARER).await;
+    assert_eq!(body.as_array().unwrap().len(), 0);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn order_detail_hidden_from_other_users(pool: PgPool) {
     let order_id = insert_pending_order(&pool).await;
 

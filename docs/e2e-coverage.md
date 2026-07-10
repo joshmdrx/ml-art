@@ -165,7 +165,7 @@ both landing with **M-10** — hence the ⏳ rows below.
 | Studio: artist enables direct sales via Stripe onboarding (M-01/M-06) | — | ⏳ M-10. Built: `/studio/settings/payouts` + `EnableSalesButton`. Assert the CTA opens onboarding + the status copy per `payout_status` (Tier-1 tested in `studio_orders_test`). Needs the Stripe onboarding redirect. |
 | Studio: mark order shipped (M-06) | — | ⏳ M-10. Built: `/studio/orders` + `/studio/orders/[id]` + `MarkShippedForm`. Assert paid→shipped flip + tracking capture (the transition, ownership, and paid-guard are Tier-1 tested in `studio_orders_test`). |
 | Admin: refund an order + dispute banner (M-08) | — | ⏳ M-10. Built: `/admin/orders` + `/admin/orders/[id]` + `RefundButton` (reason picker) + disputed banner + Open-in-Stripe. List/detail/gates Tier-1 tested in `admin_orders_test`; the refund's Stripe call + `charge.refunded` → refunded + emails needs the Stripe loop. |
-| Buyer order history `/orders` (M-11) | — | ⏳ M-11. |
+| Buyer order history `/orders` (M-11) | — | ⏳ M-10. Built: `/orders` list page + `GET /v1/me/orders`. Ownership scoping Tier-1 tested in `marketplace_buy_test` (`my_orders_lists_only_own_orders`); the E2E asserts the list renders the buyer's past orders. |
 
 ## OG cards + metadata (T-051)
 
