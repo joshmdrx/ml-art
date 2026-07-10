@@ -31,7 +31,11 @@
 
 use axum::{body::Bytes, extract::State, http::HeaderMap, Json};
 use chrono::Utc;
-use ml_art_core::{error::ApiError, stripe::verify_webhook_signature};
+use ml_art_core::{
+    error::ApiError,
+    jobs::{EnqueueOpts, JobEvent, OrderNotifyKind},
+    stripe::verify_webhook_signature,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction};
 use std::sync::Arc;
@@ -140,16 +144,57 @@ pub async fn handle(
     }
 
     tx.commit().await?;
+
+    // M-07 — fan out notification jobs *after* the state change is
+    // durable. Enqueue is best-effort: the webhook already committed +
+    // returns 200, so a failed enqueue is a lost email, not a retried
+    // event. Idempotency key on (order, kind) makes a Stripe replay that
+    // somehow re-transitions a no-op.
+    if let Some(order_id) = dispatched.order_id {
+        for kind in &dispatched.notifications {
+            let key = format!("order_notify:{order_id}:{}", notify_key(*kind));
+            if let Err(e) = state
+                .jobs
+                .enqueue(
+                    JobEvent::OrderNotify {
+                        order_id,
+                        kind: *kind,
+                    },
+                    EnqueueOpts {
+                        idempotency_key: Some(key),
+                        ..Default::default()
+                    },
+                )
+                .await
+            {
+                tracing::error!(%order_id, ?kind, error = %e, "failed to enqueue order notification");
+            }
+        }
+    }
+
     Ok(Json(Ack {
         status: dispatched.status,
     }))
 }
 
+/// Stable string per notification kind for the idempotency key.
+fn notify_key(kind: OrderNotifyKind) -> &'static str {
+    match kind {
+        OrderNotifyKind::BuyerPaid => "buyer_paid",
+        OrderNotifyKind::ArtistSale => "artist_sale",
+        OrderNotifyKind::BuyerShipped => "buyer_shipped",
+        OrderNotifyKind::BuyerRefunded => "buyer_refunded",
+        OrderNotifyKind::ArtistRefunded => "artist_refunded",
+    }
+}
+
 /// What a dispatch produced: the order it touched (if any, for the
-/// forensics backfill) and the ack status to return.
+/// forensics backfill), the ack status, and the M-07 notifications to
+/// enqueue once the transaction commits.
 struct Dispatched {
     order_id: Option<Uuid>,
     status: &'static str,
+    notifications: Vec<OrderNotifyKind>,
 }
 
 async fn dispatch(
@@ -157,14 +202,40 @@ async fn dispatch(
     event: &StripeEvent,
 ) -> Result<Dispatched, ApiError> {
     let obj = &event.data.object;
-    let order_id = match event.event_type.as_str() {
+    // Each arm returns the order it touched + the notifications that state
+    // change warrants. Notifications only fire when a row actually
+    // transitioned (order_id is Some), so a replay/no-op doesn't email.
+    let (order_id, notifications) = match event.event_type.as_str() {
         "account.updated" => {
             account_updated(tx, obj).await?;
-            None
+            (None, vec![])
         }
-        "checkout.session.completed" => checkout_completed(tx, obj).await?,
-        "charge.dispute.created" => dispute_created(tx, obj).await?,
-        "charge.refunded" => charge_refunded(tx, obj).await?,
+        "checkout.session.completed" => {
+            let id = checkout_completed(tx, obj).await?;
+            let notes = if id.is_some() {
+                vec![OrderNotifyKind::BuyerPaid, OrderNotifyKind::ArtistSale]
+            } else {
+                vec![]
+            };
+            (id, notes)
+        }
+        "charge.dispute.created" => {
+            // TODO(M-07 followup): alert admin (needs an admin-email/SNS
+            // sink). No buyer/artist email on a dispute.
+            (dispute_created(tx, obj).await?, vec![])
+        }
+        "charge.refunded" => {
+            let id = charge_refunded(tx, obj).await?;
+            let notes = if id.is_some() {
+                vec![
+                    OrderNotifyKind::BuyerRefunded,
+                    OrderNotifyKind::ArtistRefunded,
+                ]
+            } else {
+                vec![]
+            };
+            (id, notes)
+        }
         other => {
             tracing::debug!(
                 event_type = other,
@@ -173,12 +244,14 @@ async fn dispatch(
             return Ok(Dispatched {
                 order_id: None,
                 status: "ignored",
+                notifications: vec![],
             });
         }
     };
     Ok(Dispatched {
         order_id,
         status: "processed",
+        notifications,
     })
 }
 

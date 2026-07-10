@@ -16,7 +16,11 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
-use ml_art_core::{error::ApiError, images::url_for_s3_key};
+use ml_art_core::{
+    error::ApiError,
+    images::url_for_s3_key,
+    jobs::{EnqueueOpts, JobEvent, OrderNotifyKind},
+};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use std::sync::Arc;
@@ -236,7 +240,26 @@ pub async fn ship(
         };
     }
 
-    // TODO(M-07): enqueue the buyer "shipped" notification (tracking link).
+    // M-07 — notify the buyer their order shipped (tracking link).
+    // Best-effort: the transition already committed. Idempotency key on
+    // (order, kind) so a double-submit doesn't double-send.
+    if let Err(e) = state
+        .jobs
+        .enqueue(
+            JobEvent::OrderNotify {
+                order_id,
+                kind: OrderNotifyKind::BuyerShipped,
+            },
+            EnqueueOpts {
+                idempotency_key: Some(format!("order_notify:{order_id}:buyer_shipped")),
+                ..Default::default()
+            },
+        )
+        .await
+    {
+        tracing::error!(%order_id, error = %e, "failed to enqueue shipped notification");
+    }
+
     Ok(Json(ShipAck {
         status: "shipped".into(),
     }))
