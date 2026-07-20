@@ -153,16 +153,22 @@ export default async function SearchPage({
       cursor = page.next_cursor;
     }
     // Best-effort: ask the health endpoint whether vector search is on.
-    // If the call fails we just don't surface the hint.
-    try {
-      const h = await fetch(
-        `${process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:9100"}/v1/health`,
-        { cache: "no-store" }
-      );
-      const j = await h.json();
-      embedderEnabled = Boolean(j?.embedder_enabled);
-    } catch {
-      // ignore — empty-state hint just won't appear
+    // `embedderEnabled` only changes the empty-state hint copy, which
+    // renders only when a text query returned zero results. So gate the
+    // call on exactly that: no point paying an API/DB round-trip on
+    // renders that show a grid or a no-query empty state — that's the
+    // bulk of traffic, incl. crawlers enumerating /search facets.
+    if (resp.items.length === 0 && Boolean(params.q)) {
+      try {
+        const h = await fetch(
+          `${process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:9100"}/v1/health`,
+          { cache: "no-store" }
+        );
+        const j = await h.json();
+        embedderEnabled = Boolean(j?.embedder_enabled);
+      } catch {
+        // ignore — empty-state hint just won't appear
+      }
     }
   } catch (e) {
     resp = { items: [], next_cursor: null };
