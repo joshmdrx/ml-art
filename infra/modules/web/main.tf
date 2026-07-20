@@ -308,6 +308,33 @@ resource "aws_cloudfront_origin_access_control" "web_assets" {
 # rarely hits the rate-limit; the api's mix is more dynamic. Both ACLs
 # live in us-east-1 since CLOUDFRONT-scoped WAF is region-pinned there.
 
+# ─── Abusive-bot user-agents ─────────────────────────────────────────────────
+# Crawlers that enumerate the unbounded /search facet space
+# (?artist=&location=&map=&bbox=), each hit fanning out to ~5 Rust API
+# calls + a Neon write — drove the DB over its free tier with zero real
+# users (cost incident 2026-07). robots.txt (web/src/app/robots.ts) asks
+# them to stop, but it's advisory: GPTBot bursts tripped the rate limit,
+# while PetalBot rotates across 114.119.0.0/16 so per-IP limiting never
+# catches it. This set is the enforced backstop — matched case-insensitively
+# against the User-Agent header by the BlockAbusiveBots rule below.
+#
+# Keep it tight: only crawlers we've observed abusing /search. Do NOT add
+# Googlebot / Bingbot — we want those indexing the content routes.
+resource "aws_wafv2_regex_pattern_set" "web_blocked_bots" {
+  provider = aws.us_east_1
+
+  name        = "${var.name_prefix}-web-blocked-bots"
+  description = "User-agents blocked outright - crawlers that ignore robots.txt and enumerate /search. Cost incident 2026-07."
+  scope       = "CLOUDFRONT"
+
+  regular_expression {
+    regex_string = "petalbot"
+  }
+  regular_expression {
+    regex_string = "gptbot"
+  }
+}
+
 resource "aws_wafv2_web_acl" "web" {
   provider = aws.us_east_1
 
@@ -317,6 +344,43 @@ resource "aws_wafv2_web_acl" "web" {
 
   default_action {
     allow {}
+  }
+
+  # Evaluated first (priority 0): drop known abusive crawlers by UA before
+  # they consume rate-limit budget or reach the origin. See the regex
+  # pattern set above for the rationale + the "keep it tight" warning.
+  rule {
+    name     = "BlockAbusiveBots"
+    priority = 0
+
+    action {
+      block {}
+    }
+
+    statement {
+      regex_pattern_set_reference_statement {
+        arn = aws_wafv2_regex_pattern_set.web_blocked_bots.arn
+
+        field_to_match {
+          single_header {
+            name = "user-agent" # WAF requires the header name lowercased
+          }
+        }
+
+        # Lowercase the UA before matching so the pattern set can stay
+        # lowercase and still catch "PetalBot" / "GPTBot".
+        text_transformation {
+          priority = 0
+          type     = "LOWERCASE"
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-web-blocked-bots"
+      sampled_requests_enabled   = true
+    }
   }
 
   rule {
