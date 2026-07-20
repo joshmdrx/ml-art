@@ -161,13 +161,51 @@ pub fn event_log(
     }
 }
 
+/// Substring markers (matched case-insensitively) that identify a
+/// crawler / bot user-agent whose events we drop before they reach the
+/// `events` table — see [`emit`].
+///
+/// Deliberately BROAD, unlike the WAF UA block in
+/// `infra/modules/web/main.tf`. The WAF stays tight (only crawlers we
+/// want to *block* outright) so Googlebot / Bingbot keep indexing the
+/// content routes for SEO. Here the goal is data hygiene: we never want
+/// *any* bot — friendly indexers included — polluting taste vectors,
+/// the "for you" re-rank, neighbourhoods, or the digest, nor writing
+/// its (PII) IP + UA into the events table for zero analytical gain.
+/// These three markers cover every crawler observed in the 2026-07
+/// cost incident (PetalBot, GPTBot, Bytespider) plus the mainstream
+/// indexers. Add sparingly — a false positive here silently drops real
+/// user analytics.
+const CRAWLER_UA_MARKERS: &[&str] = &["bot", "crawler", "spider"];
+
+/// Whether a user-agent looks like a crawler/bot. Case-insensitive
+/// substring match against [`CRAWLER_UA_MARKERS`].
+fn is_crawler_user_agent(user_agent: &str) -> bool {
+    let ua = user_agent.to_ascii_lowercase();
+    CRAWLER_UA_MARKERS.iter().any(|marker| ua.contains(marker))
+}
+
 /// Best-effort enqueue. Logs at WARN on failure but never propagates
 /// the error — analytics must never break a real request.
 ///
 /// Synchronous (not `tokio::spawn`'d) so the event is in the queue
 /// before the response leaves the Lambda. SQS sendMessage is
 /// single-digit-ms; the latency cost is invisible to the user.
+///
+/// Crawler events are dropped here rather than at the call sites: this
+/// is the single choke point every `EventLog` passes through, and the
+/// user-agent needed to classify already lives in `context` (built by
+/// [`extract_request_context`]). Only `EventLog` is filtered — other
+/// job kinds routed through here (if any) are never analytics.
 pub async fn emit(jobs: &JobsBackend, event: JobEvent) {
+    if let JobEvent::EventLog { context, .. } = &event {
+        let ua = context.get("user_agent").and_then(Value::as_str);
+        if let Some(ua) = ua {
+            if is_crawler_user_agent(ua) {
+                return; // crawler — drop before it reaches the events table
+            }
+        }
+    }
     if let Err(e) = jobs.enqueue(event, EnqueueOpts::default()).await {
         tracing::warn!(error = ?e, "event emit failed");
     }
@@ -250,5 +288,32 @@ mod tests {
         );
         let ctx = extract_request_context(&h);
         assert_eq!(ctx["ip"], "10.0.0.1");
+    }
+
+    #[test]
+    fn crawler_uas_are_detected_case_insensitively() {
+        // The crawlers observed in the 2026-07 /search cost incident,
+        // plus the mainstream indexers we also want out of analytics.
+        for ua in [
+            "Mozilla/5.0 (compatible; PetalBot;+https://webmaster.petalsearch.com/site/petalbot)",
+            "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.4; +https://openai.com/gptbot)",
+            "Mozilla/5.0 (compatible; Bytespider; spider-feedback@bytedance.com)",
+            "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+            "Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)",
+            "some-generic-crawler/1.0",
+        ] {
+            assert!(is_crawler_user_agent(ua), "should flag as crawler: {ua}");
+        }
+    }
+
+    #[test]
+    fn real_browser_uas_are_not_flagged() {
+        for ua in [
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            "node", // the OpenNext web Lambda's SSR fetch — real user traffic
+        ] {
+            assert!(!is_crawler_user_agent(ua), "should NOT flag: {ua}");
+        }
     }
 }
