@@ -489,8 +489,7 @@ async fn search_refine_without_primary_signal_is_noop(pool: PgPool) {
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn search_refine_with_text_query_returns_results(pool: PgPool) {
     let app = app_with_fixed_vector(pool, unit_vector_at(0));
-    let (status, page): (_, Page) =
-        get_json(app, "/v1/search?q=blue&refine=darker&limit=10").await;
+    let (status, page): (_, Page) = get_json(app, "/v1/search?q=blue&refine=darker&limit=10").await;
     assert_eq!(status, 200);
     // With fixed_vector the refine + semantic channels rank every
     // artwork at the same position (all distance 1.0 to pos-0). The
@@ -508,8 +507,7 @@ async fn search_refine_with_text_query_returns_results(pool: PgPool) {
 async fn search_refine_rejects_oversized_text(pool: PgPool) {
     let app = app_with_fixed_vector(pool, unit_vector_at(0));
     let long = "a".repeat(501); // REFINE_MAX_LEN + 1
-    let (status, _) =
-        get_status(app, &format!("/v1/search?q=blue&refine={long}&limit=10")).await;
+    let (status, _) = get_status(app, &format!("/v1/search?q=blue&refine={long}&limit=10")).await;
     assert_eq!(status, 400);
 }
 
@@ -534,8 +532,7 @@ async fn search_refine_with_disabled_embedder_silently_drops(pool: PgPool) {
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn search_refine_empty_string_is_ignored(pool: PgPool) {
     let app = app_with_fixed_vector(pool, unit_vector_at(0));
-    let (status, page): (_, Page) =
-        get_json(app, "/v1/search?q=blue&refine=&limit=10").await;
+    let (status, page): (_, Page) = get_json(app, "/v1/search?q=blue&refine=&limit=10").await;
     assert_eq!(status, 200);
     assert_eq!(page.items[0].title.as_deref(), Some("Blue Morning"));
 }

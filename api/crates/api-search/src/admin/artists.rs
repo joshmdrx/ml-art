@@ -142,13 +142,12 @@ async fn transition(
     new_status: &str,
     legal_from: &[&str],
 ) -> Result<Json<ArtistStatusRow>, ApiError> {
-    let before: ArtistStatusRow = sqlx::query_as(
-        "SELECT id, status FROM artists WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(artist_id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or(ApiError::NotFound)?;
+    let before: ArtistStatusRow =
+        sqlx::query_as("SELECT id, status FROM artists WHERE id = $1 AND deleted_at IS NULL")
+            .bind(artist_id)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or(ApiError::NotFound)?;
 
     // Idempotent re-application: already-target-status returns the
     // unchanged row with no audit + no UPDATE. Keeps "I double-clicked

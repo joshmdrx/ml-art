@@ -200,9 +200,7 @@ impl Config {
             cloudfront_shared_secret: env::var("CLOUDFRONT_SHARED_SECRET")
                 .ok()
                 .filter(|s| !s.is_empty()),
-            stripe_secret_key: env::var("STRIPE_SECRET_KEY")
-                .ok()
-                .filter(|s| !s.is_empty()),
+            stripe_secret_key: env::var("STRIPE_SECRET_KEY").ok().filter(|s| !s.is_empty()),
             stripe_webhook_secret: env::var("STRIPE_WEBHOOK_SECRET")
                 .ok()
                 .filter(|s| !s.is_empty()),

@@ -139,12 +139,11 @@ async fn admin_approve_pending_artist_transitions_to_active(pool: PgPool) {
     );
 
     // DB state matches the response.
-    let db_status: String =
-        sqlx::query_scalar("SELECT status FROM artists WHERE id = $1")
-            .bind(uuid::Uuid::parse_str(PENDING_ARTIST).unwrap())
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let db_status: String = sqlx::query_scalar("SELECT status FROM artists WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(PENDING_ARTIST).unwrap())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(db_status, "active");
 }
 
@@ -155,13 +154,12 @@ async fn admin_approve_already_active_is_idempotent_no_audit(pool: PgPool) {
     let (status, _) = send_authed(app, "POST", &uri, ADMIN_BEARER, None).await;
     assert_eq!(status, 200);
 
-    let audit_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*)::bigint FROM admin_audit_log WHERE target_id = $1",
-    )
-    .bind(uuid::Uuid::parse_str(ACTIVE_ARTIST).unwrap())
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let audit_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM admin_audit_log WHERE target_id = $1")
+            .bind(uuid::Uuid::parse_str(ACTIVE_ARTIST).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(
         audit_count, 0,
         "no-op transition must not clutter the audit log"
@@ -234,13 +232,12 @@ async fn admin_pause_unpause_round_trip(pool: PgPool) {
     assert_eq!(active, "active");
 
     // Two audit rows for the two transitions.
-    let audit_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*)::bigint FROM admin_audit_log WHERE target_id = $1",
-    )
-    .bind(uuid::Uuid::parse_str(ACTIVE_ARTIST).unwrap())
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let audit_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM admin_audit_log WHERE target_id = $1")
+            .bind(uuid::Uuid::parse_str(ACTIVE_ARTIST).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(audit_count, 2);
 }
 
@@ -326,25 +323,25 @@ async fn admin_image_override_flips_status_and_clears_reason(pool: PgPool) {
 async fn admin_image_override_already_approved_is_noop(pool: PgPool) {
     // Pick the existing approved primary image on alice's Blue Morning.
     // It's `approved` in the seed, so override is the no-op branch.
-    let id: uuid::Uuid =
-        sqlx::query_scalar("SELECT id FROM artwork_images WHERE artwork_id = $1 AND is_primary = true")
-            .bind(uuid::Uuid::parse_str("bbb11111-1111-1111-1111-111111111111").unwrap())
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let id: uuid::Uuid = sqlx::query_scalar(
+        "SELECT id FROM artwork_images WHERE artwork_id = $1 AND is_primary = true",
+    )
+    .bind(uuid::Uuid::parse_str("bbb11111-1111-1111-1111-111111111111").unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     let app = app_with_test_auth(pool.clone());
     let uri = format!("/v1/admin/images/{id}/override");
     let (status, _) = send_authed(app, "POST", &uri, ADMIN_BEARER, None).await;
     assert_eq!(status, 200);
 
-    let audit_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*)::bigint FROM admin_audit_log WHERE target_id = $1",
-    )
-    .bind(id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let audit_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM admin_audit_log WHERE target_id = $1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(audit_count, 0);
 }
 
@@ -395,5 +392,8 @@ async fn admin_audit_log_returns_recent_actions(pool: PgPool) {
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].action, "artist.approve");
     assert_eq!(page.items[0].target_kind, "artist");
-    assert_eq!(page.items[0].admin_email.as_deref(), Some("admin@example.com"));
+    assert_eq!(
+        page.items[0].admin_email.as_deref(),
+        Some("admin@example.com")
+    );
 }
