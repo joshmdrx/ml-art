@@ -247,21 +247,28 @@ resource "aws_cloudwatch_metric_alarm" "neon_pool_errors" {
 #
 # COST.md pre-launch checklist calls for both.
 
-# Per-Lambda daily-invocations alarm. 100k/day is nothing at real
-# traffic; at v1 idle, a Lambda burning 100k in a day almost
-# certainly means a recursion or retry loop.
+# Per-Lambda daily-invocations alarm. The original 100k/day threshold was
+# calibrated for a recursion / retry loop — but the 2026-07 crawler
+# incident peaked at ~15k/day (api) and stayed invisible for weeks because
+# it never crossed 100k. On a zero-user pre-launch app, true idle is well
+# under 1k/day, so 15k is a ~15× anomaly worth an alert. Dropped to
+# 10k/day: catches sustained non-human traffic (crawls, loops) now, while
+# staying above the noise of local testing + prod smoke.
+#
+# RAISE THIS at launch — real users will legitimately exceed 10k/day.
+# Tracked as a re-evaluation trigger in COST.md. See decisions.md 2026-07-21.
 resource "aws_cloudwatch_metric_alarm" "lambda_daily_invocations" {
   for_each = local.lambda_names
 
   alarm_name          = "${var.name_prefix}-${each.key}-daily-invocations"
-  alarm_description   = "Lambda ${each.value} invocations > 100k in a day — possible runaway."
+  alarm_description   = "Lambda ${each.value} invocations > 10k in a day — possible crawl / runaway on a zero-user app. Raise threshold at launch."
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
   metric_name         = "Invocations"
   namespace           = "AWS/Lambda"
   period              = 86400
   statistic           = "Sum"
-  threshold           = 100000
+  threshold           = 10000
   treat_missing_data  = "notBreaching"
 
   dimensions = {
