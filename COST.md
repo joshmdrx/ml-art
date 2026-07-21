@@ -17,7 +17,7 @@ doc captures the spend posture, free-tier audit, and code-level guardrails.
 
 | Service | Free tier | Plausible v1 use | Headroom |
 |---|---|---|---|
-| Neon Postgres | 0.5 GB storage, generous compute | 2000 demo artworks + ~50 real = <50 MB | 10× |
+| Neon Postgres | 0.5 GB storage + capped compute-hours/mo | 2000 demo artworks + ~50 real = <50 MB | storage 10×; **compute is the real limit** |
 | Clerk | 10,000 MAU | <100 users at v1 | 100× |
 | Inngest | 50,000 step runs / mo | <5k expected | 10× |
 | Upstash Redis (rate limiting) | 10k commands / day | Unlikely to use; Postgres caches are first choice | unused |
@@ -34,6 +34,11 @@ doc captures the spend posture, free-tier audit, and code-level guardrails.
 **Watch items:**
 1. **S3 + CloudFront** as image traffic grows — bandwidth is the real risk
 2. **Anthropic / Jina embeddings** — pay-per-call, no free tier
+3. **Neon compute-hours, not storage.** The free tier autosuspends when
+   idle; anything that keeps the endpoint continuously awake (e.g. a 24/7
+   crawler, a health-check loop) burns the monthly compute-hour allowance
+   regardless of how little data we hold. Keep the endpoint *able* to idle.
+   See `decisions.md` 2026-07-21.
 
 ## Pay-per-call services and expected v1 spend
 
@@ -89,12 +94,31 @@ To add: an Inngest job `cost.health_check` that runs hourly and reads AWS
 Cost Explorer + Anthropic + Jina usage; emails if any service is on track
 to exceed its per-month threshold.
 
-### 4. Rate limiting at the edge
+### 4. Rate limiting and bot management at the edge
 
-Already specified in `03-api-data-spec.md` (Upstash). Doubly important for
+Rate limit per IP + per anon_id, 60/min on search. Doubly important for
 cost: a runaway scraper hitting `/search` 10,000 times costs us 10,000
-embedding API calls if the query cache doesn't catch them. Rate limit per
-IP + per anon_id, 60/min on search.
+embedding API calls if the query cache doesn't catch them.
+
+**Per-IP rate limiting is necessary but not sufficient** (learned the hard
+way — see `decisions.md` 2026-07-21). Two gaps it doesn't cover:
+
+- **IP-rotating crawlers.** PetalBot spreads a steady crawl across
+  `114.119.0.0/16`, staying under any per-IP threshold while never letting
+  the Neon endpoint idle into autosuspend. Mitigation: a WAF UA block
+  (`BlockAbusiveBots` rule, `infra/modules/web/main.tf`) — enforced, not
+  advisory.
+- **Unbounded URL spaces.** `/search` takes faceted params
+  (`?artist=&location=&map=&bbox=`) over a huge key space, so a crawler can
+  enumerate effectively infinite distinct URLs — each a cache miss, an SSR
+  render, and a ~5-call API fan-out. Mitigations: `robots.txt`
+  (`web/src/app/robots.ts`) disallowing `/search`; prefer indexing
+  canonical content routes over faceted URLs; drop bot events before they
+  hit the `events` table (`core::events::emit`).
+
+**Rule of thumb:** any anonymous, param-driven route ships with
+`robots.txt` coverage from day one. Treat "is there an un-`robots`'d
+infinite URL space?" as a launch-readiness question, not an incident.
 
 ### 5. Query embedding cache
 
@@ -118,8 +142,16 @@ Pre-launch checklist (before any code reaches `prod` Terraform workspace):
 - [ ] PostHog quota notification at 80% of free tier
 - [ ] Resend quota notification at 80% of free tier
 - [ ] CloudWatch metric: `lambda_invocations` per route group; alarm if
-      any route exceeds 100k/day
+      any route exceeds 100k/day (would have caught the 2026-07 crawl)
 - [ ] CloudWatch metric: `cloudfront_bytes_downloaded`; alarm at 500 GB/mo
+- [x] `robots.txt` covers every anonymous, param-driven route (esp.
+      `/search`) — `web/src/app/robots.ts` (2026-07-21)
+- [x] WAF UA block for crawlers that ignore robots / rotate IPs —
+      `BlockAbusiveBots`, `infra/modules/web/main.tf` (2026-07-21)
+- [ ] No un-`robots`'d route exposes an unbounded URL space (faceted
+      params over UUIDs / bboxes / free-text)
+- [ ] Neon: confirm the endpoint can still autosuspend (no 24/7 traffic
+      source, no render-path health-check loop keeping it awake)
 
 ## Decommissioning costs (the easy ones to forget)
 
@@ -142,7 +174,7 @@ list-price; free-tier credits where applicable have been subtracted.
 
 | Item | $/mo | Notes |
 |---|---|---|
-| WAF (api distribution) | ~6 | $5 ACL + $1 managed rule. Floor cost. |
+| WAF (api + web distributions) | ~13 | Two ACLs ($5 each) + managed rules + rules. Fixed floor, traffic-independent — largest single line at idle. Confirmed ~$9.28 (Jun) / $8.23 (Jul MTD) in cost explorer; the earlier ~$6 estimate counted only the api ACL. |
 | Route53 hosted zone | 0.50 | Flat per zone. Queries free at our scale. |
 | Lambda (web + api + jobs) | 0 | 1M req + 400k GB-s free tier covers idle. |
 | S3 (artworks, uploads, web-assets, tfstate) | <1 | $0.023/GB; ~10 GB. |

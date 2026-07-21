@@ -1713,3 +1713,30 @@ CloudWatch logs confirmed the requests were rejected at the Function URL gateway
 
 **Reversibility:** High — if AWS removes the new-account restriction we can swap APIG back out for Function URL + OAC with the same TF shape as before (the OAC iteration is in git history).
 
+
+---
+
+## 2026-07-21 — Bot/crawler defence for `/search` (cost incident)
+
+**Context:** AWS + Neon spend alarms fired with **zero real users** in prod. Investigation (WAF logs + Lambda invocation metrics + cost explorer) traced it to two crawlers enumerating the `/search` facet space — `?artist=&location=&map=&bbox=` is a combinatorially unbounded set of URLs, and there was **no `robots.txt`** anywhere in `web/`. GPTBot crawled in bursts (29k requests in a single hour on 2026-07-18); PetalBot crawled steadily 24/7 with no idle gaps. Each unique URL missed cache, triggered a fresh OpenNext SSR render, and fanned out to ~5 Rust API calls + a `JobEvent::EventLog` write. Result: ~53k api-Lambda invocations and ~2k jobs-Lambda invocations per idle day, all bot-driven.
+
+Two distinct failures, only loosely related to the bill:
+- **Neon overage** — the constant ~1-request-per-15s cadence meant the endpoint *never* hit autosuspend, so free-tier *compute-hours* (not storage) were exhausted. The corpus is <50 MB; storage was never the constraint.
+- **AWS spend** — ~95% was the two fixed WAF ACLs (~$14/mo), unchanged by traffic. The crawl itself cost pennies at AWS. The two alarms firing together was coincidence.
+
+**Decided:** Defence in depth, cheapest layer first.
+1. **`robots.txt`** (`web/src/app/robots.ts`) disallowing `/search` + authed routes. Advisory; stops compliant bots at source. SEO value lives in the content routes (`/artists/[slug]`, `/collections/[id]`, `/neighborhoods/[slug]`), which stay crawlable.
+2. **WAF UA block** (`infra/modules/web/main.tf`) — a `regex_pattern_set` (`petalbot`, `gptbot`) + `BlockAbusiveBots` rule at priority 0 on the web ACL. Enforced backstop for bots that ignore robots and for IP-rotating crawlers that per-IP rate limiting structurally cannot catch (PetalBot rotates across `114.119.0.0/16`). Kept **tight** — only crawlers we want blocked outright — so Googlebot/Bingbot keep indexing.
+3. **Analytics suppression** (`core::events::emit`) — drop `EventLog` events whose UA matches `bot`/`crawler`/`spider`. Kept **broad** (opposite of the WAF): we never want *any* bot, friendly indexers included, polluting taste vectors / "for you" / neighbourhoods / digest, nor writing PII (IP + UA) into the `events` table.
+4. **SSR fan-out trim** — the `/search` page fetched `/v1/health` on every render; gated it to fire only when a text query returns zero results (the only case its value is read).
+
+**Alternatives considered:**
+- Per-IP rate limiting alone — already in place; PetalBot's IP rotation defeats it. This is *why* the UA block is needed.
+- Blocking `/search` at CloudFront/WAF entirely — too blunt; real users use it.
+- Dropping the web WAF ACL to cut the ~$7/mo — rejected; it's the enforcement layer we just added.
+
+**Why this is the right shape:** robots is free and stops the polite majority; WAF enforces against the rest; analytics suppression protects the ML/data layer independent of whether a bot is blocked (a new crawler UA we haven't blocked still gets kept out of the taste model). The tight-WAF / broad-analytics split is deliberate and documented at both sites.
+
+**Reversibility:** High — robots is one file, the WAF rule is a targeted `terraform apply`, the analytics filter is one function. The UA lists are the tunable surface (add crawlers as observed; watch the `ml-art-prod-web-blocked-bots` CloudWatch metric).
+
+**Lesson for future surfaces:** any anonymous route with user-supplied query params over a large key space (UUIDs, bboxes, locations) is an unbounded URL space. Ship it with `robots.txt` coverage from day one, and prefer indexing *canonical content routes* over faceted search/filter URLs. This should have been a launch-readiness item, not an incident — see `COST.md` → "Rate limiting and bot management" and the pre-launch checklist.
