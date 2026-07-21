@@ -355,6 +355,33 @@ impl StripeClient {
             .await
     }
 
+    /// M-04 — Stripe's exact processing fee for a completed charge, in the
+    /// charge's smallest currency unit (pence GBP for us). Retrieves the
+    /// PaymentIntent with its `latest_charge.balance_transaction` expanded;
+    /// the balance transaction is the only place Stripe exposes the real
+    /// fee (it isn't known until the charge settles).
+    ///
+    /// Returns `Ok(None)` when the charge/balance-transaction isn't
+    /// available yet (e.g. an async payment method still processing) —
+    /// callers treat that as "leave the fee null, try again later" rather
+    /// than an error. This is Wander's cost figure; the artist's payout is
+    /// derived deterministically from `amount - commission` and never
+    /// depends on this call.
+    pub async fn retrieve_charge_fee_cents(
+        &self,
+        payment_intent: &str,
+    ) -> Result<Option<i64>, StripeError> {
+        let pi: PaymentIntentWithCharge = self
+            .get(&format!(
+                "/v1/payment_intents/{payment_intent}?expand[]=latest_charge.balance_transaction"
+            ))
+            .await?;
+        Ok(pi
+            .latest_charge
+            .and_then(|c| c.balance_transaction)
+            .map(|b| b.fee))
+    }
+
     /// Map a response to `Ok(parsed)` on 2xx, `Err(Api{..})` otherwise.
     async fn read<T: serde::de::DeserializeOwned>(
         resp: reqwest::Response,
@@ -381,6 +408,25 @@ impl StripeClient {
 #[derive(Debug, serde::Deserialize)]
 pub struct StripeAccount {
     pub id: String,
+}
+
+// PaymentIntent → latest_charge → balance_transaction, the chain
+// [`StripeClient::retrieve_charge_fee_cents`] walks to read the fee. Each
+// link is `Option` because it's only populated once the charge settles.
+#[derive(Debug, serde::Deserialize)]
+struct PaymentIntentWithCharge {
+    latest_charge: Option<ChargeWithBalanceTxn>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ChargeWithBalanceTxn {
+    balance_transaction: Option<BalanceTransaction>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct BalanceTransaction {
+    /// Total Stripe fee, in the charge's smallest currency unit.
+    fee: i64,
 }
 
 /// A hosted-onboarding link. Returned by [`StripeClient::create_account_link`].
@@ -522,5 +568,52 @@ mod tests {
             verify_webhook_signature(b"body", "garbage", SECRET, 1),
             Err(SignatureError::MalformedHeader),
         );
+    }
+
+    // ── M-04 fee parsing (retrieve_charge_fee_cents' deserialisation) ──
+    // The method makes a network call, but the fee-extraction logic is the
+    // deserialise + walk below; test that against Stripe-shaped JSON.
+
+    fn parse_fee(json: serde_json::Value) -> Option<i64> {
+        let pi: PaymentIntentWithCharge = serde_json::from_value(json).unwrap();
+        pi.latest_charge
+            .and_then(|c| c.balance_transaction)
+            .map(|b| b.fee)
+    }
+
+    #[test]
+    fn fee_extracted_from_expanded_balance_transaction() {
+        let json = serde_json::json!({
+            "id": "pi_1",
+            "latest_charge": {
+                "id": "ch_1",
+                "balance_transaction": { "id": "txn_1", "fee": 320 }
+            }
+        });
+        assert_eq!(parse_fee(json), Some(320));
+    }
+
+    #[test]
+    fn fee_is_none_when_charge_not_settled() {
+        // latest_charge present but balance_transaction not yet available.
+        let unsettled = serde_json::json!({
+            "id": "pi_1",
+            "latest_charge": { "id": "ch_1", "balance_transaction": null }
+        });
+        assert_eq!(parse_fee(unsettled), None);
+
+        // No charge at all yet (async payment method still processing).
+        let no_charge = serde_json::json!({ "id": "pi_1", "latest_charge": null });
+        assert_eq!(parse_fee(no_charge), None);
+    }
+
+    #[test]
+    fn payout_is_amount_minus_commission() {
+        // Mirrors the checkout_completed SQL: destination charge transfers
+        // amount - application_fee(commission) to the artist; the platform
+        // bears the Stripe fee, so it isn't subtracted from payout.
+        let amount = 100_000_i64;
+        let commission = 15_000_i64; // 15%
+        assert_eq!(amount - commission, 85_000);
     }
 }

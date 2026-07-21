@@ -21,20 +21,22 @@
 //! Handled today:
 //!   - `account.updated` — Connect KYC → `artists.stripe_*` flags (the
 //!     async half of M-01's onboarding);
-//!   - `checkout.session.completed` — order `pending → paid` (M-04);
+//!   - `checkout.session.completed` — order `pending → paid`, artist
+//!     payout set, Stripe fee backfilled (M-04);
 //!   - `charge.dispute.created` — order `→ disputed`;
 //!   - `charge.refunded` — order `→ refunded` (confirms an M-08 refund).
 //!
 //! Unrecognised types are acked and ignored — Stripe delivers many event
-//! types we don't act on. The buyer/artist/admin notifications that hang
-//! off these transitions land with M-07.
+//! types we don't act on. Buyer/artist notifications (M-07) are enqueued
+//! post-commit off the transitions above; an admin dispute alert is still
+//! a follow-up (needs an admin-email / SNS sink).
 
 use axum::{body::Bytes, extract::State, http::HeaderMap, Json};
 use chrono::Utc;
 use ml_art_core::{
     error::ApiError,
     jobs::{EnqueueOpts, JobEvent, OrderNotifyKind},
-    stripe::verify_webhook_signature,
+    stripe::{verify_webhook_signature, StripeClient},
 };
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction};
@@ -172,6 +174,42 @@ pub async fn handle(
         }
     }
 
+    // M-04 — backfill Stripe's processing fee (Wander's cost) from the
+    // charge's balance transaction. Best-effort + post-commit, same
+    // reasoning as the notifications: the order is already `paid` and its
+    // artist payout is set, so a failed fetch just leaves `stripe_fee_
+    // cents_gbp` null (an admin-visible cost figure, backfillable later) —
+    // never a reason to fail the webhook and trigger a Stripe retry. The
+    // `IS NULL` guard makes a replay idempotent.
+    if let Some((order_id, payment_intent)) = dispatched.fee_backfill {
+        match StripeClient::from_config(state.cfg.stripe_secret_key.as_deref()) {
+            Some(client) => match client.retrieve_charge_fee_cents(&payment_intent).await {
+                Ok(Some(fee)) => {
+                    if let Err(e) = sqlx::query(
+                        "UPDATE orders SET stripe_fee_cents_gbp = $1, updated_at = now() \
+                         WHERE id = $2 AND stripe_fee_cents_gbp IS NULL",
+                    )
+                    .bind(fee)
+                    .bind(order_id)
+                    .execute(&state.pool)
+                    .await
+                    {
+                        tracing::error!(%order_id, error = %e, "failed to persist stripe fee");
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!(%order_id, "stripe fee not settled yet — leaving null");
+                }
+                Err(e) => {
+                    tracing::warn!(%order_id, error = %e, "stripe fee fetch failed — leaving null");
+                }
+            },
+            None => {
+                tracing::warn!(%order_id, "STRIPE_SECRET_KEY unset — skipping fee backfill");
+            }
+        }
+    }
+
     Ok(Json(Ack {
         status: dispatched.status,
     }))
@@ -189,12 +227,17 @@ fn notify_key(kind: OrderNotifyKind) -> &'static str {
 }
 
 /// What a dispatch produced: the order it touched (if any, for the
-/// forensics backfill), the ack status, and the M-07 notifications to
-/// enqueue once the transaction commits.
+/// forensics backfill), the ack status, the notifications to enqueue once
+/// the transaction commits, and — for a checkout — the payment intent
+/// whose Stripe fee to backfill post-commit.
 struct Dispatched {
     order_id: Option<Uuid>,
     status: &'static str,
     notifications: Vec<OrderNotifyKind>,
+    /// M-04 — `(order_id, payment_intent)` to fetch + persist the Stripe
+    /// fee for, post-commit. Only set for a checkout that actually
+    /// transitioned an order (and carried a payment intent).
+    fee_backfill: Option<(Uuid, String)>,
 }
 
 async fn dispatch(
@@ -202,6 +245,7 @@ async fn dispatch(
     event: &StripeEvent,
 ) -> Result<Dispatched, ApiError> {
     let obj = &event.data.object;
+    let mut fee_backfill: Option<(Uuid, String)> = None;
     // Each arm returns the order it touched + the notifications that state
     // change warrants. Notifications only fire when a row actually
     // transitioned (order_id is Some), so a replay/no-op doesn't email.
@@ -210,18 +254,24 @@ async fn dispatch(
             account_updated(tx, obj).await?;
             (None, vec![])
         }
-        "checkout.session.completed" => {
-            let id = checkout_completed(tx, obj).await?;
-            let notes = if id.is_some() {
-                vec![OrderNotifyKind::BuyerPaid, OrderNotifyKind::ArtistSale]
-            } else {
-                vec![]
-            };
-            (id, notes)
-        }
+        "checkout.session.completed" => match checkout_completed(tx, obj).await? {
+            Some((id, payment_intent)) => {
+                // The fee backfill needs the payment intent; if it's absent
+                // (rare) we skip it — payout is already set in-transaction.
+                if let Some(pi) = payment_intent {
+                    fee_backfill = Some((id, pi));
+                }
+                (
+                    Some(id),
+                    vec![OrderNotifyKind::BuyerPaid, OrderNotifyKind::ArtistSale],
+                )
+            }
+            None => (None, vec![]),
+        },
         "charge.dispute.created" => {
-            // TODO(M-07 followup): alert admin (needs an admin-email/SNS
-            // sink). No buyer/artist email on a dispute.
+            // Order → disputed. An admin alert on disputes is a genuine
+            // follow-up (needs an admin-email / SNS sink) — tracked, not
+            // wired here. Deliberately no buyer/artist email on a dispute.
             (dispute_created(tx, obj).await?, vec![])
         }
         "charge.refunded" => {
@@ -245,6 +295,7 @@ async fn dispatch(
                 order_id: None,
                 status: "ignored",
                 notifications: vec![],
+                fee_backfill: None,
             });
         }
     };
@@ -252,6 +303,7 @@ async fn dispatch(
         order_id,
         status: "processed",
         notifications,
+        fee_backfill,
     })
 }
 
@@ -296,17 +348,24 @@ async fn account_updated(
 }
 
 /// `checkout.session.completed` — the buyer paid. Advance the matching
-/// `pending` order to `paid` and capture the payment-intent id (the
-/// truth for later refund + reconciliation). Guarded on `status =
-/// 'pending'` so a replayed/late event can't drag a shipped order back.
+/// `pending` order to `paid`, capture the payment-intent id (the truth
+/// for later refund + reconciliation), and set the artist payout.
 ///
-/// TODO(M-04): fetch the charge's balance-transaction to populate
-/// `stripe_fee_cents_gbp` + `payout_cents_gbp` (needs the checkout →
-/// order wiring that M-04 introduces).
+/// Payout is `amount - commission`: for our destination charge that's
+/// exactly what Stripe transfers to the artist's connected account, and
+/// since the platform (not the connected account) bears Stripe's
+/// processing fee, payout doesn't subtract it. Deterministic, so it's set
+/// here in-transaction — the artist's figure never waits on a network
+/// call. Stripe's *own* fee (Wander's cost) is backfilled post-commit by
+/// the caller via [`StripeClient::retrieve_charge_fee_cents`].
+///
+/// Guarded on `status = 'pending'` so a replayed/late event can't drag a
+/// shipped order back. Returns the touched order id + its payment intent
+/// (for the fee backfill), or `None` when nothing transitioned.
 async fn checkout_completed(
     tx: &mut Transaction<'_, Postgres>,
     obj: &serde_json::Value,
-) -> Result<Option<Uuid>, ApiError> {
+) -> Result<Option<(Uuid, Option<String>)>, ApiError> {
     let Some(session_id) = obj.get("id").and_then(|v| v.as_str()) else {
         return Ok(None);
     };
@@ -317,6 +376,7 @@ async fn checkout_completed(
         UPDATE orders SET
             status = 'paid',
             stripe_payment_intent_id = COALESCE($2, stripe_payment_intent_id),
+            payout_cents_gbp = amount_cents_gbp - commission_cents_gbp,
             updated_at = now()
         WHERE stripe_checkout_session_id = $1 AND status = 'pending'
         RETURNING id
@@ -327,9 +387,7 @@ async fn checkout_completed(
     .fetch_optional(&mut **tx)
     .await?;
 
-    // TODO(M-07): enqueue buyer order-confirmation + artist sale
-    // notifications when a row transitioned here.
-    Ok(row.map(|(id,)| id))
+    Ok(row.map(|(id,)| (id, payment_intent.map(str::to_string))))
 }
 
 /// `charge.dispute.created` — a chargeback was filed. Move the order to
@@ -353,7 +411,6 @@ async fn dispute_created(
     .fetch_optional(&mut **tx)
     .await?;
 
-    // TODO(M-07): alert admin (SNS + email) on any dispute.
     Ok(row.map(|(id,)| id))
 }
 
@@ -378,6 +435,5 @@ async fn charge_refunded(
     .fetch_optional(&mut **tx)
     .await?;
 
-    // TODO(M-07): buyer + artist refund-confirmation notifications.
     Ok(row.map(|(id,)| id))
 }

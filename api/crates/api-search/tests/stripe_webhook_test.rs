@@ -149,15 +149,22 @@ async fn checkout_completed_marks_paid_and_enqueues_notifications(pool: PgPool) 
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert_eq!(body["status"], "processed");
 
-    // Order advanced to paid + payment intent captured.
-    let (st, pi): (String, Option<String>) =
-        sqlx::query_as("SELECT status, stripe_payment_intent_id FROM orders WHERE id = $1")
-            .bind(order_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    // Order advanced to paid + payment intent captured + payout set
+    // deterministically (amount 100000 - commission 15000 = 85000). The
+    // Stripe fee stays null here: no STRIPE_SECRET_KEY in tests, so the
+    // post-commit backfill is skipped — exactly the graceful-degrade path.
+    let (st, pi, payout, fee): (String, Option<String>, Option<i64>, Option<i64>) = sqlx::query_as(
+        "SELECT status, stripe_payment_intent_id, payout_cents_gbp, stripe_fee_cents_gbp \
+         FROM orders WHERE id = $1",
+    )
+    .bind(order_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(st, "paid");
     assert_eq!(pi.as_deref(), Some("pi_test_1"));
+    assert_eq!(payout, Some(85000));
+    assert_eq!(fee, None);
 
     // Two notification jobs enqueued (buyer confirmation + artist sale).
     let jobs: i64 =
