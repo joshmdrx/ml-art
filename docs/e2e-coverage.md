@@ -178,6 +178,8 @@ live Stripe test-mode loop (`stripe listen` + a Connect account that's
 | Artist OG image renders | [`30-og-cards`](../e2e/tests/30-og-cards.spec.ts) | ✅ same for `/artists/[slug]` |
 | Public-collection page + OG image | [`44-public-collection-og`](../e2e/tests/44-public-collection-og.spec.ts) | ✅ uses seed's `test-share-alice` public collection |
 | `/robots.txt` disallows `/search` param space + authed routes | [`57-robots`](../e2e/tests/57-robots.spec.ts) | ✅ asserts `/search` disallowed, content routes still crawlable |
+| `/sitemap.xml` lists canonical content routes | [`58-sitemap`](../e2e/tests/58-sitemap.spec.ts) | ✅ valid XML, static routes present, no `/search` |
+| `/search` is `noindex` (defence in depth over robots disallow) | [`58-sitemap`](../e2e/tests/58-sitemap.spec.ts) | ✅ asserts `<meta name="robots" content="noindex…">` |
 
 ## Prod smoke (T-075)
 

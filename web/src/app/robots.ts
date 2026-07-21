@@ -30,6 +30,6 @@ export default function robots(): MetadataRoute.Robots {
         "/onboarding",
       ],
     },
-    // sitemap: "https://wander.gallery/sitemap.xml", // add when sitemap.ts lands
+    sitemap: "https://wander.gallery/sitemap.xml",
   };
 }

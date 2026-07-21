@@ -19,6 +19,19 @@ import {
 } from "@/lib/api";
 import { priceParamsFromToken } from "@/lib/filterBar";
 import { reportError, toUserMessage } from "@/lib/reportError";
+import type { Metadata } from "next";
+
+// /search is disallowed in robots.txt (unbounded facet space, 2026-07
+// cost incident — see decisions.md). This is defence in depth for
+// crawlers that ignore robots but honour meta: noindex keeps the page
+// out of the index, and the canonical collapses every param variant
+// (?artist=&bbox=&seed_artwork_id=…) onto the bare path so any that do
+// get indexed don't fragment ranking. `follow` stays on so links out to
+// the canonical content routes are still discovered.
+export const metadata: Metadata = {
+  robots: { index: false, follow: true },
+  alternates: { canonical: "/search" },
+};
 
 /** Page size for the grid query. Surfaced as a named const because
  * the disconnect explainer needs to know whether the result set is
