@@ -1740,3 +1740,8 @@ Two distinct failures, only loosely related to the bill:
 **Reversibility:** High — robots is one file, the WAF rule is a targeted `terraform apply`, the analytics filter is one function. The UA lists are the tunable surface (add crawlers as observed; watch the `ml-art-prod-web-blocked-bots` CloudWatch metric).
 
 **Lesson for future surfaces:** any anonymous route with user-supplied query params over a large key space (UUIDs, bboxes, locations) is an unbounded URL space. Ship it with `robots.txt` coverage from day one, and prefer indexing *canonical content routes* over faceted search/filter URLs. This should have been a launch-readiness item, not an incident — see `COST.md` → "Rate limiting and bot management" and the pre-launch checklist.
+
+**Follow-up hardening (same session):**
+- **`sitemap.ts`** — the positive counterpart to robots: lists canonical content routes (artists, artworks, neighbourhoods) so good bots index those instead of discovering via `/search`. Referenced from `robots.ts`. Bounded to the API's 1000-row offset cap; a dedicated slug-list endpoint is the follow-up if the catalogue outgrows that.
+- **`noindex` + canonical on `/search`** — defence in depth for crawlers that ignore robots but honour meta; canonical collapses param variants onto the bare path.
+- **Invocation alarm threshold 100k → 10k/day** — the alarm (`lambda_daily_invocations`) existed and the SNS pipe was confirmed, but 100k/day never tripped on a ~15k/day crawl. 10k is a pre-launch zero-user tripwire; **raise it at launch** (tracked in `COST.md` re-eval triggers). This is the detection gap that let the crawl run for weeks unseen — the controls above stop it, this is what would have *told us* sooner.

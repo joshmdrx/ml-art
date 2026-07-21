@@ -141,8 +141,11 @@ Pre-launch checklist (before any code reaches `prod` Terraform workspace):
 - [ ] Jina spend cap set
 - [ ] PostHog quota notification at 80% of free tier
 - [ ] Resend quota notification at 80% of free tier
-- [ ] CloudWatch metric: `lambda_invocations` per route group; alarm if
-      any route exceeds 100k/day (would have caught the 2026-07 crawl)
+- [x] CloudWatch metric: `lambda_invocations` per route group — alarm at
+      **10k/day** (pre-launch; the original 100k missed the 2026-07 crawl
+      which peaked at ~15k). `lambda_daily_invocations`,
+      `infra/modules/observability`. **Raise at launch** (see re-eval
+      triggers below).
 - [ ] CloudWatch metric: `cloudfront_bytes_downloaded`; alarm at 500 GB/mo
 - [x] `robots.txt` covers every anonymous, param-driven route (esp.
       `/search`) — `web/src/app/robots.ts` (2026-07-21)
@@ -214,3 +217,6 @@ Revisit this doc when any of the following hold:
 - Search traffic exceeds 1k requests / day
 - Any paid service shows up on a budget alarm
 - We start paying for a service that was previously free
+- **At launch:** raise the `lambda_daily_invocations` alarm threshold
+  (10k → real-traffic level) so genuine user load doesn't page us. The
+  10k value is a pre-launch, zero-user tripwire only.
