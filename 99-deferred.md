@@ -178,6 +178,7 @@ event_artworks (
 - **Multi-region** — single-region deploy for v1.
 - **Read replicas** on Postgres — Neon's branching covers dev; production read replicas not needed at v1 traffic.
 - **CI/CD blue-green or canary** — Terraform apply is the deploy in v1; canary later.
+- **CDN caching for `/search` SSR** — each unique `/search?…` currently misses cache and triggers a full SSR render + ~4-call API fan-out. After the 2026-07 crawler defence (robots + WAF UA block + sitemap; see `decisions.md` 2026-07-21) the crawl that made this expensive is gone, so it's no longer urgent. Revisit if `/search` render volume climbs under real traffic. Non-trivial: needs a caching story for the personalised bits (`SEARCH_PERSONALIZE_ENABLED`, "for you") so a short CloudFront TTL doesn't serve one user's re-rank to another — likely cache the anonymous baseline only, keyed to omit auth.
 
 ## Process / governance
 
