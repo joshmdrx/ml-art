@@ -70,6 +70,14 @@ resource "aws_sqs_queue" "main" {
   visibility_timeout_seconds = var.queue_visibility_timeout_s
   message_retention_seconds  = 345600 # 4 days
 
+  # Long polling. With short polling (0s) the Lambda managed poller spins
+  # ~22k empty ReceiveMessage/day against an idle queue — ~650k/mo, most
+  # of the 1M SQS free tier, at zero users. 20s (the max) collapses those
+  # empty receives. Pairs with maximum_batching_window on the mapping
+  # below. See decisions.md 2026-05-29 (the original cost estimate counted
+  # messages, not the idle poller's requests).
+  receive_wait_time_seconds = 20
+
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.dlq.arn
     maxReceiveCount     = var.max_receive_count
@@ -259,6 +267,14 @@ resource "aws_lambda_event_source_mapping" "sqs_to_jobs" {
   event_source_arn = aws_sqs_queue.main.arn
   function_name    = aws_lambda_function.jobs.arn
   batch_size       = 5
+
+  # Wait up to 20s to fill a batch before invoking. On an idle queue this
+  # lets the managed poller long-poll instead of spin, cutting empty
+  # ReceiveMessage requests (the SQS free-tier driver — see the queue's
+  # receive_wait_time_seconds above). Trade-off: a background job can wait
+  # up to ~20s longer to start — invisible for geocoding / emails /
+  # digests, none of which are on a request path.
+  maximum_batching_window_in_seconds = 20
 
   scaling_config {
     maximum_concurrency = 10
