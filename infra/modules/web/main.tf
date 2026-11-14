@@ -333,6 +333,34 @@ resource "aws_wafv2_regex_pattern_set" "web_blocked_bots" {
   regular_expression {
     regex_string = "gptbot"
   }
+  # 2026-11: seen enumerating /search after robots.txt failed to deploy.
+  regular_expression {
+    regex_string = "reflectionbot"
+  }
+  regular_expression {
+    regex_string = "reconx"
+  }
+  regular_expression {
+    regex_string = "bytespider"
+  }
+}
+
+# HTTP-library user-agents. The web tier serves browsers; scripted
+# clients hitting it (curl, python-requests, Go, …) are scrapers. Matched
+# against the lowercased UA, anchored at the start so a browser UA that
+# merely mentions one of these can't match. Our own smoke test
+# (scripts/smoke-prod.sh) sends its own UA so it isn't caught.
+# Not applied to the api ACL — the web Lambda calls the API as `node`.
+resource "aws_wafv2_regex_pattern_set" "web_scraper_tools" {
+  provider = aws.us_east_1
+
+  name        = "${var.name_prefix}-web-scraper-tools"
+  description = "HTTP-library user-agents blocked on the web tier - scripted scrapers, not browsers. 2026-11."
+  scope       = "CLOUDFRONT"
+
+  regular_expression {
+    regex_string = "^(curl|wget|python-requests|python-urllib|go-http-client|scrapy|okhttp|libwww-perl|aiohttp|axios|node-fetch|java/)"
+  }
 }
 
 resource "aws_wafv2_web_acl" "web" {
@@ -470,6 +498,106 @@ resource "aws_wafv2_web_acl" "web" {
     visibility_config {
       cloudwatch_metrics_enabled = true
       metric_name                = "${var.name_prefix}-web-common-rules"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # 2026-11 — the July UA block only named two crawlers; the next wave
+  # sent no user-agent at all, or an HTTP-library one (curl, python, Go),
+  # and kept fanning /search out into the API + Neon (Neon's quota ran out
+  # ~Oct 19 and the site was down until Nov 1). Every real browser sends a
+  # UA, so on the web tier "missing or scripted UA" = scraper.
+  rule {
+    name     = "BlockScraperUserAgents"
+    priority = 3
+
+    action {
+      block {}
+    }
+
+    statement {
+      or_statement {
+        # No User-Agent header at all.
+        statement {
+          not_statement {
+            statement {
+              size_constraint_statement {
+                comparison_operator = "GT"
+                size                = 0
+                field_to_match {
+                  single_header {
+                    name = "user-agent"
+                  }
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+          }
+        }
+        # An HTTP-library User-Agent.
+        statement {
+          regex_pattern_set_reference_statement {
+            arn = aws_wafv2_regex_pattern_set.web_scraper_tools.arn
+            field_to_match {
+              single_header {
+                name = "user-agent"
+              }
+            }
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-web-scraper-uas"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # /search is the expensive route (SSR + ~4-call API fan-out + Neon), so
+  # it gets a much tighter per-IP budget than the site-wide 1000/5min.
+  # 200/5min still leaves headroom for a human panning the map (each pan
+  # rewrites ?bbox= and refetches the RSC payload).
+  rule {
+    name     = "SearchRateLimitPerIp"
+    priority = 4
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = 200
+        aggregate_key_type = "IP"
+
+        scope_down_statement {
+          byte_match_statement {
+            search_string         = "/search"
+            positional_constraint = "STARTS_WITH"
+            field_to_match {
+              uri_path {}
+            }
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-web-search-rate-limit"
       sampled_requests_enabled   = true
     }
   }
