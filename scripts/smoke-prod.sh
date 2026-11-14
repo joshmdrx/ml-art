@@ -203,10 +203,16 @@ check_image og  "$WEB_ORIGIN/artists/$FIXTURE_ARTIST_SLUG/opengraph-image"
 check_image og  "$WEB_ORIGIN/artworks/$FIXTURE_ARTWORK_ID/opengraph-image"
 
 printf "\n%sImage CDN %s\n" "$BOLD" "$RESET"
-# Hit a known image. CloudFront on this distribution serves from S3 +
-# applies the standard cache headers; we just want to know the path
-# resolves and returns image bytes.
-check_image img "$IMAGES_ORIGIN/uploads/8a602f0e-78a0-4528-8865-bef491028d4c.png"
+# Hit a live artwork image. CloudFront on this distribution serves from
+# S3 + applies the standard cache headers; we just want to know the path
+# resolves and returns image bytes. Resolved from the search response
+# rather than hardcoded: a pinned `uploads/` key went stale when the
+# uploads bucket's 90-day `expire-orphan-anchors` lifecycle rule deleted
+# it (2026-11), failing every deploy for a reason unrelated to the deploy.
+SMOKE_IMAGE_URL=$(curl -sS -m "$TIMEOUT_S" -H "user-agent: ml-art-smoke/1" \
+  "$API_ORIGIN/v1/search?q=morning&limit=1" 2>/dev/null \
+  | python3 -c 'import json,sys; print((json.load(sys.stdin).get("items") or [{}])[0].get("primary_image_url") or "")' 2>/dev/null)
+check_image img "${SMOKE_IMAGE_URL:-$IMAGES_ORIGIN/__no_image_in_search_response__}"
 
 # ──────────────────────────────────────────────────────────────────────
 # Summary
