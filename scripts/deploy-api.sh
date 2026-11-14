@@ -102,7 +102,7 @@ echo "  ✔ active"
 
 # Quick smoke-test.
 echo "▶ smoke-test: GET $WEB_URL/v1/health"
-HTTP_CODE=$(curl -sS -m 15 -o /tmp/api-smoke.out -w "%{http_code}" "$WEB_URL/v1/health" || echo "000")
+HTTP_CODE=$(curl -sS -m 15 -H "user-agent: ml-art-smoke/1" -o /tmp/api-smoke.out -w "%{http_code}" "$WEB_URL/v1/health" || echo "000")
 echo "  ← HTTP $HTTP_CODE"
 echo "  body:"
 sed 's/^/    /' /tmp/api-smoke.out

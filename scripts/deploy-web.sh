@@ -178,7 +178,7 @@ echo "  → invalidation $INVALIDATION_ID submitted (~30-60s to propagate)"
 
 # ─── 4. Smoke test ────────────────────────────────────────────────────────
 echo "▶ smoke-test: GET $WEB_URL"
-HTTP_CODE=$(curl -sS -m 30 -o /tmp/web-smoke.out -w "%{http_code}" "$WEB_URL" || echo "000")
+HTTP_CODE=$(curl -sS -m 30 -H "user-agent: ml-art-smoke/1" -o /tmp/web-smoke.out -w "%{http_code}" "$WEB_URL" || echo "000")
 echo "  ← HTTP $HTTP_CODE"
 echo "  body (first 5 lines):"
 head -5 /tmp/web-smoke.out | sed 's/^/    /'
