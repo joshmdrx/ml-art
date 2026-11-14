@@ -80,8 +80,13 @@ pub async fn handle(
 ) -> Result<Json<Ack>, ApiError> {
     // 1. Signature verification over the raw body. When the webhook
     //    secret is configured we enforce it (prod, and local `stripe
-    //    listen`); when it's unset we skip — a documented dev shortcut so
-    //    the endpoint is reachable without the Stripe CLI running.
+    //    listen`). When it's unset: in dev we skip — a documented shortcut
+    //    so the endpoint is reachable without the Stripe CLI running — but
+    //    outside dev we **fail closed**. Skipping verification in prod
+    //    would let anyone POST a forged `checkout.session.completed` /
+    //    `charge.refunded` / `account.updated` and flip order or artist
+    //    state. We 503 at the endpoint rather than refusing to boot, so a
+    //    missing marketplace secret can't take the whole API down.
     match state.cfg.stripe_webhook_secret.as_deref() {
         Some(secret) => {
             let sig = headers
@@ -93,10 +98,19 @@ pub async fn handle(
                 ApiError::Unauthorized
             })?;
         }
+        None if !state.cfg.env.is_dev() => {
+            tracing::error!(
+                "STRIPE_WEBHOOK_SECRET unset outside dev — rejecting Stripe webhook \
+                 (fail closed; set the whsec_ secret in SSM)"
+            );
+            return Err(ApiError::ServiceUnavailable(
+                "stripe webhook not configured".into(),
+            ));
+        }
         None => {
             tracing::warn!(
                 "STRIPE_WEBHOOK_SECRET unset — skipping Stripe webhook signature \
-                 verification (dev only; set the whsec_ secret in prod)"
+                 verification (dev only)"
             );
         }
     }

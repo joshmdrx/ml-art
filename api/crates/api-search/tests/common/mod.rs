@@ -239,7 +239,12 @@ pub fn app_with_rate_limit(pool: Pool, search_per_min: u32, inquiry_per_hour: u3
 /// which captures in memory — useful for the unit-style tests but
 /// hard to observe from outside the test scope.
 pub fn app_with_postgres_jobs(pool: Pool) -> Router {
-    let cfg = Config::for_tests(String::new());
+    app_with_postgres_jobs_cfg(pool, Config::for_tests(String::new()))
+}
+
+/// [`app_with_postgres_jobs`] with a caller-supplied `Config` — for tests
+/// that need non-default settings (e.g. `env = Prod`).
+pub fn app_with_postgres_jobs_cfg(pool: Pool, cfg: Config) -> Router {
     let embedder = Embedder::disabled(pool.clone());
     let jwt_verifier = JwtVerifier::for_tests();
     build_app(Arc::new(AppState {

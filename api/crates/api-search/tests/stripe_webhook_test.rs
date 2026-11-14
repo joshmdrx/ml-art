@@ -176,6 +176,43 @@ async fn checkout_completed_marks_paid_and_enqueues_notifications(pool: PgPool) 
 }
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn prod_without_webhook_secret_fails_closed(pool: PgPool) {
+    // Outside dev, an unset STRIPE_WEBHOOK_SECRET must NOT fall through to
+    // the unsigned "skip verification" path — that would let anyone forge
+    // order/artist state transitions.
+    let mut cfg = ml_art_core::config::Config::for_tests(String::new());
+    cfg.env = ml_art_core::config::Environment::Prod;
+    assert!(cfg.stripe_webhook_secret.is_none());
+
+    link_stripe_account(&pool).await;
+    let forged = json!({
+        "id": "evt_forged_1",
+        "type": "account.updated",
+        "data": { "object": { "id": ACCOUNT_ID, "charges_enabled": true, "payouts_enabled": true } },
+    });
+    let resp = common::app_with_postgres_jobs_cfg(pool.clone(), cfg)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/webhooks/stripe")
+                .header("content-type", "application/json")
+                .body(Body::from(forged.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    // The forged event changed nothing: flags still off, no dedup row.
+    assert_eq!(artist_flags(&pool).await, (false, false, false));
+    let events: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM stripe_webhook_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(events, 0);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn unknown_event_type_is_ignored(pool: PgPool) {
     let event = json!({
         "id": "evt_unknown_1",
