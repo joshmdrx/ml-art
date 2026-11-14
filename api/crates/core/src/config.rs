@@ -107,8 +107,10 @@ pub struct Config {
     pub stripe_secret_key: Option<String>,
     /// M-03 — Stripe webhook signing secret (starts with `whsec_`).
     /// Used to verify inbound webhook signatures on
-    /// `/v1/webhooks/stripe`. Required in prod once marketplace
-    /// ships; None in dev short-circuits webhook verification.
+    /// `/v1/webhooks/stripe`. Comma-separated when more than one endpoint
+    /// delivers here — in prod the platform endpoint *and* the Connect
+    /// endpoint (`whsec_platform,whsec_connect`). Unset outside dev makes
+    /// the webhook fail closed (503); None in dev skips verification.
     pub stripe_webhook_secret: Option<String>,
 }
 

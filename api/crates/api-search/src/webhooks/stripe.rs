@@ -36,7 +36,7 @@ use chrono::Utc;
 use ml_art_core::{
     error::ApiError,
     jobs::{EnqueueOpts, JobEvent, OrderNotifyKind},
-    stripe::{verify_webhook_signature, StripeClient},
+    stripe::{verify_webhook_signature_any, StripeClient},
 };
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction};
@@ -88,15 +88,22 @@ pub async fn handle(
     //    state. We 503 at the endpoint rather than refusing to boot, so a
     //    missing marketplace secret can't take the whole API down.
     match state.cfg.stripe_webhook_secret.as_deref() {
-        Some(secret) => {
+        Some(configured) => {
             let sig = headers
                 .get(SIGNATURE_HEADER)
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| ApiError::BadRequest("missing Stripe-Signature header".into()))?;
-            verify_webhook_signature(&body, sig, secret, Utc::now().timestamp()).map_err(|e| {
-                tracing::warn!(error = %e, "stripe webhook signature verification failed");
-                ApiError::Unauthorized
-            })?;
+            // Comma-separated: the platform endpoint's whsec_ and the Connect
+            // endpoint's whsec_ (account.updated for connected accounts only
+            // arrives via the Connect endpoint). Locally `stripe listen`
+            // forwards both streams under one secret.
+            let secrets: Vec<&str> = configured.split(',').map(str::trim).collect();
+            verify_webhook_signature_any(&body, sig, &secrets, Utc::now().timestamp()).map_err(
+                |e| {
+                    tracing::warn!(error = %e, "stripe webhook signature verification failed");
+                    ApiError::Unauthorized
+                },
+            )?;
         }
         None if !state.cfg.env.is_dev() => {
             tracing::error!(

@@ -122,6 +122,33 @@ pub fn verify_webhook_signature(
     Err(SignatureError::NoMatch)
 }
 
+/// [`verify_webhook_signature`] against any of several secrets.
+///
+/// Stripe signs each webhook *endpoint* with its own `whsec_`. The
+/// marketplace needs two endpoints pointing at the same handler: the
+/// platform endpoint (checkout / refund / dispute events) and a **Connect**
+/// endpoint — events that happen on connected accounts, notably the
+/// `account.updated` that flips an artist to sellable after onboarding, are
+/// only delivered to Connect endpoints. So the handler accepts a list.
+///
+/// Empty entries are ignored. Returns the last error when nothing matches
+/// (`NoSecret` if the list was empty).
+pub fn verify_webhook_signature_any(
+    payload: &[u8],
+    header: &str,
+    secrets: &[&str],
+    now_unix: i64,
+) -> Result<(), SignatureError> {
+    let mut last = SignatureError::NoSecret;
+    for secret in secrets.iter().filter(|s| !s.is_empty()) {
+        match verify_webhook_signature(payload, header, secret, now_unix) {
+            Ok(()) => return Ok(()),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
 /// Constant-time byte equality over equal-length slices. Content is
 /// compared without early exit; callers gate on length first. Same
 /// idiom as the T-054 inbound-webhook secret check.
@@ -567,6 +594,46 @@ mod tests {
         assert_eq!(
             verify_webhook_signature(b"body", "garbage", SECRET, 1),
             Err(SignatureError::MalformedHeader),
+        );
+    }
+
+    // ── multi-secret verification (platform + Connect endpoints) ──
+
+    #[test]
+    fn any_secret_matching_passes() {
+        let body = br#"{"id":"evt_1","type":"account.updated"}"#;
+        let now = 1_700_000_000;
+        // Signed with the Connect endpoint's secret; platform listed first.
+        let header = sign(body, now, "whsec_connect");
+        assert!(verify_webhook_signature_any(
+            body,
+            &header,
+            &["whsec_platform", "whsec_connect"],
+            now
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn no_secret_matching_fails() {
+        let body = b"body";
+        let now = 1_700_000_000;
+        let header = sign(body, now, "whsec_other");
+        assert_eq!(
+            verify_webhook_signature_any(body, &header, &["whsec_a", "", "whsec_b"], now),
+            Err(SignatureError::NoMatch),
+        );
+    }
+
+    #[test]
+    fn empty_secret_list_is_no_secret() {
+        assert_eq!(
+            verify_webhook_signature_any(b"body", "t=1,v1=aa", &[], 1),
+            Err(SignatureError::NoSecret),
+        );
+        assert_eq!(
+            verify_webhook_signature_any(b"body", "t=1,v1=aa", &["", ""], 1),
+            Err(SignatureError::NoSecret),
         );
     }
 
