@@ -697,6 +697,28 @@ resource "aws_cloudfront_distribution" "web" {
     cache_policy_id        = "658327ea-f89d-4fab-a63d-7e88639e58f6"
   }
 
+  # robots.txt + sitemap.xml are Next.js metadata *routes*
+  # (web/src/app/robots.ts, sitemap.ts) rendered by the server Lambda —
+  # OpenNext keeps them in its cache, not the assets bucket. They must
+  # route to the Lambda, and must sit BEFORE the `*.txt` / `*.xml`
+  # extension behaviours below (CloudFront takes the first match in
+  # order). Without this, both 404'd in S3 (served as AccessDenied) and
+  # robots.txt never reached a crawler (found 2026-11, months after the
+  # July crawler incident it was meant to fix).
+  dynamic "ordered_cache_behavior" {
+    for_each = toset(["/robots.txt", "/sitemap.xml"])
+    content {
+      path_pattern             = ordered_cache_behavior.value
+      target_origin_id         = "apigw-web"
+      viewer_protocol_policy   = "redirect-to-https"
+      allowed_methods          = ["GET", "HEAD"]
+      cached_methods           = ["GET", "HEAD"]
+      compress                 = true
+      cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled (Next sets its own cache headers)
+      origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
+    }
+  }
+
   # Root-level static assets. Next.js serves files from `web/public/`
   # at the URL root (e.g. `public/favicon.ico` → `/favicon.ico`), and
   # OpenNext copies them to the root of the assets bucket. Without
