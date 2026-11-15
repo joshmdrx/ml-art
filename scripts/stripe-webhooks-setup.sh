@@ -3,7 +3,8 @@
 #
 # Creates the two webhook endpoints the marketplace needs, both pointing at
 # https://api.wander.gallery/v1/webhooks/stripe:
-#   - platform endpoint: checkout.session.completed, charge.refunded,
+#   - platform endpoint: checkout.session.completed, charge.updated (late-
+#     arriving Stripe fee), charge.refunded,
 #     charge.dispute.created
 #   - Connect endpoint (connect=true): account.updated — events on
 #     connected accounts are ONLY delivered to Connect endpoints, and this is
@@ -52,6 +53,7 @@ create_endpoint() {
 echo "▶ creating platform webhook endpoint ($MODE)"
 PLATFORM_SECRET="$(create_endpoint \
   -d "enabled_events[]=checkout.session.completed" \
+  -d "enabled_events[]=charge.updated" \
   -d "enabled_events[]=charge.refunded" \
   -d "enabled_events[]=charge.dispute.created")"
 

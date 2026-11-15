@@ -223,3 +223,64 @@ async fn unknown_event_type_is_ignored(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["status"], "ignored");
 }
+
+/// A paid order whose Stripe fee isn't known yet — the state
+/// checkout.session.completed leaves when the balance transaction hasn't
+/// been attached.
+async fn insert_fee_pending_order(pool: &PgPool, payment_intent: &str) -> uuid::Uuid {
+    sqlx::query_scalar(
+        r#"
+        INSERT INTO orders (
+            buyer_user_id, artwork_id, artist_id,
+            amount_cents_gbp, commission_cents_gbp, payout_cents_gbp, status,
+            shipping_address, stripe_payment_intent_id
+        )
+        VALUES ('99999999-9999-9999-9999-999999999999',
+                'bbb11111-1111-1111-1111-111111111111',
+                'aaa11111-1111-1111-1111-111111111111',
+                5000, 750, 4250, 'paid', '{"country":"GB"}'::jsonb, $1)
+        RETURNING id
+        "#,
+    )
+    .bind(payment_intent)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn event_order(pool: &PgPool, event_id: &str) -> Option<uuid::Uuid> {
+    sqlx::query_scalar("SELECT order_id FROM stripe_webhook_events WHERE event_id = $1")
+        .bind(event_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn settled_charge_updated_targets_the_fee_pending_order(pool: PgPool) {
+    let order_id = insert_fee_pending_order(&pool, "pi_fee_1").await;
+    let event = json!({
+        "id": "evt_cu_1",
+        "type": "charge.updated",
+        "data": { "object": { "id": "ch_1", "payment_intent": "pi_fee_1", "balance_transaction": "txn_1" } },
+    });
+    let (status, body) = post_stripe(&pool, &event).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["status"], "processed");
+    // Linked to the order → the post-commit fee backfill ran for it (the
+    // fetch itself no-ops here: no STRIPE_SECRET_KEY in tests).
+    assert_eq!(event_order(&pool, "evt_cu_1").await, Some(order_id));
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn unsettled_charge_updated_is_a_noop(pool: PgPool) {
+    insert_fee_pending_order(&pool, "pi_fee_2").await;
+    let event = json!({
+        "id": "evt_cu_2",
+        "type": "charge.updated",
+        "data": { "object": { "id": "ch_2", "payment_intent": "pi_fee_2", "balance_transaction": null } },
+    });
+    let (status, _) = post_stripe(&pool, &event).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(event_order(&pool, "evt_cu_2").await, None);
+}

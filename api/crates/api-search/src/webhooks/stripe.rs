@@ -22,7 +22,9 @@
 //!   - `account.updated` — Connect KYC → `artists.stripe_*` flags (the
 //!     async half of M-01's onboarding);
 //!   - `checkout.session.completed` — order `pending → paid`, artist
-//!     payout set, Stripe fee backfilled (M-04);
+//!     payout set, Stripe fee backfilled if already settled (M-04);
+//!   - `charge.updated` — backfills the Stripe fee once the charge's balance
+//!     transaction is attached (usually after checkout completes);
 //!   - `charge.dispute.created` — order `→ disputed`;
 //!   - `charge.refunded` — order `→ refunded` (confirms an M-08 refund).
 //!
@@ -289,6 +291,22 @@ async fn dispatch(
             }
             None => (None, vec![]),
         },
+        "charge.updated" => {
+            // On current Stripe API versions the charge's balance
+            // transaction — the only source of Stripe's exact fee — is
+            // attached *after* checkout.session.completed, so the fetch
+            // there usually finds nothing. Stripe announces the attachment
+            // with charge.updated; backfill the fee then (post-commit, same
+            // best-effort path). Fires often; a no-op unless an order with
+            // this payment intent still lacks its fee.
+            let id = fee_pending_order(tx, obj).await?;
+            if let (Some(order_id), Some(pi)) =
+                (id, obj.get("payment_intent").and_then(|v| v.as_str()))
+            {
+                fee_backfill = Some((order_id, pi.to_string()));
+            }
+            (id, vec![])
+        }
         "charge.dispute.created" => {
             // Order → disputed. An admin alert on disputes is a genuine
             // follow-up (needs an admin-email / SNS sink) — tracked, not
@@ -432,6 +450,29 @@ async fn dispute_created(
     .fetch_optional(&mut **tx)
     .await?;
 
+    Ok(row.map(|(id,)| id))
+}
+
+/// `charge.updated` — the order whose Stripe fee is still unknown, if this
+/// charge now carries its balance transaction. Read-only: the fee itself is
+/// fetched and written post-commit by the caller.
+async fn fee_pending_order(
+    tx: &mut Transaction<'_, Postgres>,
+    obj: &serde_json::Value,
+) -> Result<Option<Uuid>, ApiError> {
+    let settled = obj.get("balance_transaction").is_some_and(|v| !v.is_null());
+    let Some(payment_intent) = obj.get("payment_intent").and_then(|v| v.as_str()) else {
+        return Ok(None);
+    };
+    if !settled {
+        return Ok(None);
+    }
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM orders WHERE stripe_payment_intent_id = $1 AND stripe_fee_cents_gbp IS NULL",
+    )
+    .bind(payment_intent)
+    .fetch_optional(&mut **tx)
+    .await?;
     Ok(row.map(|(id,)| id))
 }
 
