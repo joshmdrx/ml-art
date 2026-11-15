@@ -206,7 +206,8 @@ export function DraftRow({ draft }: { draft: AdminDraftItem }) {
         />
       )}
 
-      {link && (
+      {/* A claim or assignment revokes the link, so stop showing it. */}
+      {link && !draft.claimed && (
         <div className="flex items-center gap-2 flex-wrap">
           <input
             readOnly

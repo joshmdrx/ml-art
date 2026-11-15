@@ -2415,7 +2415,8 @@ export async function assignDraft(
   if (res.status === 400 || res.status === 409) {
     const body = (await res.json().catch(() => null)) as { detail?: string } | null;
     const detail = (body?.detail ?? "").replace(/^(bad request|conflict): /, "");
-    return { ok: false, message: detail || "Couldn't assign the page." };
+    const message = detail ? detail.charAt(0).toUpperCase() + detail.slice(1) : "";
+    return { ok: false, message: message || "Couldn't assign the page." };
   }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
