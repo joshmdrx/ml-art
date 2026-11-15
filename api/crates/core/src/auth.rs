@@ -430,7 +430,27 @@ async fn upsert_user(
     // a manual promotion is never overwritten.
     let email = verifier.fetch_clerk_email(&claims.sub).await?;
     let seed_admin = is_seeded_admin_email(&email);
-    let row: UserRow = sqlx::query_as(
+    insert_or_fetch_user(pool, &claims.sub, &email, seed_admin).await
+}
+
+/// Slow-path half of [`upsert_user`]: insert the user, mapping the email
+/// unique index to a proper outcome instead of a 500.
+///
+/// `ON CONFLICT (clerk_user_id)` only arbitrates its *own* index. An
+/// INSERT can still trip the separate `users_email_key` (23505) — seen on
+/// 2026-11-15 as a 500 during a first sign-in, where the email was already
+/// held by a row for a *different* Clerk identity (e.g. a deleted-and-
+/// recreated login). On that violation we re-read by `clerk_user_id`
+/// (covers any concurrent insert of the same identity); if it's still
+/// absent, the email genuinely belongs to another Clerk account → 409, not
+/// 500. Whether to re-link such accounts is a product call.
+pub async fn insert_or_fetch_user(
+    pool: &PgPool,
+    clerk_user_id: &str,
+    email: &str,
+    seed_admin: bool,
+) -> Result<User, ApiError> {
+    let inserted = sqlx::query_as::<_, UserRow>(
         r#"
         INSERT INTO users (clerk_user_id, email, is_admin)
         VALUES ($1, $2, $3)
@@ -441,12 +461,36 @@ async fn upsert_user(
         RETURNING id, clerk_user_id, email, is_admin
         "#,
     )
-    .bind(&claims.sub)
-    .bind(&email)
+    .bind(clerk_user_id)
+    .bind(email)
     .bind(seed_admin)
     .fetch_one(pool)
-    .await?;
-    Ok(row.into_user())
+    .await;
+
+    match inserted {
+        Ok(row) => Ok(row.into_user()),
+        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
+            let existing = sqlx::query_as::<_, UserRow>(
+                r#"SELECT id, clerk_user_id, email, is_admin FROM users WHERE clerk_user_id = $1"#,
+            )
+            .bind(clerk_user_id)
+            .fetch_optional(pool)
+            .await?;
+            match existing {
+                Some(row) => Ok(row.into_user()),
+                None => {
+                    tracing::warn!(
+                        clerk_user_id,
+                        "email already linked to a different Clerk account"
+                    );
+                    Err(ApiError::Conflict(
+                        "this email is already linked to another account".into(),
+                    ))
+                }
+            }
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 #[derive(sqlx::FromRow)]
