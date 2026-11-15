@@ -16,8 +16,16 @@ import { revalidatePath } from "next/cache";
 import {
   adminArtistTransition,
   adminImageOverride,
+  createAdminDraft,
+  createDraftPreviewLink,
   refundOrder,
+  startEditingDraft,
+  stopEditingDraft,
+  takedownDraft,
   type AdminArtistTransition,
+  type AdminDraftItem,
+  type CreateDraftBody,
+  type DraftPreviewLink,
 } from "@/lib/api";
 
 export async function transitionArtist(
@@ -51,4 +59,44 @@ export async function refundOrderAction(
   revalidatePath(`/admin/orders/${id}`);
   revalidatePath("/admin/orders");
   return result;
+}
+
+// ── T-086 — consent-first draft profiles ────────────────────────────────
+
+export async function createDraftAction(
+  body: CreateDraftBody,
+): Promise<AdminDraftItem> {
+  const draft = await createAdminDraft(body);
+  revalidatePath("/admin/drafts");
+  return draft;
+}
+
+/** Point the admin's studio at this draft, then the caller navigates to
+ * `/studio` to build it with the ordinary studio UI. */
+export async function startEditingDraftAction(id: string): Promise<void> {
+  await startEditingDraft(id);
+  revalidatePath("/admin/drafts");
+  revalidatePath("/studio", "layout");
+}
+
+export async function stopEditingDraftAction(): Promise<void> {
+  await stopEditingDraft();
+  revalidatePath("/admin/drafts");
+  revalidatePath("/studio", "layout");
+}
+
+/** Mint a fresh private link (revokes the previous one). The plaintext
+ * token is only available in this response. */
+export async function createPreviewLinkAction(
+  id: string,
+): Promise<DraftPreviewLink> {
+  const link = await createDraftPreviewLink(id);
+  revalidatePath("/admin/drafts");
+  return link;
+}
+
+export async function takedownDraftAction(id: string): Promise<void> {
+  await takedownDraft(id);
+  revalidatePath("/admin/drafts");
+  revalidatePath("/studio", "layout");
 }

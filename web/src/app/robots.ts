@@ -12,6 +12,9 @@ import type { MetadataRoute } from "next";
  * robots.txt is advisory, so this is paired with a WAF user-agent
  * block for the bots that ignore it.
  *
+ * `/preview` (T-086) holds private, token-gated draft pages that must
+ * never be indexed; the page also sets `noindex`.
+ *
  * The authed routes are hygiene, not cost: they redirect to Clerk
  * sign-in, so disallowing them just keeps sign-in pages out of the
  * index and saves crawlers a wasted redirect render.
@@ -28,6 +31,8 @@ export default function robots(): MetadataRoute.Robots {
         "/me",
         "/orders",
         "/onboarding",
+        // T-086 — private draft previews; also `noindex` on the page.
+        "/preview",
       ],
     },
     sitemap: "https://wander.gallery/sitemap.xml",

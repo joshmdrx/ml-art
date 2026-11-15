@@ -147,6 +147,9 @@ the `chromium-admin` project consumes it and picks up
 | Non-admin visitor to non-active artist → 404 (T-084.2 inverse) | [`39-artist-non-active-blocked-signed-in`](../e2e/tests/39-artist-non-active-blocked-signed-in.spec.ts) | ✅ |
 | Admin decline pending artist (confirm-dialog path) | [`40-admin-artists-decline-admin-signed-in`](../e2e/tests/40-admin-artists-decline-admin-signed-in.spec.ts) | ✅ uses seed's `franz-pending` |
 | Admin pause / unpause round-trip | [`41-admin-artists-pause-admin-signed-in`](../e2e/tests/41-admin-artists-pause-admin-signed-in.spec.ts) | ✅ uses seed's `greta-active` |
+| Admin creates a draft page, edits it in the studio, mints a private link (T-086) | — | ⏳ assert: `/admin/drafts` form refuses submit without a consent note; with one, the row appears as "Draft"; "Edit in studio" lands on `/studio` with the "editing the draft page" banner; "Done editing" returns to `/admin/drafts`; "Create private link" shows a `/preview/<64 hex>` URL once |
+| Visitor opens `/preview/<token>` → sees the draft + Claim / Remove; Remove → "link no longer works" (T-086) | — | ⏳ needs a live token: mint one in the admin spec above (or add a `testfixtures` route). Also assert the page carries `noindex` |
+| Signed-in visitor claims a preview → lands in `/studio`, page still unpublished (T-086) | — | ⏳ use a fresh non-artist user; then assert `/artists/<slug>` 404s until they publish. API side covered by `drafts_test.rs` |
 
 ## Marketplace — direct sales (M-01..M-11)
 

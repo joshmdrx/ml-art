@@ -14,6 +14,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::extractors::AuthedUser;
+use crate::studio::{current_artist_id, is_unclaimed_draft};
 use crate::AppState;
 
 /// Studio view of the artist — includes editable fields the public
@@ -51,6 +52,10 @@ pub struct StudioMe {
     #[serde(flatten)]
     pub artist: StudioArtist,
     pub follower_count: i32,
+    /// T-086 — true when an admin is editing an unclaimed draft profile
+    /// through the studio (see `users.editing_draft_artist_id`). The
+    /// web studio shell shows a "you're editing a draft" banner.
+    pub editing_draft: bool,
     /// T-074 — count of `inquiries` rows owned by this artist with
     /// `read_at IS NULL`. Drives the persistent unread-badge on the
     /// TopNav `Studio` link. Capped server-side at `i32::MAX`; the
@@ -63,6 +68,10 @@ pub async fn current_artist(
     State(state): State<Arc<AppState>>,
     AuthedUser(user): AuthedUser,
 ) -> Result<Json<StudioMe>, ApiError> {
+    // T-086 — resolve through `current_artist_id` so an admin editing a
+    // draft sees the draft here too, consistent with every other studio
+    // endpoint.
+    let artist_id = current_artist_id(&state.pool, &user).await?;
     let artist: StudioArtist = sqlx::query_as(
         r#"
         SELECT
@@ -71,14 +80,15 @@ pub async fn current_artist(
             socials, commissioning_preferences, inquiry_preferences,
             status, entity_type, created_at, updated_at
         FROM artists
-        WHERE user_id = $1
+        WHERE id = $1
           AND deleted_at IS NULL
         "#,
     )
-    .bind(user.id)
+    .bind(artist_id)
     .fetch_optional(&state.pool)
     .await?
     .ok_or(ApiError::NotFound)?;
+    let editing_draft = user.is_admin && is_unclaimed_draft(&state.pool, artist.id).await?;
 
     let follower_count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM follows WHERE artist_id = $1")
@@ -108,6 +118,7 @@ pub async fn current_artist(
     Ok(Json(StudioMe {
         artist,
         follower_count: follower_count as i32,
+        editing_draft,
         unread_inquiry_count: unread_inquiry_count as i32,
     }))
 }

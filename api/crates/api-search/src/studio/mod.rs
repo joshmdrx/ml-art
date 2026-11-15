@@ -27,7 +27,17 @@ use uuid::Uuid;
 /// Use this as the very first call in every studio handler — it's the
 /// gate that turns a generic `AuthedUser` into "the artist the request
 /// is allowed to act on."
+///
+/// T-086 — admins editing a draft profile resolve to that draft instead
+/// (see `users.editing_draft_artist_id`, migration 0033). Honoured only
+/// for admins and only while the target is still an unclaimed draft, so
+/// a claim or takedown ends the editing session without extra cleanup.
 pub async fn current_artist_id(pool: &Pool, user: &User) -> Result<Uuid, ApiError> {
+    if user.is_admin {
+        if let Some(draft_id) = editing_draft_id(pool, user.id).await? {
+            return Ok(draft_id);
+        }
+    }
     let row: Option<(Uuid,)> = sqlx::query_as(
         r#"
         SELECT id FROM artists
@@ -39,4 +49,41 @@ pub async fn current_artist_id(pool: &Pool, user: &User) -> Result<Uuid, ApiErro
     .fetch_optional(pool)
     .await?;
     row.map(|(id,)| id).ok_or(ApiError::NotFound)
+}
+
+/// T-086 — the unclaimed draft this user is currently editing, if any.
+/// Callers must check `is_admin` first; this function doesn't.
+pub async fn editing_draft_id(pool: &Pool, user_id: Uuid) -> Result<Option<Uuid>, ApiError> {
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        r#"
+        SELECT a.id
+        FROM users u
+        JOIN artists a ON a.id = u.editing_draft_artist_id
+        WHERE u.id = $1
+          AND a.is_prebuilt
+          AND a.user_id IS NULL
+          AND a.deleted_at IS NULL
+        "#,
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(id,)| id))
+}
+
+/// T-086 — true when `artist_id` is a draft nobody has claimed yet.
+/// Used to refuse anything that would publish a draft without the
+/// organisation's say-so (studio status toggle, admin approve).
+pub async fn is_unclaimed_draft(pool: &Pool, artist_id: Uuid) -> Result<bool, ApiError> {
+    let row: Option<(bool,)> = sqlx::query_as(
+        r#"
+        SELECT (is_prebuilt AND user_id IS NULL)
+        FROM artists
+        WHERE id = $1 AND deleted_at IS NULL
+        "#,
+    )
+    .bind(artist_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some_and(|(b,)| b))
 }

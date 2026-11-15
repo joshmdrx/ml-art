@@ -84,6 +84,11 @@ pub mod action {
     pub const VENUE_DECLINE: &str = "venue.decline";
     /// M-08 — admin-initiated marketplace refund.
     pub const ORDER_REFUND: &str = "order.refund";
+    /// T-086 — consent-first draft profiles.
+    pub const DRAFT_CREATE: &str = "draft.create";
+    pub const DRAFT_EDIT_START: &str = "draft.edit_start";
+    pub const DRAFT_PREVIEW_LINK: &str = "draft.preview_link";
+    pub const DRAFT_TAKEDOWN: &str = "draft.takedown";
 }
 
 pub mod target {

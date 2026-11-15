@@ -43,6 +43,21 @@ artwork `6d9f5170-…`'s two images (uploaded 2026-06-29 / 07-01) are gone.
 - ⏳ The prod test artwork's two images need re-uploading (lost to the old rule)
 - Not covered: the real-S3 `set_retention` path is only compile-checked + unit-tested against the in-memory store (dev MinIO image won't pull). The runbook's post-deploy check exercises it for real.
 
+### `T-086` Consent-first draft pages + private preview links — built on `feat/claim-preview`, not yet merged
+
+For outreach: once a gallery or studio says yes to an example page, an admin builds a draft, sends a private link, and they claim or remove it. See `decisions.md` 2026-11-15.
+
+- ✅ Migrations `0031_artist_prebuilt`, `0032_artist_preview_links`, `0033_users_editing_draft`
+- ✅ API: `/v1/admin/drafts` (list, create, edit, stop editing, preview link, takedown) + `/v1/preview/:token` (view, claim, remove); drafts blocked from the approval queue, approve/unpause and the studio publish toggle
+- ✅ Web: `/admin/drafts`, studio "editing a draft" banner, `/preview/[token]` (noindex + robots disallow)
+- ✅ 16 integration tests (`drafts_test.rs`) + 3 core unit (`preview_token`) + 6 Vitest (`draftValidation`)
+- ⏳ E2E: three register rows in `docs/e2e-coverage.md` (Admin section)
+- **Prod:** apply 0031–0033 via `psql` *before* the API deploy
+
+### `T-087` Purge removed / expired draft pages
+
+Removed drafts are soft-deleted and expired links stop working, but image files and rows stay. Add a scheduled job (`core::jobs`) that, for drafts removed or unclaimed past link expiry plus a grace period, deletes their artwork images from S3 and hard-deletes the rows. Matches the 99-deferred "auto-expire, purge images" intent.
+
 ### ~~`T-044` Jobs queue — Postgres local, SQS+Lambda prod~~ — shipped 2026-05-29
 
 - ✅ `db/migrations/0012_jobs.sql` + `core::jobs` module (JobEvent + JobsBackend + Postgres driver + handler dispatch)

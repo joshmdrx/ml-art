@@ -214,7 +214,10 @@ pub fn slugify(name: &str) -> String {
 /// Try `slugify(display_name)` first; if taken, append `-2`, `-3`, …
 /// until we find a free one. Each candidate is a single round trip;
 /// for the v1 collision profile (~zero) we expect exactly one query.
-async fn generate_unique_slug(pool: &Pool, display_name: &str) -> Result<String, ApiError> {
+pub(crate) async fn generate_unique_slug(
+    pool: &Pool,
+    display_name: &str,
+) -> Result<String, ApiError> {
     let base = slugify(display_name);
     for i in 0..MAX_SLUG_ATTEMPTS {
         let candidate = if i == 0 {

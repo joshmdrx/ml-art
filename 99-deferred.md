@@ -4,7 +4,9 @@ Single source of truth for features intentionally left out of v1. Schema decisio
 
 ## Cold-outreach / scale-up
 
-### Pre-built portfolio claim flow
+### ~~Pre-built portfolio claim flow~~ — revived consent-first as T-086 (2026-11-15)
+
+Built without the scraper: drafts are made by hand, only after the organisation says yes. See `decisions.md` 2026-11-15. The notes below are kept for history.
 
 The idea: for cold outreach, scrape a target artist's public website, build a private portfolio preview behind a tokenized URL, email them a link with "this is a draft of how your page could look — claim and edit, or ignore."
 

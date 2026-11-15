@@ -26,8 +26,8 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::extractors::AuthedUser;
-use crate::studio::current_artist_id;
 use crate::studio::me::StudioArtist;
+use crate::studio::{current_artist_id, is_unclaimed_draft};
 use crate::AppState;
 
 const MAX_BIO_LEN: usize = 4_000;
@@ -132,6 +132,14 @@ pub async fn patch(
                 "status must be one of: {SELF_SERVE_STATUSES:?}"
             )));
         }
+    }
+    // T-086 — a draft profile only goes public after the organisation
+    // claims it. Refuse the publish toggle while it's unclaimed, even
+    // for the admin editing it.
+    if body.status.is_some() && is_unclaimed_draft(&state.pool, artist_id).await? {
+        return Err(ApiError::Conflict(
+            "draft profiles can't be published until the organisation claims them".into(),
+        ));
     }
 
     // Touching geocoded fields would invalidate the city/country/lat/lng;

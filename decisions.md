@@ -1822,3 +1822,18 @@ Two distinct failures, only loosely related to the bill:
 - **`sitemap.ts`** — the positive counterpart to robots: lists canonical content routes (artists, artworks, neighbourhoods) so good bots index those instead of discovering via `/search`. Referenced from `robots.ts`. Bounded to the API's 1000-row offset cap; a dedicated slug-list endpoint is the follow-up if the catalogue outgrows that.
 - **`noindex` + canonical on `/search`** — defence in depth for crawlers that ignore robots but honour meta; canonical collapses param variants onto the bare path.
 - **Invocation alarm threshold 100k → 10k/day** — the alarm (`lambda_daily_invocations`) existed and the SNS pipe was confirmed, but 100k/day never tripped on a ~15k/day crawl. 10k is a pre-launch zero-user tripwire; **raise it at launch** (tracked in `COST.md` re-eval triggers). This is the detection gap that let the crawl run for weeks unseen — the controls above stop it, this is what would have *told us* sooner.
+
+---
+
+## 2026-11-15 — Revive the claim flow, consent-first (T-086)
+
+**Context:** Outreach to London galleries and studios offers to build a private example page from their public site "if you'd like". On 2026-05-24 we deferred the pre-built-portfolio claim flow because republishing scraped work *without consent*, even privately, carried legal and reputational risk. Outreach now needs a way to show a gallery its page before it commits.
+
+**Decided:** Build the flow, but only after consent and with no scraping. An admin creates a draft (`artists` row with `user_id NULL`, `status 'pending'`, `is_prebuilt true`) only after the organisation has said yes; a `prebuilt_consent_note` is required by both the API and a CHECK constraint. The admin builds it by hand through the ordinary studio UI (`users.editing_draft_artist_id` makes `studio::current_artist_id` resolve to the draft for admins), then mints a private link (`/preview/<token>`; SHA-256 hash stored, 90-day expiry, one live link per draft). The holder can claim it (it links to their account and stays unpublished until *they* publish) or remove it (soft delete, no sign-in needed). Unclaimed drafts are excluded from the approval queue, and approve, unpause and the studio publish toggle all refuse them (409).
+
+**Alternatives:** (a) Screenshots of a local mock-up: no code, but nothing to hand over, so the gallery re-enters everything. (b) The original 99-deferred spec with a website scraper: rejected again, because consent is the point. (c) An admin "act-as" header on studio calls: rejected, because it means threading a header through every web fetch; server-side state keeps every studio page unchanged. (d) Storing plaintext tokens so admins can re-copy links: rejected; re-minting is cheap and a DB read can't leak live links.
+
+**Why:** The deferral's objection was consent, not the mechanism. Requiring a recorded yes before a draft exists, keeping it unindexed and token-gated, and letting the recipient delete it in one click addresses that directly. Reusing the studio for editing keeps the new surface small (one admin page, one public page).
+
+**Reversibility:** High. Three additive migrations (0031–0033). Removing the routes leaves inert columns. Purging removed drafts' image files is a follow-up (T-087).
+

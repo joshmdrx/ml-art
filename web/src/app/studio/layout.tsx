@@ -1,5 +1,6 @@
 import { TopNav } from "@/components/TopNav";
 import { StudioSidebar } from "@/components/StudioSidebar";
+import { EditingDraftBanner } from "@/components/studio/EditingDraftBanner";
 import { getStudioMe } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
@@ -33,7 +34,11 @@ export default async function StudioLayout({
       <TopNav />
       <div className="flex-1 flex flex-col lg:flex-row w-full mx-auto max-w-screen-2xl">
         <StudioSidebar unreadInquiries={unread} publicSlug={publicSlug} />
-        <main className="flex-1 min-w-0 px-6 py-8 lg:py-10">{children}</main>
+        <main className="flex-1 min-w-0 px-6 py-8 lg:py-10">
+          {/* T-086 — admin editing a draft on an organisation's behalf. */}
+          {me?.editing_draft && <EditingDraftBanner name={me.display_name} />}
+          {children}
+        </main>
       </div>
     </>
   );

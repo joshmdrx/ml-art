@@ -7,6 +7,10 @@
 //!   - `POST /v1/admin/artists/:id/pause`    — active → paused
 //!   - `POST /v1/admin/artists/:id/unpause`  — paused → active
 //!
+//! T-086 — unclaimed draft profiles (`is_prebuilt AND user_id IS NULL`)
+//! are excluded from the list and can't be made active here; they're
+//! managed under `/v1/admin/drafts` (see `admin::drafts`).
+//!
 //! Schema CHECK constraint pins the status set to
 //! `('pending', 'active', 'paused', 'rejected')` — see migration 0001.
 //! The decline path therefore maps to `rejected`; the wire word
@@ -102,6 +106,10 @@ pub async fn list(
             GROUP BY artist_id
         ) c ON c.artist_id = ar.id
         WHERE ar.deleted_at IS NULL AND ar.status = $1
+          -- T-086 — unclaimed drafts live on /admin/drafts, never in
+          -- the approval queue (approving one would publish it without
+          -- the organisation's consent).
+          AND NOT (ar.is_prebuilt AND ar.user_id IS NULL)
         ORDER BY ar.created_at DESC
         LIMIT $2 OFFSET $3
         "#,
@@ -148,6 +156,14 @@ async fn transition(
             .fetch_optional(&state.pool)
             .await?
             .ok_or(ApiError::NotFound)?;
+
+    // T-086 — nothing goes public on an unclaimed draft. Approve /
+    // unpause would flip it to `active`; refuse before auditing.
+    if new_status == "active" && crate::studio::is_unclaimed_draft(&state.pool, artist_id).await? {
+        return Err(ApiError::Conflict(
+            "draft profiles can't be made active until the organisation claims them".into(),
+        ));
+    }
 
     // Idempotent re-application: already-target-status returns the
     // unchanged row with no audit + no UPDATE. Keeps "I double-clicked

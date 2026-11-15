@@ -15,6 +15,7 @@ pub mod meta;
 pub mod neighborhoods;
 pub mod onboarding;
 pub mod orders;
+pub mod preview;
 pub mod recommendations;
 pub mod search;
 pub mod search_map;
@@ -345,7 +346,32 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         // M-08 — admin marketplace order queue + refund flow.
         .route("/v1/admin/orders", get(admin::orders::list))
         .route("/v1/admin/orders/:id", get(admin::orders::detail))
-        .route("/v1/admin/orders/:id/refund", post(admin::orders::refund));
+        .route("/v1/admin/orders/:id/refund", post(admin::orders::refund))
+        // T-086 — consent-first draft profiles. Admin side builds +
+        // shares; the public side (token-gated) views, claims, removes.
+        .route(
+            "/v1/admin/drafts",
+            get(admin::drafts::list).post(admin::drafts::create),
+        )
+        .route(
+            "/v1/admin/drafts/editing",
+            delete(admin::drafts::stop_editing),
+        )
+        .route(
+            "/v1/admin/drafts/:id/edit",
+            post(admin::drafts::start_editing),
+        )
+        .route(
+            "/v1/admin/drafts/:id/preview-link",
+            post(admin::drafts::create_preview_link),
+        )
+        .route(
+            "/v1/admin/drafts/:id/takedown",
+            post(admin::drafts::takedown),
+        )
+        .route("/v1/preview/:token", get(preview::view))
+        .route("/v1/preview/:token/claim", post(preview::claim))
+        .route("/v1/preview/:token/remove", post(preview::remove));
 
     // Test-fixture insert routes — only registered when
     // `WANDER_TEST_FIXTURES_ENABLED` is set (E2E only; empty in prod).

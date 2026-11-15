@@ -271,6 +271,9 @@ export interface StudioArtist {
    * yet) are NOT included — the artist hasn't been emailed about
    * them. Same defaults-to-0 contract as `follower_count`. */
   unread_inquiry_count?: number;
+  /** T-086 — true when an admin is editing an unclaimed draft profile
+   * through the studio. Drives the studio "editing a draft" banner. */
+  editing_draft?: boolean;
 }
 
 /** Body for `PATCH /v1/studio/settings`. Every field optional; omitting
@@ -2289,4 +2292,167 @@ export async function queueAnonFollow(
     const text = await res.text().catch(() => "");
     throw new Error(`queue-anon-follow ${res.status}: ${text || res.statusText}`);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T-086 — consent-first draft profiles + private preview links
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Row on `/admin/drafts`. */
+export interface AdminDraftItem {
+  id: string;
+  slug: string;
+  display_name: string;
+  entity_type: "individual" | "gallery";
+  location: string | null;
+  website_url: string | null;
+  consent_note: string;
+  claimed: boolean;
+  status: "pending" | "active" | "paused" | "rejected";
+  artwork_count: number;
+  live_link_expires_at: string | null;
+  editing: boolean;
+  created_at: string;
+}
+
+export interface CreateDraftBody {
+  display_name: string;
+  entity_type?: "individual" | "gallery";
+  location?: string;
+  website_url?: string;
+  consent_note: string;
+}
+
+export interface DraftPreviewLink {
+  token: string;
+  path: string;
+  expires_at: string;
+}
+
+async function adminDraftFetch(
+  path: string,
+  init: RequestInit,
+  label: string,
+): Promise<Response> {
+  const res = await apiFetch(path, init);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`${label} ${res.status}: ${text || res.statusText}`);
+  }
+  return res;
+}
+
+export async function listAdminDrafts(
+  init?: RequestInit,
+): Promise<{ items: AdminDraftItem[] }> {
+  const res = await adminDraftFetch("/v1/admin/drafts", init ?? {}, "admin/drafts");
+  return (await res.json()) as { items: AdminDraftItem[] };
+}
+
+export async function createAdminDraft(
+  body: CreateDraftBody,
+): Promise<AdminDraftItem> {
+  const res = await adminDraftFetch(
+    "/v1/admin/drafts",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    "admin/drafts create",
+  );
+  return (await res.json()) as AdminDraftItem;
+}
+
+export async function startEditingDraft(id: string): Promise<void> {
+  await adminDraftFetch(
+    `/v1/admin/drafts/${encodeURIComponent(id)}/edit`,
+    { method: "POST" },
+    "admin/drafts edit",
+  );
+}
+
+export async function stopEditingDraft(): Promise<void> {
+  await adminDraftFetch(
+    "/v1/admin/drafts/editing",
+    { method: "DELETE" },
+    "admin/drafts stop-editing",
+  );
+}
+
+export async function createDraftPreviewLink(
+  id: string,
+): Promise<DraftPreviewLink> {
+  const res = await adminDraftFetch(
+    `/v1/admin/drafts/${encodeURIComponent(id)}/preview-link`,
+    { method: "POST" },
+    "admin/drafts preview-link",
+  );
+  return (await res.json()) as DraftPreviewLink;
+}
+
+export async function takedownDraft(id: string): Promise<void> {
+  await adminDraftFetch(
+    `/v1/admin/drafts/${encodeURIComponent(id)}/takedown`,
+    { method: "POST" },
+    "admin/drafts takedown",
+  );
+}
+
+/** Public preview payload. `null` for any dead link (unknown, expired,
+ * revoked, claimed or removed — the API doesn't distinguish). */
+export interface DraftPreview {
+  artist: ArtistFull;
+  artworks: ArtworkSummary[];
+  locations: PublicArtistLocation[];
+  expires_at: string;
+}
+
+export async function getDraftPreview(
+  token: string,
+  init?: RequestInit,
+): Promise<DraftPreview | null> {
+  const res = await apiFetch(`/v1/preview/${encodeURIComponent(token)}`, init);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`preview ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as DraftPreview;
+}
+
+export type ClaimPreviewResult =
+  | { ok: true; slug: string }
+  | { ok: false; reason: "signed_out" | "has_profile" | "gone" };
+
+/** Claim a draft for the signed-in user. Expected refusals come back
+ * as a result rather than a throw so the page can explain them. */
+export async function claimDraftPreview(
+  token: string,
+): Promise<ClaimPreviewResult> {
+  const res = await apiFetch(
+    `/v1/preview/${encodeURIComponent(token)}/claim`,
+    { method: "POST" },
+  );
+  if (res.status === 401) return { ok: false, reason: "signed_out" };
+  if (res.status === 409) return { ok: false, reason: "has_profile" };
+  if (res.status === 404) return { ok: false, reason: "gone" };
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`preview claim ${res.status}: ${text || res.statusText}`);
+  }
+  const artist = (await res.json()) as StudioArtist;
+  return { ok: true, slug: artist.slug };
+}
+
+/** Remove a draft via its link. Resolves for 204 and for an
+ * already-dead link (nothing left to remove either way). */
+export async function removeDraftPreview(token: string): Promise<void> {
+  const res = await apiFetch(
+    `/v1/preview/${encodeURIComponent(token)}/remove`,
+    { method: "POST" },
+  );
+  if (res.status === 404 || res.ok) return;
+  const text = await res.text().catch(() => "");
+  throw new Error(`preview remove ${res.status}: ${text || res.statusText}`);
 }
