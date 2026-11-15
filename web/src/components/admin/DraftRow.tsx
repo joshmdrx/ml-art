@@ -4,8 +4,9 @@
  * T-086 — one draft on `/admin/drafts`.
  *
  * Unclaimed drafts get: Edit in studio, Create/replace private link,
- * Take down. Claimed ones are the organisation's now, so the row is
- * read-only apart from a link to their page.
+ * Assign to account, Take down. Claimed ones are the organisation's
+ * now; while still unpublished they can be reassigned (wrong person
+ * claimed), and once published the row is read-only.
  *
  * A freshly minted link is shown once, inline, with a copy button —
  * only its hash is stored, so it can't be shown again later (mint a new
@@ -18,6 +19,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
+import { AssignDraftForm } from "@/components/admin/AssignDraftForm";
 import {
   createPreviewLinkAction,
   startEditingDraftAction,
@@ -44,6 +46,8 @@ export function DraftRow({ draft }: { draft: AdminDraftItem }) {
   const confirm = useConfirm();
   const [isPending, startTransition] = useTransition();
   const [link, setLink] = useState<{ url: string; expires_at: string } | null>(null);
+  const [assigning, setAssigning] = useState(false);
+  const canReassign = draft.claimed && draft.status === "pending";
 
   function editInStudio() {
     startTransition(async () => {
@@ -157,6 +161,12 @@ export function DraftRow({ draft }: { draft: AdminDraftItem }) {
                 : " · no live link")}
           </p>
           <p className="mt-1 text-xs text-muted">Consent: {draft.consent_note}</p>
+          {draft.claimed && (
+            <p className="mt-1 text-xs text-muted">
+              Owner: {draft.owner_email ?? "unknown"} ·{" "}
+              {draft.status === "pending" ? "not yet published" : draft.status}
+            </p>
+          )}
         </div>
 
         {!draft.claimed && (
@@ -167,12 +177,34 @@ export function DraftRow({ draft }: { draft: AdminDraftItem }) {
             <button type="button" disabled={isPending} onClick={mintLink} className={BTN}>
               {draft.live_link_expires_at ? "New private link" : "Create private link"}
             </button>
+            <button
+              type="button"
+              disabled={isPending}
+              onClick={() => setAssigning(true)}
+              className={BTN}
+            >
+              Assign to account
+            </button>
             <button type="button" disabled={isPending} onClick={takedown} className={BTN}>
               Take down
             </button>
           </div>
         )}
+        {canReassign && !assigning && (
+          <button type="button" onClick={() => setAssigning(true)} className={BTN}>
+            Reassign
+          </button>
+        )}
       </div>
+
+      {assigning && (
+        <AssignDraftForm
+          draftId={draft.id}
+          name={draft.display_name}
+          currentOwner={draft.claimed ? draft.owner_email ?? "The current owner" : null}
+          onDone={() => setAssigning(false)}
+        />
+      )}
 
       {link && (
         <div className="flex items-center gap-2 flex-wrap">

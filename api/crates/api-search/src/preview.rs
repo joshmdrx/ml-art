@@ -5,7 +5,8 @@
 //!
 //!   - `GET  /v1/preview/:token`        — view the draft (no auth)
 //!   - `POST /v1/preview/:token/claim`  — link it to the signed-in user;
-//!     it stays `pending` (unpublished) until they publish it themselves
+//!     it stays `pending` (unpublished) until they publish it themselves.
+//!     Refused (403) for admin accounts, so checking a link can't claim it
 //!   - `POST /v1/preview/:token/remove` — delete the draft (no auth: the
 //!     person holding the link can always say no)
 //!
@@ -108,6 +109,13 @@ pub async fn claim(
     let (link_id, artist_id, _) = resolve_live(&state.pool, &token)
         .await?
         .ok_or(ApiError::NotFound)?;
+
+    // Admins open these links to check them before sending; a stray click
+    // must not take the organisation's page. Admins use
+    // `POST /v1/admin/drafts/:id/assign` when they mean to move a page.
+    if user.is_admin {
+        return Err(ApiError::Forbidden);
+    }
 
     // One profile per account (migration 0010). Say so plainly rather
     // than letting the unique index turn it into a 500.

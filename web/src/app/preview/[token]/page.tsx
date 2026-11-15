@@ -3,7 +3,7 @@ import Link from "next/link";
 import { auth } from "@clerk/nextjs/server";
 import { TopNav } from "@/components/TopNav";
 import { PreviewActions } from "@/components/PreviewActions";
-import { getDraftPreview, type ArtworkSummary } from "@/lib/api";
+import { getDraftPreview, getMe, type ArtworkSummary } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
 /**
@@ -28,12 +28,13 @@ export const metadata: Metadata = {
 
 export default async function PreviewPage({ params }: { params: Params }) {
   const { token } = await params;
-  const [data, session] = await Promise.all([
+  const [data, session, me] = await Promise.all([
     getDraftPreview(token).catch((e) => {
       reportError(e, { surface: "draft-preview" });
       return null;
     }),
     auth(),
+    getMe().catch(() => null),
   ]);
 
   if (!data) {
@@ -101,6 +102,7 @@ export default async function PreviewPage({ params }: { params: Params }) {
             token={token}
             name={artist.display_name}
             signedIn={Boolean(session.userId)}
+            isAdmin={Boolean(me?.is_admin)}
           />
         </section>
 

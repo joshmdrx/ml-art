@@ -1837,3 +1837,15 @@ Two distinct failures, only loosely related to the bill:
 
 **Reversibility:** High. Three additive migrations (0031–0033). Removing the routes leaves inert columns. Purging removed drafts' image files is a follow-up (T-087).
 
+---
+
+## 2026-11-15 — T-086 follow-ups: first publish, admin claims, assign by email
+
+**Context:** Testing T-086 locally surfaced three gaps. (1) Draft artworks stay `draft` after a gallery claims and publishes, so the live page would be empty although the preview showed works. (2) An admin checking a link could claim the gallery's page by accident. (3) A person whose account already has a page can't claim, and a wrong claim couldn't be undone.
+
+**Decided:** (1) A claimed draft's first `pending → active` (studio publish toggle or onboarding complete) publishes its `draft` artworks, matching the preview the gallery approved. Later publishes leave drafts alone. (2) Claim refuses admins (403), and the preview hides Claim for them. (3) `POST /v1/admin/drafts/:id/assign` gives a page to an existing account by email. It's allowed for unclaimed drafts and for claimed pages that are still unpublished (fixing a wrong claim). Published pages can't be moved. One page per account still holds.
+
+**Alternatives:** Publishing artworks at claim time (rejected: the owner should choose when the page goes live). Letting admins claim (rejected: "check the link" and "take the page" shouldn't be one click apart). Lifting one-page-per-account (deferred: that's the multi-profile accounts work in `99-deferred.md`).
+
+**Reversibility:** High. No schema change; one endpoint and two guards.
+

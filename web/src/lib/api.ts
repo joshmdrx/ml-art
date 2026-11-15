@@ -2308,6 +2308,8 @@ export interface AdminDraftItem {
   website_url: string | null;
   consent_note: string;
   claimed: boolean;
+  /** Email of the owning account once claimed or assigned. */
+  owner_email: string | null;
   status: "pending" | "active" | "paused" | "rejected";
   artwork_count: number;
   live_link_expires_at: string | null;
@@ -2391,6 +2393,37 @@ export async function createDraftPreviewLink(
   return (await res.json()) as DraftPreviewLink;
 }
 
+export type AssignDraftResult =
+  | { ok: true; item: AdminDraftItem }
+  | { ok: false; message: string };
+
+/** Give a draft page to an existing account by email. Expected refusals
+ * (no such account, account already has a page, page already published)
+ * come back with the API's human-readable reason. */
+export async function assignDraft(
+  id: string,
+  email: string,
+): Promise<AssignDraftResult> {
+  const res = await apiFetch(
+    `/v1/admin/drafts/${encodeURIComponent(id)}/assign`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    },
+  );
+  if (res.status === 400 || res.status === 409) {
+    const body = (await res.json().catch(() => null)) as { detail?: string } | null;
+    const detail = (body?.detail ?? "").replace(/^(bad request|conflict): /, "");
+    return { ok: false, message: detail || "Couldn't assign the page." };
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`admin/drafts assign ${res.status}: ${text || res.statusText}`);
+  }
+  return { ok: true, item: (await res.json()) as AdminDraftItem };
+}
+
 export async function takedownDraft(id: string): Promise<void> {
   await adminDraftFetch(
     `/v1/admin/drafts/${encodeURIComponent(id)}/takedown`,
@@ -2423,7 +2456,7 @@ export async function getDraftPreview(
 
 export type ClaimPreviewResult =
   | { ok: true; slug: string }
-  | { ok: false; reason: "signed_out" | "has_profile" | "gone" };
+  | { ok: false; reason: "signed_out" | "admin" | "has_profile" | "gone" };
 
 /** Claim a draft for the signed-in user. Expected refusals come back
  * as a result rather than a throw so the page can explain them. */
@@ -2435,6 +2468,7 @@ export async function claimDraftPreview(
     { method: "POST" },
   );
   if (res.status === 401) return { ok: false, reason: "signed_out" };
+  if (res.status === 403) return { ok: false, reason: "admin" };
   if (res.status === 409) return { ok: false, reason: "has_profile" };
   if (res.status === 404) return { ok: false, reason: "gone" };
   if (!res.ok) {

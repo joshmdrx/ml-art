@@ -14,6 +14,9 @@
 //!   - `DELETE /v1/admin/drafts/editing`           — stop editing
 //!   - `POST   /v1/admin/drafts/:id/preview-link`  — mint a private link (90 days)
 //!   - `POST   /v1/admin/drafts/:id/takedown`      — remove an unclaimed draft
+//!   - `POST   /v1/admin/drafts/:id/assign`        — give the page to an
+//!     existing Wander account by email (no link needed; also fixes a
+//!     claim by the wrong person while the page is still unpublished)
 //!
 //! Invariants enforced elsewhere: drafts are excluded from the artist
 //! approval queue and can't be made `active` while unclaimed
@@ -63,6 +66,8 @@ pub struct DraftItem {
     pub consent_note: String,
     /// True once the organisation has claimed it (it's theirs now).
     pub claimed: bool,
+    /// Email of the account that owns it, once claimed or assigned.
+    pub owner_email: Option<String>,
     pub status: String,
     pub artwork_count: i64,
     /// Expiry of the current live preview link, if there is one.
@@ -89,6 +94,12 @@ pub struct CreateBody {
     pub website_url: Option<String>,
     /// How the organisation agreed to an example page. Required.
     pub consent_note: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AssignBody {
+    /// Email of an existing Wander account (they must have signed in once).
+    pub email: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -357,6 +368,107 @@ pub async fn takedown(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Hand a draft page to an existing account by email. Works for an
+/// unclaimed draft, and for a claimed one that's still unpublished (to
+/// fix a claim by the wrong person). A published page is the owner's;
+/// it can't be moved from here. One page per account still applies.
+pub async fn assign(
+    State(state): State<Arc<AppState>>,
+    AdminUser(admin): AdminUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<AssignBody>,
+) -> Result<Json<DraftItem>, ApiError> {
+    let email = body.email.trim();
+    if email.is_empty() || !email.contains('@') {
+        return Err(ApiError::BadRequest(
+            "enter the account's email address".into(),
+        ));
+    }
+
+    let page: Option<(Option<Uuid>, String)> = sqlx::query_as(
+        "SELECT user_id, status FROM artists WHERE id = $1 AND is_prebuilt AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let (previous_owner, status) = page.ok_or(ApiError::NotFound)?;
+    if previous_owner.is_some() && status != "pending" {
+        return Err(ApiError::Conflict(
+            "this page is already published, so it belongs to its owner and can't be moved here"
+                .into(),
+        ));
+    }
+
+    let target: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM users WHERE lower(email) = lower($1)")
+            .bind(email)
+            .fetch_optional(&state.pool)
+            .await?;
+    let (target_id,) = target.ok_or_else(|| {
+        ApiError::BadRequest(
+            "no Wander account uses that email yet. Ask them to sign up, then try again".into(),
+        )
+    })?;
+
+    if previous_owner == Some(target_id) {
+        return fetch_one(&state.pool, admin.id, id).await.map(Json);
+    }
+    let other: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM artists WHERE user_id = $1 AND deleted_at IS NULL AND id <> $2",
+    )
+    .bind(target_id)
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?;
+    if other.is_some() {
+        return Err(ApiError::Conflict(
+            "that account already has a page on Wander, and each account can have one. Use a different account, such as the gallery's own email".into(),
+        ));
+    }
+
+    audit::record(
+        &state.pool,
+        Some(admin.id),
+        action::DRAFT_ASSIGN,
+        target::ARTIST,
+        Some(id),
+        Some(&serde_json::json!({ "user_id": previous_owner })),
+        Some(&serde_json::json!({ "user_id": target_id })),
+        None,
+    )
+    .await?;
+
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("UPDATE artists SET user_id = $2, updated_at = now() WHERE id = $1")
+        .bind(id)
+        .bind(target_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE users SET is_artist = true, updated_at = now() WHERE id = $1")
+        .bind(target_id)
+        .execute(&mut *tx)
+        .await?;
+    if let Some(prev) = previous_owner {
+        sqlx::query("UPDATE users SET is_artist = false, updated_at = now() WHERE id = $1")
+            .bind(prev)
+            .execute(&mut *tx)
+            .await?;
+    }
+    revoke_live_links(&mut tx, id).await?;
+    clear_editing_sessions(&mut tx, id).await?;
+    tx.commit().await?;
+
+    fetch_one(&state.pool, admin.id, id).await.map(Json)
+}
+
+async fn fetch_one(pool: &Pool, admin_id: Uuid, id: Uuid) -> Result<DraftItem, ApiError> {
+    fetch_drafts(pool, admin_id, Some(id))
+        .await?
+        .into_iter()
+        .next()
+        .ok_or(ApiError::NotFound)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared helpers (also used by `crate::preview`)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -446,6 +558,7 @@ async fn fetch_drafts(
             ar.location, ar.website_url,
             COALESCE(ar.prebuilt_consent_note, '') AS consent_note,
             (ar.user_id IS NOT NULL) AS claimed,
+            o.email AS owner_email,
             ar.status,
             COALESCE(c.cnt, 0)::bigint AS artwork_count,
             l.expires_at AS live_link_expires_at,
@@ -453,6 +566,7 @@ async fn fetch_drafts(
             ar.created_at
         FROM artists ar
         JOIN users u ON u.id = $1
+        LEFT JOIN users o ON o.id = ar.user_id
         LEFT JOIN (
             SELECT artist_id, COUNT(*) AS cnt
             FROM artworks

@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use crate::extractors::AuthedUser;
 use crate::studio::me::StudioArtist;
-use crate::studio::{current_artist_id, is_unclaimed_draft};
+use crate::studio::{current_artist_id, is_unclaimed_draft, publish_claimed_draft_artworks};
 use crate::AppState;
 
 const MAX_BIO_LEN: usize = 4_000;
@@ -142,6 +142,17 @@ pub async fn patch(
         ));
     }
 
+    // T-086 — remember the status before a publish so a claimed draft's
+    // first `pending → active` can publish its artworks too.
+    let previous_status: Option<String> = if body.status.is_some() {
+        sqlx::query_scalar("SELECT status FROM artists WHERE id = $1")
+            .bind(artist_id)
+            .fetch_optional(&state.pool)
+            .await?
+    } else {
+        None
+    };
+
     // Touching geocoded fields would invalidate the city/country/lat/lng;
     // we clear them when `location` changes so the geocode job re-runs.
     let clears_geocoded = body.location.is_some();
@@ -190,6 +201,11 @@ pub async fn patch(
     .bind(clears_geocoded)
     .fetch_optional(&state.pool)
     .await?;
+    let updated = updated.ok_or(ApiError::NotFound)?;
 
-    updated.map(Json).ok_or(ApiError::NotFound)
+    if let Some(prev) = previous_status.as_deref() {
+        publish_claimed_draft_artworks(&state.pool, updated.id, prev, &updated.status).await?;
+    }
+
+    Ok(Json(updated))
 }

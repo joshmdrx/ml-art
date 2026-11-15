@@ -16,6 +16,7 @@ import { revalidatePath } from "next/cache";
 import {
   adminArtistTransition,
   adminImageOverride,
+  assignDraft,
   createAdminDraft,
   createDraftPreviewLink,
   refundOrder,
@@ -24,6 +25,7 @@ import {
   takedownDraft,
   type AdminArtistTransition,
   type AdminDraftItem,
+  type AssignDraftResult,
   type CreateDraftBody,
   type DraftPreviewLink,
 } from "@/lib/api";
@@ -99,4 +101,14 @@ export async function takedownDraftAction(id: string): Promise<void> {
   await takedownDraft(id);
   revalidatePath("/admin/drafts");
   revalidatePath("/studio", "layout");
+}
+
+/** Give a draft page to an existing account by email (no link needed). */
+export async function assignDraftAction(
+  id: string,
+  email: string,
+): Promise<AssignDraftResult> {
+  const result = await assignDraft(id, email);
+  if (result.ok) revalidatePath("/admin/drafts");
+  return result;
 }

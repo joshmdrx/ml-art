@@ -3,6 +3,8 @@
 /**
  * T-086 — Claim / Remove buttons on `/preview/[token]`.
  *
+ * Admins (checking a link before sending it) never see Claim; the API
+ * refuses them too.
  * Claim: signed-out visitors go to sign-in (or sign-up) and come back
  * here; signed-in visitors claim via a server action, then land in the
  * studio. Expected refusals (account already has a page, link no
@@ -21,7 +23,8 @@ import { toUserMessage } from "@/lib/reportError";
 
 const REFUSALS = {
   has_profile:
-    "The account you're signed in with already has a page on Wander. Sign out and claim this with a different account, or reply to our email and we'll sort it out.",
+    "The account you're signed in with already has a page on Wander, and each account can have one. Sign out and claim this with a different account (your gallery's own email works well), or reply to our email and we'll set it up for you.",
+  admin: "Admin accounts can't claim pages. Use “Assign to account” on the drafts list instead.",
   gone: "This link no longer works. It may have expired or been replaced.",
 } as const;
 
@@ -29,10 +32,13 @@ export function PreviewActions({
   token,
   name,
   signedIn,
+  isAdmin,
 }: {
   token: string;
   name: string;
   signedIn: boolean;
+  /** Admins check links before sending; never offer them Claim. */
+  isAdmin: boolean;
 }) {
   const router = useRouter();
   const confirm = useConfirm();
@@ -94,7 +100,12 @@ export function PreviewActions({
   return (
     <div className="mt-5">
       <div className="flex items-center gap-3 flex-wrap">
-        {signedIn ? (
+        {isAdmin ? (
+          <p className="text-sm text-muted">
+            You&apos;re viewing as an admin, so Claim is hidden. The
+            organisation will see a Claim button here.
+          </p>
+        ) : signedIn ? (
           <button
             type="button"
             disabled={isPending}

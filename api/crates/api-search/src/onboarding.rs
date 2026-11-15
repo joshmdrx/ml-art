@@ -158,6 +158,12 @@ pub async fn complete(
     State(state): State<Arc<AppState>>,
     AuthedUser(user): AuthedUser,
 ) -> Result<Json<StudioArtist>, ApiError> {
+    let previous_status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM artists WHERE user_id = $1 AND deleted_at IS NULL")
+            .bind(user.id)
+            .fetch_optional(&state.pool)
+            .await?;
+
     let updated: Option<StudioArtist> = sqlx::query_as(
         r#"
         UPDATE artists SET
@@ -174,8 +180,21 @@ pub async fn complete(
     .bind(user.id)
     .fetch_optional(&state.pool)
     .await?;
+    let updated = updated.ok_or(ApiError::NotFound)?;
 
-    updated.map(Json).ok_or(ApiError::NotFound)
+    // T-086 — a claimed draft going live for the first time takes its
+    // admin-built draft artworks with it.
+    if let Some(prev) = previous_status.as_deref() {
+        crate::studio::publish_claimed_draft_artworks(
+            &state.pool,
+            updated.id,
+            prev,
+            &updated.status,
+        )
+        .await?;
+    }
+
+    Ok(Json(updated))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

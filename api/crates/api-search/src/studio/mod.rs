@@ -87,3 +87,39 @@ pub async fn is_unclaimed_draft(pool: &Pool, artist_id: Uuid) -> Result<bool, Ap
     .await?;
     Ok(row.is_some_and(|(b,)| b))
 }
+
+/// T-086 — the first time a claimed draft page goes `pending → active`,
+/// publish the artworks the admin built as drafts. The organisation
+/// approved the page as they saw it in the preview (which shows draft
+/// artworks), so it should go live with those works rather than empty.
+/// Later publishes don't touch artworks: by then a `draft` artwork is a
+/// deliberate choice by the owner.
+pub async fn publish_claimed_draft_artworks(
+    pool: &Pool,
+    artist_id: Uuid,
+    previous_status: &str,
+    new_status: &str,
+) -> Result<u64, ApiError> {
+    if previous_status != "pending" || new_status != "active" {
+        return Ok(0);
+    }
+    let res = sqlx::query(
+        r#"
+        UPDATE artworks SET
+            status = 'published',
+            published_at = COALESCE(published_at, now()),
+            updated_at = now()
+        WHERE artist_id = $1
+          AND status = 'draft'
+          AND deleted_at IS NULL
+          AND EXISTS (
+              SELECT 1 FROM artists
+              WHERE id = $1 AND is_prebuilt AND user_id IS NOT NULL
+          )
+        "#,
+    )
+    .bind(artist_id)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}

@@ -586,3 +586,209 @@ async fn admin_takedown_only_applies_to_unclaimed_drafts(pool: PgPool) {
     .await;
     assert_eq!(status, 204);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Follow-ups: admins can't claim, first publish takes artworks live,
+// admin assign-by-email
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TEST99_EMAIL: &str = "test@example.com"; // user_test_99, no profile
+const TEST99: &str = "test-user_test_99";
+
+async fn claim_as(pool: &PgPool, token: &str, bearer: &str) -> u16 {
+    send_authed(
+        app_with_test_auth(pool.clone()),
+        "POST",
+        &format!("/v1/preview/{token}/claim"),
+        bearer,
+        None,
+    )
+    .await
+    .0
+    .as_u16()
+}
+
+async fn insert_artwork(pool: &PgPool, draft_id: &str, title: &str) {
+    sqlx::query("INSERT INTO artworks (artist_id, title, status) VALUES ($1::uuid, $2, 'draft')")
+        .bind(draft_id)
+        .bind(title)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn artwork_status(pool: &PgPool, title: &str) -> (String, bool) {
+    sqlx::query_as("SELECT status, published_at IS NOT NULL FROM artworks WHERE title = $1")
+        .bind(title)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn set_status(pool: &PgPool, bearer: &str, status: &str) -> u16 {
+    send_authed(
+        app_with_test_auth(pool.clone()),
+        "PATCH",
+        "/v1/studio/settings",
+        bearer,
+        Some(&format!(r#"{{"status":"{status}"}}"#)),
+    )
+    .await
+    .0
+    .as_u16()
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn admins_cannot_claim_a_preview(pool: PgPool) {
+    let (id, _) = create_draft(&pool, "Bearspace").await;
+    let token = mint_link(&pool, &id).await;
+    assert_eq!(claim_as(&pool, &token, ADMIN).await, 403);
+    // Still unclaimed, link still live.
+    let (status, _) = get_status(
+        app_with_test_auth(pool.clone()),
+        &format!("/v1/preview/{token}"),
+    )
+    .await;
+    assert_eq!(status, 200);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn first_publish_of_a_claimed_page_publishes_its_draft_artworks(pool: PgPool) {
+    let (id, slug) = create_draft(&pool, "Jealous Gallery").await;
+    insert_artwork(&pool, &id, "Built by admin").await;
+    let token = mint_link(&pool, &id).await;
+    assert_eq!(claim_as(&pool, &token, BOB).await, 200);
+
+    // Claiming alone publishes nothing.
+    assert_eq!(artwork_status(&pool, "Built by admin").await.0, "draft");
+
+    assert_eq!(set_status(&pool, BOB, "active").await, 200);
+    assert_eq!(
+        artwork_status(&pool, "Built by admin").await,
+        ("published".to_string(), true)
+    );
+    let (status, bytes) = get_status(
+        app_with_test_auth(pool.clone()),
+        &format!("/v1/artists/{slug}"),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        json(&bytes)["artworks"]["items"].as_array().unwrap().len(),
+        1
+    );
+
+    // Later publishes respect the owner's own drafts.
+    insert_artwork(&pool, &id, "Owner's own draft").await;
+    assert_eq!(set_status(&pool, BOB, "paused").await, 200);
+    assert_eq!(set_status(&pool, BOB, "active").await, 200);
+    assert_eq!(artwork_status(&pool, "Owner's own draft").await.0, "draft");
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn onboarding_complete_also_publishes_claimed_draft_artworks(pool: PgPool) {
+    let (id, _) = create_draft(&pool, "Print Club").await;
+    insert_artwork(&pool, &id, "Edition of 50").await;
+    let token = mint_link(&pool, &id).await;
+    assert_eq!(claim_as(&pool, &token, BOB).await, 200);
+    let (status, _) = send_authed(
+        app_with_test_auth(pool.clone()),
+        "POST",
+        "/v1/onboarding/complete",
+        BOB,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(artwork_status(&pool, "Edition of 50").await.0, "published");
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn self_onboarded_artists_keep_their_drafts_on_publish(pool: PgPool) {
+    // dora-pending is an ordinary (non-prebuilt) pending artist: the
+    // T-086 artwork publish must not apply to them.
+    sqlx::query(
+        "UPDATE artists SET user_id = $1::uuid WHERE id = 'aaa44444-4444-4444-4444-444444444444'",
+    )
+    .bind(BOB_USER_ID)
+    .execute(&pool)
+    .await
+    .unwrap();
+    insert_artwork(&pool, "aaa44444-4444-4444-4444-444444444444", "Dora sketch").await;
+    assert_eq!(set_status(&pool, BOB, "active").await, 200);
+    assert_eq!(artwork_status(&pool, "Dora sketch").await.0, "draft");
+}
+
+async fn assign(pool: &PgPool, draft_id: &str, email: &str, bearer: &str) -> (u16, Value) {
+    let (status, bytes) = send_authed(
+        app_with_test_auth(pool.clone()),
+        "POST",
+        &format!("/v1/admin/drafts/{draft_id}/assign"),
+        bearer,
+        Some(&format!(r#"{{"email":"{email}"}}"#)),
+    )
+    .await;
+    let v = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status.as_u16(), v)
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn assign_gives_an_unclaimed_draft_to_an_account(pool: PgPool) {
+    let (id, _) = create_draft(&pool, "Kingsgate Workshops").await;
+    let token = mint_link(&pool, &id).await;
+
+    assert_eq!(assign(&pool, &id, "bob@example.com", ALICE).await.0, 403);
+    assert_eq!(assign(&pool, &id, "nobody@example.com", ADMIN).await.0, 400);
+    // Alice already has a page: one page per account.
+    assert_eq!(assign(&pool, &id, "alice@example.com", ADMIN).await.0, 409);
+
+    let (status, item) = assign(&pool, &id, "BOB@example.com", ADMIN).await;
+    assert_eq!(status, 200, "{item}");
+    assert_eq!(item["claimed"], true);
+    assert_eq!(item["owner_email"], "bob@example.com");
+
+    // The link is spent; Bob's studio is this page.
+    let (status, _) = get_status(
+        app_with_test_auth(pool.clone()),
+        &format!("/v1/preview/{token}"),
+    )
+    .await;
+    assert_eq!(status, 404);
+    let (_, me): (_, Value) =
+        get_json_authed(app_with_test_auth(pool.clone()), "/v1/studio/me", BOB).await;
+    assert_eq!(me["id"], id.as_str());
+
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM admin_audit_log WHERE action = 'draft.assign' AND target_id = $1::uuid",
+    )
+    .bind(&id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audits, 1);
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn assign_fixes_a_wrong_claim_until_the_page_is_published(pool: PgPool) {
+    let (id, _) = create_draft(&pool, "Chisenhale Studios").await;
+    let token = mint_link(&pool, &id).await;
+    assert_eq!(claim_as(&pool, &token, BOB).await, 200);
+
+    // Wrong person claimed: move it to the right account.
+    let (status, item) = assign(&pool, &id, TEST99_EMAIL, ADMIN).await;
+    assert_eq!(status, 200, "{item}");
+    assert_eq!(item["owner_email"], TEST99_EMAIL);
+    let bob_is_artist: bool = sqlx::query_scalar("SELECT is_artist FROM users WHERE id = $1::uuid")
+        .bind(BOB_USER_ID)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(!bob_is_artist);
+    let (status, _) =
+        get_status_authed(app_with_test_auth(pool.clone()), "/v1/studio/me", BOB).await;
+    assert_eq!(status, 404);
+
+    // Once the owner publishes, it's theirs for good.
+    assert_eq!(set_status(&pool, TEST99, "active").await, 200);
+    assert_eq!(assign(&pool, &id, "bob@example.com", ADMIN).await.0, 409);
+}

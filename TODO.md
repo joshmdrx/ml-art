@@ -48,11 +48,25 @@ artwork `6d9f5170-…`'s two images (uploaded 2026-06-29 / 07-01) are gone.
 For outreach: once a gallery or studio says yes to an example page, an admin builds a draft, sends a private link, and they claim or remove it. See `decisions.md` 2026-11-15.
 
 - ✅ Migrations `0031_artist_prebuilt`, `0032_artist_preview_links`, `0033_users_editing_draft`
-- ✅ API: `/v1/admin/drafts` (list, create, edit, stop editing, preview link, takedown) + `/v1/preview/:token` (view, claim, remove); drafts blocked from the approval queue, approve/unpause and the studio publish toggle
-- ✅ Web: `/admin/drafts`, studio "editing a draft" banner, `/preview/[token]` (noindex + robots disallow)
-- ✅ 16 integration tests (`drafts_test.rs`) + 3 core unit (`preview_token`) + 6 Vitest (`draftValidation`)
+- ✅ API: `/v1/admin/drafts` (list, create, edit, stop editing, preview link, takedown, assign by email) + `/v1/preview/:token` (view, claim, remove); drafts blocked from the approval queue, approve/unpause and the studio publish toggle
+- ✅ Web: `/admin/drafts` (incl. "Assign to account" / "Reassign"), studio "editing a draft" banner, `/preview/[token]` (noindex + robots disallow)
+- ✅ Follow-ups from local testing: a claimed page's first publish takes its admin-built draft artworks live; admins can't claim (API 403, Claim hidden); admins can assign a draft to an account by email, or move a wrongly claimed page while it's unpublished
+- ✅ 22 integration tests (`drafts_test.rs`) + 3 core unit (`preview_token`) + 6 Vitest (`draftValidation`)
 - ⏳ E2E: three register rows in `docs/e2e-coverage.md` (Admin section)
 - **Prod:** apply 0031–0033 via `psql` *before* the API deploy
+
+### `T-088` Draft pages: remaining edge cases
+
+Found while testing T-086 locally; none block outreach.
+
+- **Duplicate page if a gallery self-signs-up first.** They get `name-2`, and the claim is then refused (one page per account). Today: take the draft down. Better: on `/admin/drafts`, flag drafts whose name matches another live or pending artist.
+- **Forwarded links.** Anyone holding a link can claim or remove it, by design. A wrong claim can now be fixed with "Reassign" while the page is unpublished; after publishing it can't. Consider showing the claimant's email on the preview's success screen, so mistakes surface early.
+- **Stale studio tab after a claim.** If a gallery claims while an admin is mid-edit, the admin's editing session ends. A new artwork saved from an already-open studio tab then lands on the admin's own profile. Fix: send the expected draft id with studio writes while editing, and 409 on a mismatch.
+- **Images pending moderation.** The preview only shows moderation-approved images, so a slow worker shows "Image pending". Fix: show the moderation status per artwork on `/admin/drafts`, or a "ready to send" check.
+- **Removed drafts keep their slug and images.** Covered by `T-087`.
+- **Approve button on drafts.** `AdminArtistBanner` on `/artists/<slug>` still shows Approve for unclaimed drafts. The API refuses (409), so it only shows an error. Fix: pass `is_prebuilt` + owner through `ArtistFull` (admin-only) and hide the actions.
+- **Sign-up return path untested.** "Create an account to claim it" relies on Clerk honouring `redirect_url` through email verification. If it's lost, the new user lands on `/onboarding`; finishing that creates a page and blocks the claim. Test with a fresh Clerk account. Fix if needed: remember the pending claim in a cookie and offer it on `/onboarding`.
+- **One page per account.** A person whose account already has a page can't own a gallery page too. Today: use a second account (e.g. the gallery's email) plus "Assign to account". Proper fix is multi-profile accounts (gallery-as-multiple-artists, `99-deferred.md`).
 
 ### `T-087` Purge removed / expired draft pages
 
