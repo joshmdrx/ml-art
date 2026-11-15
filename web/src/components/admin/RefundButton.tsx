@@ -28,16 +28,22 @@ export function RefundButton({ orderId }: { orderId: string }) {
   const [reason, setReason] = useState(REASONS[0].value);
   const [isPending, startTransition] = useTransition();
 
-  function onRefund() {
-    startTransition(async () => {
-      const ok = await confirm({
-        title: "Refund this order?",
-        description:
-          "This refunds the buyer in full, reverses the artist's payout, and returns Wander's commission. It can't be undone.",
-        destructive: true,
-      });
-      if (!ok) return;
+  async function onRefund() {
+    // Ask BEFORE starting the transition. Awaiting confirm() inside
+    // startTransition deadlocks: the dialog's open-state update joins the
+    // pending transition, so React won't render the dialog until the
+    // transition resolves — which is waiting on the dialog. The button sat
+    // on "Refunding…" forever and no refund was ever sent (found driving
+    // the sandbox loop, 2026-11-15).
+    const ok = await confirm({
+      title: "Refund this order?",
+      description:
+        "This refunds the buyer in full, reverses the artist's payout, and returns Wander's commission. It can't be undone.",
+      destructive: true,
+    });
+    if (!ok) return;
 
+    startTransition(async () => {
       try {
         await refundOrderAction(orderId, reason);
         toast.success("Refund started — the buyer and artist will be notified.");

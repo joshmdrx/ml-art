@@ -70,6 +70,23 @@ For destructive operations (delete / archive / discard), pass
 The provider (`<ConfirmDialogProvider>`) is mounted at the app root
 already. Anywhere below it, `useConfirm()` just works.
 
+**Never `await confirm()` inside `startTransition`.** The dialog's
+open-state update joins the pending transition, so React won't render the
+dialog until the transition resolves — which is waiting on the dialog.
+Deadlock: the button sits in its pending state forever and no dialog
+appears (this silently broke admin refunds until 2026-11-15). Confirm
+first, then start the transition:
+
+```tsx
+async function onRefund() {
+  const ok = await confirm({ title: "Refund this order?", destructive: true });
+  if (!ok) return;
+  startTransition(async () => {
+    await refundOrderAction(orderId, reason);
+  });
+}
+```
+
 ---
 
 ## Feedback for async actions
