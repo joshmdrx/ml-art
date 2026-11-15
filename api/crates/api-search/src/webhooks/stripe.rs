@@ -426,7 +426,38 @@ async fn checkout_completed(
     .fetch_optional(&mut **tx)
     .await?;
 
+    if let Some((order_id,)) = row {
+        mark_artwork_sold(tx, order_id).await?;
+    }
     Ok(row.map(|(id,)| (id, payment_intent.map(str::to_string))))
+}
+
+/// A listing is a single original: once paid, take it off sale in the same
+/// transaction as the order flip. Without this nothing ever marked a work
+/// sold, so a second buyer could pay for the same piece (found 2026-11-15).
+///
+/// If the work was *already* sold — two checkouts completing for the same
+/// piece — this order still stands (the buyer has paid) but it's a double
+/// sale an admin must refund; log loudly so it surfaces in the error alarms.
+async fn mark_artwork_sold(
+    tx: &mut Transaction<'_, Postgres>,
+    order_id: Uuid,
+) -> Result<(), ApiError> {
+    let flipped = sqlx::query(
+        r#"
+        UPDATE artworks SET availability = 'sold', updated_at = now()
+        WHERE id = (SELECT artwork_id FROM orders WHERE id = $1)
+          AND availability <> 'sold'
+        "#,
+    )
+    .bind(order_id)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+    if flipped == 0 {
+        tracing::error!(%order_id, "artwork already sold when this order was paid — possible double sale; refund one");
+    }
+    Ok(())
 }
 
 /// `charge.dispute.created` — a chargeback was filed. Move the order to
@@ -497,5 +528,26 @@ async fn charge_refunded(
     .fetch_optional(&mut **tx)
     .await?;
 
+    if let Some((order_id,)) = row {
+        // Put the work back on sale — unless another live order (a
+        // double sale) still holds it, or the artist had marked it
+        // something other than sold in the meantime.
+        sqlx::query(
+            r#"
+            UPDATE artworks SET availability = 'available', updated_at = now()
+            WHERE id = (SELECT artwork_id FROM orders WHERE id = $1)
+              AND availability = 'sold'
+              AND NOT EXISTS (
+                  SELECT 1 FROM orders o
+                  WHERE o.artwork_id = artworks.id
+                    AND o.id <> $1
+                    AND o.status IN ('paid', 'shipped', 'delivered')
+              )
+            "#,
+        )
+        .bind(order_id)
+        .execute(&mut **tx)
+        .await?;
+    }
     Ok(row.map(|(id,)| id))
 }

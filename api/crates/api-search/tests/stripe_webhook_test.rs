@@ -284,3 +284,86 @@ async fn unsettled_charge_updated_is_a_noop(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(event_order(&pool, "evt_cu_2").await, None);
 }
+
+const SEED_ARTWORK: &str = "bbb11111-1111-1111-1111-111111111111";
+
+async fn artwork_availability(pool: &PgPool) -> String {
+    sqlx::query_scalar("SELECT availability FROM artworks WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(SEED_ARTWORK).unwrap())
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn insert_order(pool: &PgPool, status: &str, session: &str, pi: &str) {
+    sqlx::query(
+        r#"
+        INSERT INTO orders (
+            buyer_user_id, artwork_id, artist_id,
+            amount_cents_gbp, commission_cents_gbp, status,
+            shipping_address, stripe_checkout_session_id, stripe_payment_intent_id
+        )
+        VALUES ('99999999-9999-9999-9999-999999999999',
+                'bbb11111-1111-1111-1111-111111111111',
+                'aaa11111-1111-1111-1111-111111111111',
+                5000, 750, $1, '{"country":"GB"}'::jsonb, $2, $3)
+        "#,
+    )
+    .bind(status)
+    .bind(session)
+    .bind(pi)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn paid_marks_the_original_sold_and_refund_puts_it_back(pool: PgPool) {
+    sqlx::query("UPDATE artworks SET availability = 'available' WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(SEED_ARTWORK).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    insert_order(&pool, "pending", "cs_sold_1", "pi_sold_1").await;
+
+    let paid = json!({
+        "id": "evt_sold_paid", "type": "checkout.session.completed",
+        "data": { "object": { "id": "cs_sold_1", "payment_intent": "pi_sold_1" } },
+    });
+    assert_eq!(post_stripe(&pool, &paid).await.0, StatusCode::OK);
+    assert_eq!(artwork_availability(&pool).await, "sold", "paid → off sale");
+
+    let refunded = json!({
+        "id": "evt_sold_refund", "type": "charge.refunded",
+        "data": { "object": { "id": "ch_sold", "payment_intent": "pi_sold_1" } },
+    });
+    assert_eq!(post_stripe(&pool, &refunded).await.0, StatusCode::OK);
+    assert_eq!(
+        artwork_availability(&pool).await,
+        "available",
+        "refund → back on sale"
+    );
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn refund_keeps_the_work_sold_while_another_order_holds_it(pool: PgPool) {
+    sqlx::query("UPDATE artworks SET availability = 'sold' WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(SEED_ARTWORK).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    // A double sale: two paid orders for the same original.
+    insert_order(&pool, "paid", "cs_dbl_1", "pi_dbl_1").await;
+    insert_order(&pool, "paid", "cs_dbl_2", "pi_dbl_2").await;
+
+    let refunded = json!({
+        "id": "evt_dbl_refund", "type": "charge.refunded",
+        "data": { "object": { "id": "ch_dbl", "payment_intent": "pi_dbl_1" } },
+    });
+    assert_eq!(post_stripe(&pool, &refunded).await.0, StatusCode::OK);
+    assert_eq!(
+        artwork_availability(&pool).await,
+        "sold",
+        "other paid order still holds it"
+    );
+}
