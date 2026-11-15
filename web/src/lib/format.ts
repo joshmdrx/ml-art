@@ -22,6 +22,30 @@ export function formatDimensions(d: Dimensions | null): string | null {
   return `${parts.join(" × ")} ${unit}`;
 }
 
+/** Exact money for order breakdowns — sale, commission, payout, fees.
+ * Unlike {@link formatPrice} (whole units: right for artwork list prices,
+ * which are whole pounds), this keeps pence whenever there are any:
+ * `£42.50`, `£7.50`, `£50`. Using formatPrice here made an order read
+ * "£50 − £8 = £43" while the artist's sale email said £42.50 (2026-11-15). */
+export function formatMoney(
+  cents: number | null,
+  currency: string
+): string | null {
+  if (cents === null) return null;
+  const major = cents / 100;
+  const digits = cents % 100 === 0 ? 0 : 2;
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency,
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    }).format(major);
+  } catch {
+    return `${major.toFixed(digits)} ${currency}`;
+  }
+}
+
 export function formatPrice(
   cents: number | null,
   currency: string

@@ -3,7 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
 import { TopNav } from "@/components/TopNav";
-import { listMyOrders, formatPrice } from "@/lib/api";
+import { listMyOrders, formatMoney } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
 export const metadata: Metadata = { title: "Your orders" };
@@ -63,7 +63,7 @@ export default async function OrdersPage() {
                   </div>
                   <div className="flex items-center gap-4 shrink-0">
                     <span className="text-sm">
-                      {formatPrice(o.amount_cents_gbp, "GBP")}
+                      {formatMoney(o.amount_cents_gbp, "GBP")}
                     </span>
                     <span className="text-xs px-2 py-1 border border-border rounded-full capitalize text-muted">
                       {o.status}

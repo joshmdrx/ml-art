@@ -3,7 +3,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
 import { TopNav } from "@/components/TopNav";
-import { getOrder, formatPrice, type OrderStatus } from "@/lib/api";
+import { getOrder, formatMoney, type OrderStatus } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
 export const metadata: Metadata = {
@@ -34,7 +34,7 @@ export default async function OrderPage({ params }: { params: Params }) {
   if (!order) notFound();
 
   const { headline, sub } = copyForStatus(order.status);
-  const amount = formatPrice(order.amount_cents_gbp, "GBP");
+  const amount = formatMoney(order.amount_cents_gbp, "GBP");
   const addr = order.shipping_address;
 
   return (

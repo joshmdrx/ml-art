@@ -3,7 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { TopNav } from "@/components/TopNav";
 import { RefundButton } from "@/components/admin/RefundButton";
-import { getAdminOrder, getMe, formatPrice } from "@/lib/api";
+import { getAdminOrder, getMe, formatMoney } from "@/lib/api";
 
 export const metadata: Metadata = {
   title: "Admin · Order — Wander",
@@ -64,12 +64,12 @@ export default async function AdminOrderPage({ params }: { params: Params }) {
         )}
 
         <dl className="mt-6 text-sm space-y-2">
-          <Row label="Sale price" value={formatPrice(order.amount_cents_gbp, "GBP") ?? "—"} />
-          <Row label="Commission" value={formatPrice(order.commission_cents_gbp, "GBP") ?? "—"} />
+          <Row label="Sale price" value={formatMoney(order.amount_cents_gbp, "GBP") ?? "—"} />
+          <Row label="Commission" value={formatMoney(order.commission_cents_gbp, "GBP") ?? "—"} />
           <Row
             label="Artist payout"
             value={
-              formatPrice(
+              formatMoney(
                 order.payout_cents_gbp ??
                   order.amount_cents_gbp - order.commission_cents_gbp,
                 "GBP"

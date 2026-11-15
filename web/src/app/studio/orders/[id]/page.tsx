@@ -3,7 +3,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
 import { MarkShippedForm } from "@/components/studio/MarkShippedForm";
-import { getStudioOrder, formatPrice } from "@/lib/api";
+import { getStudioOrder, formatMoney } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
 export const metadata: Metadata = { title: "Order" };
@@ -55,14 +55,14 @@ export default async function StudioOrderPage({ params }: { params: Params }) {
 
       {/* Money — the artist sees their payout, not the gross. */}
       <dl className="mt-6 text-sm space-y-2">
-        <Row label="Sale price" value={formatPrice(order.amount_cents_gbp, "GBP") ?? "—"} />
+        <Row label="Sale price" value={formatMoney(order.amount_cents_gbp, "GBP") ?? "—"} />
         <Row
           label="Wander commission"
-          value={"−" + (formatPrice(order.commission_cents_gbp, "GBP") ?? "—")}
+          value={"−" + (formatMoney(order.commission_cents_gbp, "GBP") ?? "—")}
         />
         <Row
           label="Your payout"
-          value={formatPrice(order.payout_cents_gbp ?? payout, "GBP") ?? "—"}
+          value={formatMoney(order.payout_cents_gbp ?? payout, "GBP") ?? "—"}
           strong
         />
       </dl>

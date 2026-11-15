@@ -1247,7 +1247,7 @@ export async function removeArtworkFromCollection(
 // them without dragging `apiFetch`'s server-only Clerk import into
 // the client bundle. Re-exported here for backward compatibility
 // with existing callers (artworks/[id]/page.tsx, format.test.ts).
-export { formatDimensions, formatPrice } from "@/lib/format";
+export { formatDimensions, formatPrice, formatMoney } from "@/lib/format";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Studio (authed; artist-only)

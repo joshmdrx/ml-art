@@ -5,7 +5,7 @@ import { auth } from "@clerk/nextjs/server";
 import {
   listStudioOrders,
   getPayoutStatus,
-  formatPrice,
+  formatMoney,
   type StudioOrderSummary,
 } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
@@ -75,7 +75,7 @@ export default async function StudioOrdersPage() {
                 </div>
                 <div className="flex items-center gap-4 shrink-0">
                   <span className="text-sm">
-                    {formatPrice(o.amount_cents_gbp, "GBP")}
+                    {formatMoney(o.amount_cents_gbp, "GBP")}
                   </span>
                   <StatusPill status={o.status} />
                 </div>

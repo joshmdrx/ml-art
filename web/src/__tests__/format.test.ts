@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatPrice, formatDimensions } from "@/lib/api";
+import { formatPrice, formatDimensions, formatMoney } from "@/lib/api";
 
 describe("formatPrice", () => {
   it("formats USD with $ and no decimals", () => {
@@ -58,5 +58,25 @@ describe("formatDimensions", () => {
 
   it("handles a single dimension (height only)", () => {
     expect(formatDimensions({ height: 100 })).toBe("100 cm");
+  });
+});
+
+describe("formatMoney", () => {
+  it("keeps pence when present (order breakdowns)", () => {
+    expect(formatMoney(4250, "GBP")).toBe("£42.50");
+    expect(formatMoney(750, "GBP")).toBe("£7.50");
+    expect(formatMoney(178, "GBP")).toBe("£1.78");
+  });
+  it("drops .00 on whole amounts", () => {
+    expect(formatMoney(5000, "GBP")).toBe("£50");
+  });
+  it("breakdown lines add up (the 2026-11-15 £50 − £8 = £43 bug)", () => {
+    const sale = 5000;
+    const commission = 750;
+    expect(formatMoney(sale - commission, "GBP")).toBe("£42.50");
+    expect(formatMoney(commission, "GBP")).not.toBe("£8");
+  });
+  it("passes null through", () => {
+    expect(formatMoney(null, "GBP")).toBeNull();
   });
 });
