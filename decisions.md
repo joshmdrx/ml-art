@@ -17,6 +17,43 @@ Format:
 
 ---
 
+## 2026-11-17 — T-089: uploads-bucket retention via object tags, not a separate prefix or bucket
+**Context:** The uploads bucket's lifecycle rule expired every object
+after 90 days (`filter {}`), written when the bucket only held
+visual-search anchors. T-012 Phase 1 started storing artist artwork
+images there under the same `uploads/<uuid>.<ext>` keys, so prod started
+deleting artists' images 90 days after upload (found 2026-11-16 during
+the Stripe E2E). The module docs claimed an `uploads.expires_at` cleanup
+job did the primary work — it was never built; the lifecycle rule was
+the only deleter.
+**Decided:** Object tags. `ObjectStore::put` writes `state=pending`;
+`studio::artworks::add_image` calls `set_retention(key, Attached)`
+*before* inserting the `artwork_images` row (a missing key 400s, a tag
+failure 500s — we never persist a row we couldn't protect);
+`remove_image` sets it back to `pending` once no row references the key
+(best-effort). Soft-deleting an artwork leaves its images attached. The
+lifecycle rule filters on `tag state=pending`, so untagged objects are
+kept forever — any gap (pre-T-089 uploads, a missed retag) fails safe.
+A one-off script (`scripts/backfill-upload-retention-tags.sh`) tags
+existing referenced keys `attached` and, optionally, untagged orphans
+`pending`.
+**Alternatives:** (1) *Copy attached images to a separate prefix or the
+artworks bucket on attach* — cleaner long-term separation, but changes
+`s3_key` values, URL routing in `core::images`, the CloudFront
+behaviours and every existing row, and needs a copy + DB rewrite
+migration. Too much surface for a launch-blocker fix; still a fine
+later refactor. (2) *Keep `filter {}` and build the `expires_at`
+cleanup job* — the job would have to know which keys are attached
+anyway, and the lifecycle rule would still delete attached images.
+(3) *Drop the lifecycle rule entirely* — simplest, but visual-search
+uploads (anonymous, user-supplied photos) would be kept forever.
+**Why:** Smallest change that makes the dangerous direction impossible
+by default: deletion now requires a positive `pending` tag. One extra
+S3 call per attach. MinIO supports tagging, so dev behaves the same
+(dev has no lifecycle rule, so nothing expires there either way).
+**Reversibility:** High — tags are metadata; the rule can be swapped
+for a prefix/bucket split later without touching object bytes.
+
 ## 2026-07-01 — Studio inbox: two-pane list + thread, URL-driven selection, mark-read-on-open
 
 **Context:** Inquiry inbox originally rendered as a stack of full-

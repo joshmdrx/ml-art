@@ -17,6 +17,13 @@
 //! primary image (T-036). For now the handler accepts a raw `s3_key`
 //! from the caller — `T-010` (upload endpoint) lands the validated
 //! upload flow that mints those keys server-side.
+//!
+//! Retention (T-089): `uploads/` keys live in the uploads bucket, whose
+//! lifecycle rule expires objects tagged `state=pending` after 90 days.
+//! Image add retags the object `state=attached` *before* inserting the
+//! row (an unknown key 400s); image remove retags it `pending` once no
+//! `artwork_images` row references it any more. Soft-deleting an
+//! artwork leaves its images attached so it can be restored.
 
 use axum::{
     extract::{Path, Query, State},
@@ -30,6 +37,7 @@ use ml_art_core::{
     images::url_for_s3_key,
     jobs::{EnqueueOpts, JobEvent},
     models::Paginated,
+    object_store::Retention,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
@@ -654,6 +662,26 @@ pub async fn add_image(
 
     let display_order = body.display_order.unwrap_or(0);
 
+    // T-089: mark the object permanent BEFORE the row lands. Uploads
+    // are written `state=pending` and the bucket lifecycle deletes
+    // pending objects after 90 days, so an `artwork_images` row whose
+    // object is still pending is a time bomb. Failing here (rather
+    // than after INSERT) means we never persist a row we couldn't
+    // protect; the reverse failure (tagged, then INSERT fails) only
+    // keeps an orphan alive, which is the safe direction.
+    if s3_key.starts_with("uploads/") {
+        let found = state
+            .object_store
+            .set_retention(s3_key, Retention::Attached)
+            .await
+            .map_err(ApiError::Internal)?;
+        if !found {
+            return Err(ApiError::BadRequest(
+                "s3_key does not match an uploaded image".into(),
+            ));
+        }
+    }
+
     // Prefer pixel dimensions from the `uploads` row over anything
     // the client sent. The api probes bytes on `/v1/uploads/image`
     // (header-only via the `imagesize` crate), so the upload row is
@@ -791,7 +819,7 @@ pub async fn remove_image(
     let artist_id = current_artist_id(&state.pool, &user).await?;
 
     // Delete only if the parent artwork is owned by this artist.
-    let res = sqlx::query(
+    let deleted: Option<(String,)> = sqlx::query_as(
         r#"
         DELETE FROM artwork_images ai
         USING artworks a
@@ -800,17 +828,39 @@ pub async fn remove_image(
           AND a.artist_id = $2
           AND a.deleted_at IS NULL
           AND ai.artwork_id = $3
+        RETURNING ai.s3_key
         "#,
     )
     .bind(image_id)
     .bind(artist_id)
     .bind(id)
-    .execute(&state.pool)
+    .fetch_optional(&state.pool)
     .await?;
 
-    if res.rows_affected() == 0 {
+    let Some((s3_key,)) = deleted else {
         return Err(ApiError::NotFound);
+    };
+
+    // T-089: hand the object back to the lifecycle rule once nothing
+    // references it. Best-effort — the row is already gone, and a
+    // failure here only means we keep bytes we could have dropped.
+    if s3_key.starts_with("uploads/") {
+        let (still_referenced,): (bool,) =
+            sqlx::query_as("SELECT EXISTS (SELECT 1 FROM artwork_images WHERE s3_key = $1)")
+                .bind(&s3_key)
+                .fetch_one(&state.pool)
+                .await?;
+        if !still_referenced {
+            if let Err(e) = state
+                .object_store
+                .set_retention(&s3_key, Retention::Pending)
+                .await
+            {
+                tracing::warn!(error = ?e, s3_key, "failed to retag removed image as pending");
+            }
+        }
     }
+
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -9,8 +9,14 @@
 //! Identity:
 //!   - Signed-in: `user_id` populated, `anonymous_id` NULL
 //!   - Anonymous: `anonymous_id` from `X-Anonymous-Id`, `user_id` NULL
-//!   - Both: we tolerate either; the cleanup job (future) uses
-//!     `expires_at` to evict transient anon uploads
+//!   - Both: we tolerate either
+//!
+//! Retention (T-089): the object is PUT tagged `state=pending`, and the
+//! uploads-bucket lifecycle rule deletes pending objects after 90 days.
+//! Attaching the key to an artwork (`studio::artworks::add_image`)
+//! retags it `state=attached`, which exempts it. There is no
+//! `expires_at`-driven cleanup job — the column exists but nothing reads
+//! it, and `uploads` rows outlive their objects.
 //!
 //! Limits:
 //!   - 10MB body cap (set at the route layer; we re-check after parse
@@ -28,7 +34,6 @@
 //!     step (DB row + S3 PUT succeed; only the embed UPDATE doesn't
 //!     fire). For real end-to-end work in dev, tunnel MinIO publicly
 //!     (ngrok / cloudflared) and override `UPLOADS_PUBLIC_URL_PREFIX`.
-//!     The cleanup job (`expires_at`-driven) evicts orphaned rows
 //!
 //! Rate limiting: the route attaches the existing `inquiry_limit`
 //! policy at 20/hr (per the `03-api-data-spec.md` table for

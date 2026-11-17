@@ -279,6 +279,17 @@ pub fn app_with_fixed_vector(pool: Pool, vec: pgvector::Vector) -> Router {
 /// but those same endpoints require auth. The two flavors of
 /// `app_with_*` helper aren't composable, so this is the third.
 pub fn app_with_auth_and_fixed_vector(pool: Pool, vec: pgvector::Vector) -> Router {
+    app_with_auth_fixed_vector_and_store(pool, vec, ObjectStore::for_tests("uploads"))
+}
+
+/// `app_with_auth_and_fixed_vector`, but with a caller-owned
+/// `ObjectStore` so the test can pre-PUT objects and inspect their
+/// retention tags afterwards (T-089). `ObjectStore` clones share state.
+pub fn app_with_auth_fixed_vector_and_store(
+    pool: Pool,
+    vec: pgvector::Vector,
+    object_store: ObjectStore,
+) -> Router {
     let cfg = Config::for_tests(String::new());
     let embedder = Embedder::with_fixed_vector(
         pool.clone(),
@@ -292,7 +303,7 @@ pub fn app_with_auth_and_fixed_vector(pool: Pool, vec: pgvector::Vector) -> Rout
         embedder,
         jwt_verifier,
         cfg,
-        object_store: ObjectStore::for_tests("uploads"),
+        object_store,
         jobs: JobsBackend::for_tests(),
     }))
 }
@@ -320,6 +331,16 @@ pub fn app_with_keyword_only_postgres_jobs(pool: Pool) -> Router {
 /// real embedder) AND want to assert the enqueued moderation job
 /// against the `jobs` table.
 pub fn app_with_auth_fixed_vector_postgres_jobs(pool: Pool, vec: pgvector::Vector) -> Router {
+    app_with_auth_fixed_vector_postgres_jobs_and_store(pool, vec, ObjectStore::for_tests("uploads"))
+}
+
+/// `app_with_auth_fixed_vector_postgres_jobs` with a caller-owned
+/// `ObjectStore` (see `app_with_auth_fixed_vector_and_store`).
+pub fn app_with_auth_fixed_vector_postgres_jobs_and_store(
+    pool: Pool,
+    vec: pgvector::Vector,
+    object_store: ObjectStore,
+) -> Router {
     let cfg = Config::for_tests(String::new());
     let embedder = Embedder::with_fixed_vector(
         pool.clone(),
@@ -333,9 +354,23 @@ pub fn app_with_auth_fixed_vector_postgres_jobs(pool: Pool, vec: pgvector::Vecto
         embedder,
         jwt_verifier,
         cfg,
-        object_store: ObjectStore::for_tests("uploads"),
+        object_store,
         jobs: JobsBackend::postgres(pool),
     }))
+}
+
+/// Build an in-memory `ObjectStore` that already holds each of `keys`
+/// (as if `/v1/uploads/image` had PUT them — tagged `state=pending`).
+/// Image-attach now 400s on keys the store doesn't have (T-089).
+pub async fn store_with_uploads(keys: &[&str]) -> ObjectStore {
+    let store = ObjectStore::for_tests("uploads");
+    for k in keys {
+        store
+            .put(k, vec![0xFF, 0xD8, 0xFF], "image/jpeg")
+            .await
+            .expect("memory put");
+    }
+    store
 }
 
 /// Build a standalone `Embedder` with `with_fixed_vector`. For pipeline

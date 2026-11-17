@@ -5,8 +5,10 @@
 mod common;
 
 use common::{
-    app_with_auth_and_fixed_vector, app_with_test_auth, get_json_authed, send_authed, MIGRATOR,
+    app_with_auth_and_fixed_vector, app_with_auth_fixed_vector_and_store, app_with_test_auth,
+    get_json_authed, send_authed, store_with_uploads, MIGRATOR,
 };
+use ml_art_core::object_store::Retention;
 use pgvector::Vector;
 use serde::Deserialize;
 use serde_json::json;
@@ -662,7 +664,8 @@ async fn studio_artworks_add_image_first_is_primary_and_embeds(pool: PgPool) {
     // succeeds without hitting Jina. Create a fresh artwork (no
     // existing primary), then add its first image. Asserts: the row
     // lands, is_primary=true by default, and an embedding row appears.
-    let app = app_with_auth_and_fixed_vector(pool.clone(), unit_vector_at(321));
+    let store = store_with_uploads(&["uploads/test-embed.jpg"]).await;
+    let app = app_with_auth_fixed_vector_and_store(pool.clone(), unit_vector_at(321), store);
 
     let created: ArtworkSummary = {
         let body = json!({"title": "Embed Me"}).to_string();
@@ -707,9 +710,10 @@ async fn studio_artworks_add_image_copies_dims_from_uploads_row(pool: PgPool) {
     // from /v1/uploads/image, which would have probed the bytes via
     // imagesize::blob_size). Then add an artwork_image referencing
     // that s3_key and assert the dims carry over.
-    let app = app_with_auth_and_fixed_vector(pool.clone(), unit_vector_at(99));
-
     let upload_key = "uploads/dim-copy-test.png";
+    let store = store_with_uploads(&[upload_key]).await;
+    let app = app_with_auth_fixed_vector_and_store(pool.clone(), unit_vector_at(99), store);
+
     sqlx::query(
         r#"
         INSERT INTO uploads (id, s3_key, user_id, width, height)
@@ -822,6 +826,120 @@ async fn studio_artworks_add_image_rejects_second_primary(pool: PgPool) {
     )
     .await;
     assert_eq!(status, 400);
+}
+
+// ─── T-089: retention tags on attach / remove ───────────────────────────────
+
+/// Create a fresh draft artwork as Alice and return its id.
+async fn create_artwork(app: axum::Router, title: &str) -> String {
+    let body = json!({ "title": title }).to_string();
+    let (status, bytes) = send_authed(app, "POST", "/v1/studio/artworks", ALICE, Some(&body)).await;
+    assert_eq!(status, 201);
+    serde_json::from_slice::<ArtworkSummary>(&bytes).unwrap().id
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_artworks_add_image_marks_upload_attached(pool: PgPool) {
+    // The lifecycle rule deletes `state=pending` objects after 90 days.
+    // Attaching an upload to an artwork must flip it to `attached`, or
+    // the artist's image silently disappears three months later.
+    let key = "uploads/keep-me.jpg";
+    let store = store_with_uploads(&[key]).await;
+    assert_eq!(store.test_retention(key), Some(Retention::Pending));
+    let app = app_with_auth_fixed_vector_and_store(pool, unit_vector_at(201), store.clone());
+
+    let art = create_artwork(app.clone(), "Keep Me").await;
+    let (status, _) = send_authed(
+        app,
+        "POST",
+        &format!("/v1/studio/artworks/{art}/images"),
+        ALICE,
+        Some(&json!({ "s3_key": key }).to_string()),
+    )
+    .await;
+    assert_eq!(status, 201);
+    assert_eq!(store.test_retention(key), Some(Retention::Attached));
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_artworks_add_image_400s_for_unknown_upload_key(pool: PgPool) {
+    // A key that isn't in the bucket can't be protected, so refuse it
+    // before any row is written.
+    let store = store_with_uploads(&[]).await;
+    let app = app_with_auth_fixed_vector_and_store(pool.clone(), unit_vector_at(202), store);
+
+    let art = create_artwork(app.clone(), "Ghost").await;
+    let (status, _) = send_authed(
+        app,
+        "POST",
+        &format!("/v1/studio/artworks/{art}/images"),
+        ALICE,
+        Some(&json!({ "s3_key": "uploads/never-uploaded.jpg" }).to_string()),
+    )
+    .await;
+    assert_eq!(status, 400);
+
+    let (n,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM artwork_images WHERE artwork_id = $1::uuid")
+            .bind(&art)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 0, "no row for an image we couldn't mark attached");
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn studio_artworks_remove_last_reference_marks_upload_pending(pool: PgPool) {
+    // Same upload attached to two artworks. Removing one keeps it
+    // attached; removing the last hands it back to the lifecycle rule.
+    let key = "uploads/shared.jpg";
+    let store = store_with_uploads(&[key]).await;
+    let app =
+        app_with_auth_fixed_vector_and_store(pool.clone(), unit_vector_at(203), store.clone());
+
+    let mut image_ids = Vec::new();
+    let mut art_ids = Vec::new();
+    for title in ["Shared A", "Shared B"] {
+        let art = create_artwork(app.clone(), title).await;
+        let (status, bytes) = send_authed(
+            app.clone(),
+            "POST",
+            &format!("/v1/studio/artworks/{art}/images"),
+            ALICE,
+            Some(&json!({ "s3_key": key }).to_string()),
+        )
+        .await;
+        assert_eq!(status, 201);
+        image_ids.push(serde_json::from_slice::<Image>(&bytes).unwrap().id);
+        art_ids.push(art);
+    }
+    assert_eq!(store.test_retention(key), Some(Retention::Attached));
+
+    let (status, _) = send_authed(
+        app.clone(),
+        "DELETE",
+        &format!("/v1/studio/artworks/{}/images/{}", art_ids[0], image_ids[0]),
+        ALICE,
+        None,
+    )
+    .await;
+    assert_eq!(status, 204);
+    assert_eq!(
+        store.test_retention(key),
+        Some(Retention::Attached),
+        "still referenced by the second artwork"
+    );
+
+    let (status, _) = send_authed(
+        app,
+        "DELETE",
+        &format!("/v1/studio/artworks/{}/images/{}", art_ids[1], image_ids[1]),
+        ALICE,
+        None,
+    )
+    .await;
+    assert_eq!(status, 204);
+    assert_eq!(store.test_retention(key), Some(Retention::Pending));
 }
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
