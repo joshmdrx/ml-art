@@ -199,6 +199,7 @@ pub async fn create_checkout(
                 postal_code: &addr.postal_code,
                 country: &addr.country,
             },
+            customer_email: Some(&user.email),
         })
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("stripe checkout create: {e}")))?;

@@ -287,6 +287,19 @@ impl StripeClient {
         self.post_form("/v1/account_links", &params, None).await
     }
 
+    /// M-06 — does a connected account still owe Stripe information?
+    /// True when `requirements.currently_due` or `past_due` is non-empty,
+    /// i.e. the artist left onboarding early and must go back, as opposed
+    /// to having submitted everything and waiting on Stripe's review.
+    pub async fn account_details_due(&self, account_id: &str) -> Result<bool, StripeError> {
+        let account: AccountWithRequirements =
+            self.get(&format!("/v1/accounts/{account_id}")).await?;
+        Ok(account
+            .requirements
+            .map(|r| r.details_due())
+            .unwrap_or(false))
+    }
+
     /// M-04 — create a hosted **Checkout Session** for a marketplace
     /// order. This is a Connect *destination charge*: the buyer's card is
     /// charged on Wander's platform account, Stripe takes our
@@ -300,61 +313,7 @@ impl StripeClient {
         &self,
         req: &CheckoutSessionRequest<'_>,
     ) -> Result<CheckoutSession, StripeError> {
-        let mut params: Vec<(&str, String)> = vec![
-            ("mode", "payment".to_string()),
-            ("success_url", req.success_url.to_string()),
-            ("cancel_url", req.cancel_url.to_string()),
-            ("client_reference_id", req.client_reference_id.to_string()),
-            ("line_items[0][quantity]", "1".to_string()),
-            (
-                "line_items[0][price_data][currency]",
-                req.currency.to_string(),
-            ),
-            (
-                "line_items[0][price_data][unit_amount]",
-                req.amount_cents.to_string(),
-            ),
-            (
-                "line_items[0][price_data][product_data][name]",
-                req.product_name.to_string(),
-            ),
-            (
-                "payment_intent_data[application_fee_amount]",
-                req.application_fee_cents.to_string(),
-            ),
-            (
-                "payment_intent_data[transfer_data][destination]",
-                req.destination_account.to_string(),
-            ),
-            ("metadata[order_id]", req.client_reference_id.to_string()),
-        ];
-        // Shipping → the PaymentIntent, so Stripe's fraud checks + the
-        // artist's dashboard both see the destination address.
-        let s = &req.shipping;
-        params.push(("payment_intent_data[shipping][name]", s.name.to_string()));
-        params.push((
-            "payment_intent_data[shipping][address][line1]",
-            s.line1.to_string(),
-        ));
-        if let Some(line2) = s.line2 {
-            params.push((
-                "payment_intent_data[shipping][address][line2]",
-                line2.to_string(),
-            ));
-        }
-        params.push((
-            "payment_intent_data[shipping][address][city]",
-            s.city.to_string(),
-        ));
-        params.push((
-            "payment_intent_data[shipping][address][postal_code]",
-            s.postal_code.to_string(),
-        ));
-        params.push((
-            "payment_intent_data[shipping][address][country]",
-            s.country.to_string(),
-        ));
-
+        let params = checkout_session_params(req);
         self.post_form(
             "/v1/checkout/sessions",
             &params,
@@ -475,6 +434,92 @@ pub struct StripeShipping<'a> {
     pub country: &'a str,
 }
 
+/// Form params for `POST /v1/checkout/sessions`. Pure so the shape of the
+/// request (fee, destination, shipping, prefilled email) is unit-testable.
+fn checkout_session_params(req: &CheckoutSessionRequest<'_>) -> Vec<(&'static str, String)> {
+    let mut params: Vec<(&'static str, String)> = vec![
+        ("mode", "payment".to_string()),
+        ("success_url", req.success_url.to_string()),
+        ("cancel_url", req.cancel_url.to_string()),
+        ("client_reference_id", req.client_reference_id.to_string()),
+        ("line_items[0][quantity]", "1".to_string()),
+        (
+            "line_items[0][price_data][currency]",
+            req.currency.to_string(),
+        ),
+        (
+            "line_items[0][price_data][unit_amount]",
+            req.amount_cents.to_string(),
+        ),
+        (
+            "line_items[0][price_data][product_data][name]",
+            req.product_name.to_string(),
+        ),
+        (
+            "payment_intent_data[application_fee_amount]",
+            req.application_fee_cents.to_string(),
+        ),
+        (
+            "payment_intent_data[transfer_data][destination]",
+            req.destination_account.to_string(),
+        ),
+        ("metadata[order_id]", req.client_reference_id.to_string()),
+    ];
+    // Prefill the buyer's email (we already have it from Clerk) so
+    // Checkout doesn't make them type it again; they can still edit it.
+    if let Some(email) = req.customer_email.filter(|e| !e.is_empty()) {
+        params.push(("customer_email", email.to_string()));
+    }
+    // Shipping → the PaymentIntent, so Stripe's fraud checks + the
+    // artist's dashboard both see the destination address.
+    let s = &req.shipping;
+    params.push(("payment_intent_data[shipping][name]", s.name.to_string()));
+    params.push((
+        "payment_intent_data[shipping][address][line1]",
+        s.line1.to_string(),
+    ));
+    if let Some(line2) = s.line2 {
+        params.push((
+            "payment_intent_data[shipping][address][line2]",
+            line2.to_string(),
+        ));
+    }
+    params.push((
+        "payment_intent_data[shipping][address][city]",
+        s.city.to_string(),
+    ));
+    params.push((
+        "payment_intent_data[shipping][address][postal_code]",
+        s.postal_code.to_string(),
+    ));
+    params.push((
+        "payment_intent_data[shipping][address][country]",
+        s.country.to_string(),
+    ));
+
+    params
+}
+
+/// The slice of a Connect account `GET /v1/accounts/{id}` we read.
+#[derive(Debug, serde::Deserialize)]
+struct AccountWithRequirements {
+    requirements: Option<AccountRequirements>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct AccountRequirements {
+    #[serde(default)]
+    currently_due: Vec<String>,
+    #[serde(default)]
+    past_due: Vec<String>,
+}
+
+impl AccountRequirements {
+    fn details_due(&self) -> bool {
+        !self.currently_due.is_empty() || !self.past_due.is_empty()
+    }
+}
+
 /// Inputs to [`StripeClient::create_checkout_session`]. One line item
 /// (the artwork); amounts are in the currency's minor units (GBP pence).
 pub struct CheckoutSessionRequest<'a> {
@@ -492,6 +537,8 @@ pub struct CheckoutSessionRequest<'a> {
     pub success_url: &'a str,
     pub cancel_url: &'a str,
     pub shipping: StripeShipping<'a>,
+    /// The signed-in buyer's email, prefilled on the Checkout page.
+    pub customer_email: Option<&'a str>,
 }
 
 /// A refund (`re_*`). Returned by [`StripeClient::create_refund`].
@@ -516,6 +563,87 @@ pub struct CheckoutSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn checkout_req(email: Option<&str>) -> CheckoutSessionRequest<'_> {
+        CheckoutSessionRequest {
+            client_reference_id: "order-1",
+            product_name: "Untitled",
+            amount_cents: 10_000,
+            currency: "gbp",
+            application_fee_cents: 1_500,
+            destination_account: "acct_123",
+            success_url: "https://example.test/ok",
+            cancel_url: "https://example.test/cancel",
+            shipping: StripeShipping {
+                name: "A Buyer",
+                line1: "1 Test Street",
+                line2: None,
+                city: "London",
+                postal_code: "EC1A 1BB",
+                country: "GB",
+            },
+            customer_email: email,
+        }
+    }
+
+    fn param<'a>(params: &'a [(&str, String)], key: &str) -> Option<&'a str> {
+        params
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn details_due_when_anything_currently_or_past_due() {
+        let parse = |j: &str| serde_json::from_str::<AccountWithRequirements>(j).unwrap();
+        let due =
+            parse(r#"{"requirements":{"currently_due":["individual.dob.day"],"past_due":[]}}"#);
+        assert!(due.requirements.unwrap().details_due());
+        let past =
+            parse(r#"{"requirements":{"currently_due":[],"past_due":["individual.phone"]}}"#);
+        assert!(past.requirements.unwrap().details_due());
+        // Submitted, Stripe reviewing (`pending_verification`): nothing due.
+        let reviewing = parse(
+            r#"{"requirements":{"currently_due":[],"past_due":[],"pending_verification":["individual.verification.document"]}}"#,
+        );
+        assert!(!reviewing.requirements.unwrap().details_due());
+    }
+
+    #[test]
+    fn checkout_params_prefill_buyer_email() {
+        let params = checkout_session_params(&checkout_req(Some("buyer@example.test")));
+        assert_eq!(param(&params, "customer_email"), Some("buyer@example.test"));
+        assert_eq!(
+            param(&params, "payment_intent_data[application_fee_amount]"),
+            Some("1500")
+        );
+        assert_eq!(
+            param(&params, "payment_intent_data[transfer_data][destination]"),
+            Some("acct_123")
+        );
+        assert_eq!(
+            param(&params, "payment_intent_data[shipping][address][line2]"),
+            None
+        );
+    }
+
+    #[test]
+    fn checkout_params_omit_missing_or_empty_email() {
+        assert_eq!(
+            param(
+                &checkout_session_params(&checkout_req(None)),
+                "customer_email"
+            ),
+            None
+        );
+        assert_eq!(
+            param(
+                &checkout_session_params(&checkout_req(Some(""))),
+                "customer_email"
+            ),
+            None
+        );
+    }
 
     const SECRET: &str = "whsec_test_do_not_use_in_prod";
 

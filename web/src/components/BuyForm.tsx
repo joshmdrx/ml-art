@@ -9,7 +9,7 @@
  * `<FieldError>`, never HTML `required`/`pattern`.
  */
 
-import { useState, useTransition, type FormEvent } from "react";
+import { useId, useState, useTransition, type FormEvent } from "react";
 import { FieldError } from "@/components/ui/FieldError";
 import { toUserMessage } from "@/lib/reportError";
 import { startCheckout } from "@/app/actions/orders";
@@ -84,15 +84,16 @@ export function BuyForm({
     <form onSubmit={onSubmit} className="mt-8 space-y-4">
       <h2 className="font-serif text-xl">Shipping address</h2>
 
-      <Field label="Recipient name" value={name} onChange={setName} error={errors.name} />
-      <Field label="Address line 1" value={line1} onChange={setLine1} error={errors.line1} />
-      <Field label="Address line 2 (optional)" value={line2} onChange={setLine2} />
+      <Field label="Recipient name" autoComplete="shipping name" value={name} onChange={setName} error={errors.name} />
+      <Field label="Address line 1" autoComplete="shipping address-line1" value={line1} onChange={setLine1} error={errors.line1} />
+      <Field label="Address line 2 (optional)" autoComplete="shipping address-line2" value={line2} onChange={setLine2} />
       <div className="grid grid-cols-2 gap-4">
-        <Field label="City" value={city} onChange={setCity} error={errors.city} />
-        <Field label="Postcode" value={postalCode} onChange={setPostalCode} error={errors.postal_code} />
+        <Field label="City" autoComplete="shipping address-level2" value={city} onChange={setCity} error={errors.city} />
+        <Field label="Postcode" autoComplete="shipping postal-code" value={postalCode} onChange={setPostalCode} error={errors.postal_code} />
       </div>
       <Field
         label="Country"
+        autoComplete="shipping country"
         value={country}
         onChange={setCountry}
         error={errors.country}
@@ -124,19 +125,28 @@ function Field({
   error,
   helper,
   maxLength,
+  autoComplete,
 }: {
   label: string;
+  /** Browser autofill hint, e.g. "shipping postal-code". */
+  autoComplete?: string;
   value: string;
   onChange: (v: string) => void;
   error?: string;
   helper?: string;
   maxLength?: number;
 }) {
+  const id = useId();
   return (
-    <label className="block">
-      <span className="block text-xs text-muted mb-1">{label}</span>
+    <div>
+      <label htmlFor={id} className="block text-xs text-muted mb-1">
+        {label}
+      </label>
       <input
+        id={id}
         type="text"
+        autoComplete={autoComplete}
+        aria-invalid={error ? true : undefined}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         maxLength={maxLength}
@@ -144,6 +154,6 @@ function Field({
       />
       {helper && <span className="block text-xs text-muted mt-1">{helper}</span>}
       <FieldError message={error} />
-    </label>
+    </div>
   );
 }
