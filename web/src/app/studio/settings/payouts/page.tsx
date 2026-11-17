@@ -11,8 +11,10 @@ export const metadata: Metadata = { title: "Payouts" };
 /**
  * `/studio/settings/payouts` — enable direct sales via Stripe Connect
  * (M-01/M-06). Also the return URL from Stripe's hosted onboarding, so
- * we re-read status on load; `account.updated` may still be in flight,
- * hence the "being reviewed" copy for the started-but-not-live state.
+ * we re-read status on load; `account.updated` may still be in flight.
+ * In the started-but-not-live state the API's `details_due` (a live Stripe
+ * requirements check) picks between "finish setting up" and "Stripe is
+ * reviewing"; when it's null we fall back to copy covering both.
  */
 export default async function PayoutsPage() {
   const { userId } = await auth();
@@ -59,11 +61,35 @@ export default async function PayoutsPage() {
           </>
         ) : started ? (
           <>
-            <p className="text-sm font-medium">Setup in progress</p>
-            <p className="text-sm text-muted mt-1">
-              Stripe is reviewing your details. This can take a few minutes.
-              If you didn&apos;t finish, continue where you left off.
-            </p>
+            {status?.details_due ? (
+              <>
+                <p className="text-sm font-medium">Finish setting up</p>
+                <p className="text-sm text-muted mt-1">
+                  Stripe still needs a few details from you before your works
+                  can be bought. Continue where you left off — it only asks
+                  for what&apos;s missing.
+                </p>
+              </>
+            ) : status?.details_due === false ? (
+              <>
+                <p className="text-sm font-medium">
+                  Stripe is reviewing your details
+                </p>
+                <p className="text-sm text-muted mt-1">
+                  You&apos;ve submitted everything. This usually takes a few
+                  minutes; refresh this page to check.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm font-medium">Setup in progress</p>
+                <p className="text-sm text-muted mt-1">
+                  If you didn&apos;t finish with Stripe, continue where you
+                  left off. Otherwise Stripe may still be reviewing your
+                  details — this usually takes a few minutes.
+                </p>
+              </>
+            )}
             <EnableSalesButton started={started} live={live} />
           </>
         ) : (

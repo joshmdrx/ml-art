@@ -96,6 +96,12 @@ pub struct PayoutStatus {
     pub charges_enabled: bool,
     /// Payouts to the artist's bank are enabled.
     pub payouts_enabled: bool,
+    /// Only while started-but-not-live: `Some(true)` if Stripe still needs
+    /// details from the artist (they left onboarding early), `Some(false)`
+    /// if everything is submitted and Stripe is reviewing. `None` when it
+    /// wasn't checked (live, not started, Stripe unconfigured or erroring)
+    /// — the page falls back to neutral copy.
+    pub details_due: Option<bool>,
 }
 
 pub async fn payout_status(
@@ -114,9 +120,29 @@ pub async fn payout_status(
     .await?;
 
     let (account_id, charges_enabled, payouts_enabled) = row.ok_or(ApiError::NotFound)?;
+
+    // Only worth a Stripe round-trip in the in-between state; a failure
+    // here must not break the page, so it degrades to `None`.
+    let details_due = match (&account_id, charges_enabled) {
+        (Some(acct), false) => {
+            match StripeClient::from_config(state.cfg.stripe_secret_key.as_deref()) {
+                Some(client) => match client.account_details_due(acct).await {
+                    Ok(due) => Some(due),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "payout status: stripe account lookup failed");
+                        None
+                    }
+                },
+                None => None,
+            }
+        }
+        _ => None,
+    };
+
     Ok(Json(PayoutStatus {
         onboarding_started: account_id.is_some(),
         charges_enabled,
         payouts_enabled,
+        details_due,
     }))
 }

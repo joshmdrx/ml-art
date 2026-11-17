@@ -885,6 +885,12 @@ export interface PayoutStatus {
   onboarding_started: boolean;
   charges_enabled: boolean;
   payouts_enabled: boolean;
+  /**
+   * Only while started-but-not-live: true = Stripe still needs details
+   * (artist left onboarding early), false = submitted, Stripe reviewing.
+   * Null when not checked — use neutral copy.
+   */
+  details_due: boolean | null;
 }
 
 /** M-06 — the artist's Stripe payout status. `null` on 401 / no artist. */

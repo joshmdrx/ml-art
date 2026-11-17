@@ -133,6 +133,24 @@ async fn payout_status_reflects_onboarding(pool: PgPool) {
     assert_eq!(status, 200);
     assert_eq!(body["onboarding_started"], false);
     assert_eq!(body["charges_enabled"], false);
+    assert!(
+        body["details_due"].is_null(),
+        "not started → no Stripe lookup"
+    );
+
+    // Started but not live, no Stripe key configured (test env): the
+    // requirements lookup is skipped and the page gets neutral copy.
+    sqlx::query("UPDATE artists SET stripe_account_id = 'acct_x' WHERE id = $1")
+        .bind(uuid(ALICE_ARTIST))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let app = app_with_test_auth(pool.clone());
+    let (status, body): (_, Value) =
+        get_json_authed(app, "/v1/studio/stripe/payouts", ALICE_BEARER).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["onboarding_started"], true);
+    assert!(body["details_due"].is_null());
 
     // Simulate onboarding started + KYC complete.
     sqlx::query(
@@ -148,4 +166,5 @@ async fn payout_status_reflects_onboarding(pool: PgPool) {
         get_json_authed(app, "/v1/studio/stripe/payouts", ALICE_BEARER).await;
     assert_eq!(body["onboarding_started"], true);
     assert_eq!(body["charges_enabled"], true);
+    assert!(body["details_due"].is_null(), "live → no Stripe lookup");
 }
