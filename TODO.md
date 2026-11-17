@@ -11,6 +11,25 @@ if the item was dropped, with a one-line reason.
 
 ## Now (active build)
 
+### `T-089` Uploads lifecycle deletes artist artwork images after 90 days — launch blocker, fix built, not yet applied
+
+The uploads-bucket lifecycle rule (`expire-orphan-anchors`, `filter {}`)
+expired **every** object after 90 days, but since T-012 Phase 1 artist
+artwork images live in that bucket too. Confirmed on prod 2026-11-16:
+artwork `6d9f5170-…`'s two images (uploaded 2026-06-29 / 07-01) are gone.
+
+- ✅ `core::object_store` — `put` tags `state=pending`; new `set_retention(key, Retention)`
+- ✅ `studio::artworks::add_image` retags `attached` before INSERT (unknown `uploads/` key → 400); `remove_image` retags `pending` when the last reference goes
+- ✅ Terraform — lifecycle filter `tag state=pending`; api Lambda gets `s3:PutObjectTagging`
+- ✅ `scripts/backfill-upload-retention-tags.sh` — tags existing referenced keys `attached`, optionally untagged orphans `pending`
+- ⏳ **Apply in this order** (each step needs the previous one):
+  1. `terraform apply -target=module.api.aws_iam_role_policy.api_lambda -target=module.storage.aws_s3_bucket_lifecycle_configuration.uploads` — targeted, because other branches carry unapplied/unmerged infra changes. Adds `s3:PutObjectTagging` (the new api 403s on every upload without it) and swaps the rule to `state=pending` only, which immediately stops untagged objects expiring.
+  2. Deploy the api (`scripts/deploy-api.sh`) from the branch prod actually runs, with this fix merged in.
+  3. `AWS_PROFILE=ml-art scripts/backfill-upload-retention-tags.sh` (dry-run) → `--apply` → optionally `--apply --expire-orphans` (orphans only after step 2).
+  4. Upload + attach an image in the studio, then `aws s3api get-object-tagging --bucket ml-art-prod-uploads --key uploads/<uuid>.<ext>` should read `state=attached`.
+- ⏳ The prod test artwork's two images need re-uploading (lost to the old rule)
+- Not covered: the real-S3 `set_retention` path is only compile-checked + unit-tested against the in-memory store (dev MinIO image won't pull). The runbook's post-deploy check exercises it for real.
+
 ### ~~`T-044` Jobs queue — Postgres local, SQS+Lambda prod~~ — shipped 2026-05-29
 
 - ✅ `db/migrations/0012_jobs.sql` + `core::jobs` module (JobEvent + JobsBackend + Postgres driver + handler dispatch)

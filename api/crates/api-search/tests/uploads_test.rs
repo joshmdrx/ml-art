@@ -9,7 +9,8 @@ use axum::{
     http::{Request, StatusCode},
     Router,
 };
-use common::{app_with_auth_and_fixed_vector, MIGRATOR};
+use common::{app_with_auth_and_fixed_vector, app_with_auth_fixed_vector_and_store, MIGRATOR};
+use ml_art_core::object_store::{ObjectStore, Retention};
 use pgvector::Vector;
 use serde::Deserialize;
 use sqlx::PgPool;
@@ -86,7 +87,8 @@ async fn upload_image_signed_in_writes_row_and_embeds(pool: PgPool) {
     // Fixed-vector embedder so the inline embed call returns
     // immediately without touching Jina. In-memory ObjectStore (from
     // the helper's `for_tests` build) catches the PUT.
-    let app = app_with_auth_and_fixed_vector(pool.clone(), unit_vector_at(42));
+    let store = ObjectStore::for_tests("uploads");
+    let app = app_with_auth_fixed_vector_and_store(pool.clone(), unit_vector_at(42), store.clone());
     let boundary = "----testboundary";
     let png_bytes: &[u8] = b"\x89PNG\r\n\x1a\nfake-png-body";
     let body = multipart_body(boundary, "test.png", "image/png", png_bytes);
@@ -102,6 +104,10 @@ async fn upload_image_signed_in_writes_row_and_embeds(pool: PgPool) {
     assert!(ack.s3_key.starts_with("uploads/"));
     assert!(ack.s3_key.ends_with(".png"));
     assert!(ack.image_url.ends_with(&ack.s3_key));
+
+    // T-089: new uploads are tagged pending so the bucket lifecycle
+    // ages them out unless an artwork attaches them.
+    assert_eq!(store.test_retention(&ack.s3_key), Some(Retention::Pending));
 
     // DB row exists, owned by alice, embedding written.
     let (user_id, anon_id, embedding): (Option<uuid::Uuid>, Option<uuid::Uuid>, Option<Vector>) =

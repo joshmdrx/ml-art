@@ -215,6 +215,15 @@ data "aws_iam_policy_document" "api_lambda" {
     actions   = ["s3:PutObject"]
     resources = ["${var.uploads_bucket_arn}/*", "${var.artworks_bucket_arn}/*"]
   }
+
+  # T-089 — PutObject with an `x-amz-tagging` header, and the retag on
+  # artwork-image attach/remove, both need PutObjectTagging. Without it
+  # every upload 403s, so this must be applied BEFORE the api deploy.
+  statement {
+    sid       = "S3TagUploads"
+    actions   = ["s3:PutObjectTagging"]
+    resources = ["${var.uploads_bucket_arn}/*"]
+  }
 }
 
 resource "aws_iam_role_policy" "api_lambda" {

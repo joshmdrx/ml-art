@@ -5,9 +5,10 @@
  *   - artworks_bucket  — WikiArt seed + studio-uploaded artwork
  *     images. Heavy reads, write-once. Long Cache-Control.
  *   - uploads_bucket   — visual-search uploads + (T-012 Phase 1)
- *     new artwork-image uploads. Lifecycle expires temporary
- *     anchor uploads (`expires_at` column drives the cleanup
- *     job; the bucket-level lifecycle is belt-and-braces).
+ *     artist artwork-image uploads, same `uploads/<uuid>.<ext>`
+ *     keys. Lifecycle expires only objects tagged `state=pending`;
+ *     the api retags attached artwork images `state=attached`
+ *     (T-089, see core::object_store).
  *
  * CloudFront fronts both via separate origins on a single
  * distribution → single `images.<domain>` hostname → cheaper +
@@ -98,18 +99,30 @@ resource "aws_s3_bucket_versioning" "artworks" {
   }
 }
 
-# Lifecycle on uploads — anchor uploads that never get attached to an
-# artwork should age out. The app-level `uploads.expires_at` cleanup job
-# does the primary work; this rule is the belt-and-braces for anything
-# the job misses (e.g. db inconsistency).
+# Lifecycle on uploads — T-089. The bucket mixes throwaway visual-search
+# uploads with permanent artist artwork images (T-012 Phase 1), so the
+# rule must NOT match every object (the original `filter {}` deleted
+# artists' images 90 days after upload). The api PUTs every object
+# tagged `state=pending` and retags it `state=attached` when an
+# artwork_images row references it (core::object_store::Retention).
+# Only pending objects expire; untagged objects (pre-T-089 uploads that
+# the backfill hasn't touched) are kept — failing safe.
+#
+# There is no app-level `uploads.expires_at` cleanup job; this rule is
+# the only thing that deletes objects in this bucket.
 resource "aws_s3_bucket_lifecycle_configuration" "uploads" {
   bucket = aws_s3_bucket.uploads.id
 
   rule {
-    id     = "expire-orphan-anchors"
+    id     = "expire-pending-uploads"
     status = "Enabled"
 
-    filter {} # apply to all objects
+    filter {
+      tag {
+        key   = "state"
+        value = "pending"
+      }
+    }
 
     expiration {
       days = 90

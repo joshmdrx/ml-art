@@ -14,8 +14,8 @@
 mod common;
 
 use common::{
-    app_with_auth_fixed_vector_postgres_jobs, app_with_keyword_only_postgres_jobs, get_json,
-    send_authed, MIGRATOR,
+    app_with_auth_fixed_vector_postgres_jobs_and_store, app_with_keyword_only_postgres_jobs,
+    get_json, send_authed, store_with_uploads, MIGRATOR,
 };
 use ml_art_core::{
     db::Pool,
@@ -72,7 +72,9 @@ struct Page<T> {
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn add_image_enqueues_artwork_image_moderate(pool: PgPool) {
-    let app = app_with_auth_fixed_vector_postgres_jobs(pool.clone(), unit_vector_at(99));
+    let store = store_with_uploads(&["uploads/moderate-me.jpg"]).await;
+    let app =
+        app_with_auth_fixed_vector_postgres_jobs_and_store(pool.clone(), unit_vector_at(99), store);
 
     // Create a fresh artwork so we don't trip the "primary already set"
     // path on Blue Morning.
@@ -241,7 +243,12 @@ async fn moderation_handler_is_noop_for_missing_row(pool: PgPool) {
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn add_image_flips_approved_after_worker_runs(pool: PgPool) {
-    let app = app_with_auth_fixed_vector_postgres_jobs(pool.clone(), unit_vector_at(101));
+    let store = store_with_uploads(&["uploads/e2e-mod.jpg"]).await;
+    let app = app_with_auth_fixed_vector_postgres_jobs_and_store(
+        pool.clone(),
+        unit_vector_at(101),
+        store,
+    );
 
     // Create fresh artwork + add image (lands as pending).
     let created: ArtworkSummary = {
