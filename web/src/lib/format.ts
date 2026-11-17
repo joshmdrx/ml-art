@@ -62,3 +62,15 @@ export function formatPrice(
     return `${major.toFixed(0)} ${currency}`;
   }
 }
+
+/**
+ * "Name · email" for an order's buyer, dropping whichever half is missing
+ * — buyers often have no display name, which used to render "— · email".
+ */
+export function formatBuyer(
+  name: string | null | undefined,
+  email: string | null | undefined
+): string {
+  const parts = [name?.trim(), email?.trim()].filter(Boolean);
+  return parts.length ? parts.join(" · ") : "—";
+}

@@ -87,7 +87,13 @@ pub struct AdminOrderDetail {
     pub amount_cents_gbp: i64,
     pub commission_cents_gbp: i64,
     pub payout_cents_gbp: Option<i64>,
+    /// Stripe's processing fee (borne by Wander). Null until the charge
+    /// settles and `charge.updated` backfills it.
+    pub stripe_fee_cents_gbp: Option<i64>,
     pub stripe_payment_intent_id: Option<String>,
+    /// Deep link to the payment in the Stripe dashboard — test or live
+    /// depending on which key the API runs with.
+    pub stripe_dashboard_url: Option<String>,
     pub refund_reason: Option<String>,
     pub tracking_carrier: Option<String>,
     pub tracking_number: Option<String>,
@@ -113,6 +119,7 @@ struct DetailRow {
     amount_cents_gbp: i64,
     commission_cents_gbp: i64,
     payout_cents_gbp: Option<i64>,
+    stripe_fee_cents_gbp: Option<i64>,
     stripe_payment_intent_id: Option<String>,
     refund_reason: Option<String>,
     tracking_carrier: Option<String>,
@@ -136,7 +143,8 @@ pub async fn detail(
         r#"
         SELECT
             o.id, o.status, o.amount_cents_gbp, o.commission_cents_gbp,
-            o.payout_cents_gbp, o.stripe_payment_intent_id, o.refund_reason,
+            o.payout_cents_gbp, o.stripe_fee_cents_gbp,
+            o.stripe_payment_intent_id, o.refund_reason,
             o.tracking_carrier, o.tracking_number, o.created_at, o.shipping_address,
             bu.display_name AS buyer_name, bu.email AS buyer_email,
             ar.display_name AS artist_name,
@@ -163,6 +171,11 @@ pub async fn detail(
         amount_cents_gbp: row.amount_cents_gbp,
         commission_cents_gbp: row.commission_cents_gbp,
         payout_cents_gbp: row.payout_cents_gbp,
+        stripe_fee_cents_gbp: row.stripe_fee_cents_gbp,
+        stripe_dashboard_url: row
+            .stripe_payment_intent_id
+            .as_deref()
+            .map(|pi| stripe_dashboard_payment_url(state.cfg.stripe_secret_key.as_deref(), pi)),
         stripe_payment_intent_id: row.stripe_payment_intent_id,
         refund_reason: row.refund_reason,
         tracking_carrier: row.tracking_carrier,
@@ -264,4 +277,33 @@ pub async fn refund(
         refund_id: refund.id,
         status: refund.status.unwrap_or_else(|| "pending".into()),
     }))
+}
+
+/// Live keys open the live dashboard; anything else (test key, none in
+/// dev) opens test mode, where every non-live payment lives.
+fn stripe_dashboard_payment_url(secret_key: Option<&str>, payment_intent: &str) -> String {
+    let live = secret_key.is_some_and(|k| k.starts_with("sk_live_") || k.starts_with("rk_live_"));
+    let mode = if live { "" } else { "test/" };
+    format!("https://dashboard.stripe.com/{mode}payments/{payment_intent}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stripe_dashboard_payment_url as url;
+
+    #[test]
+    fn dashboard_url_follows_key_mode() {
+        assert_eq!(
+            url(Some("sk_live_x"), "pi_1"),
+            "https://dashboard.stripe.com/payments/pi_1"
+        );
+        assert_eq!(
+            url(Some("sk_test_x"), "pi_1"),
+            "https://dashboard.stripe.com/test/payments/pi_1"
+        );
+        assert_eq!(
+            url(None, "pi_1"),
+            "https://dashboard.stripe.com/test/payments/pi_1"
+        );
+    }
 }

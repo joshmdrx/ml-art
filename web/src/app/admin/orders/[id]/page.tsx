@@ -3,10 +3,10 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { TopNav } from "@/components/TopNav";
 import { RefundButton } from "@/components/admin/RefundButton";
-import { getAdminOrder, getMe, formatMoney } from "@/lib/api";
+import { getAdminOrder, getMe, formatMoney, formatBuyer } from "@/lib/api";
 
 export const metadata: Metadata = {
-  title: "Admin · Order — Wander",
+  title: "Admin · Order",
   robots: { index: false, follow: false },
 };
 
@@ -25,7 +25,6 @@ export default async function AdminOrderPage({ params }: { params: Params }) {
   if (!order) notFound();
 
   const addr = order.shipping_address;
-  const pi = order.stripe_payment_intent_id;
 
   return (
     <>
@@ -76,8 +75,16 @@ export default async function AdminOrderPage({ params }: { params: Params }) {
               ) ?? "—"
             }
           />
+          <Row
+            label="Stripe fee (Wander)"
+            value={
+              order.stripe_fee_cents_gbp == null
+                ? "Pending"
+                : "−" + (formatMoney(order.stripe_fee_cents_gbp, "GBP") ?? "—")
+            }
+          />
           <Row label="Artist" value={order.artist_name} />
-          <Row label="Buyer" value={`${order.buyer_name ?? "—"} · ${order.buyer_email ?? "—"}`} />
+          <Row label="Buyer" value={formatBuyer(order.buyer_name, order.buyer_email)} />
         </dl>
 
         <section className="mt-6 text-sm">
@@ -105,9 +112,9 @@ export default async function AdminOrderPage({ params }: { params: Params }) {
         </section>
 
         <div className="mt-8 flex flex-wrap items-center gap-3">
-          {pi && (
+          {order.stripe_dashboard_url && (
             <a
-              href={`https://dashboard.stripe.com/test/payments/${pi}`}
+              href={order.stripe_dashboard_url}
               target="_blank"
               rel="noopener noreferrer"
               className="px-4 py-2 text-sm border border-border hover:bg-background"

@@ -6,7 +6,7 @@ import { listAdminOrders, getMe, formatMoney } from "@/lib/api";
 import { notFound } from "next/navigation";
 
 export const metadata: Metadata = {
-  title: "Admin · Orders — Wander",
+  title: "Admin · Orders",
   robots: { index: false, follow: false },
 };
 

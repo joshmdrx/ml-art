@@ -4,7 +4,7 @@ import { TopNav } from "@/components/TopNav";
 import { listAdminAuditLog } from "@/lib/api";
 
 export const metadata: Metadata = {
-  title: "Admin · Audit log — Wander",
+  title: "Admin · Audit log",
   robots: { index: false, follow: false },
 };
 

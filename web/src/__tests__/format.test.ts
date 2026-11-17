@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatPrice, formatDimensions, formatMoney } from "@/lib/api";
+import { formatPrice, formatDimensions, formatMoney, formatBuyer } from "@/lib/api";
 
 describe("formatPrice", () => {
   it("formats USD with $ and no decimals", () => {
@@ -78,5 +78,20 @@ describe("formatMoney", () => {
   });
   it("passes null through", () => {
     expect(formatMoney(null, "GBP")).toBeNull();
+  });
+});
+
+describe("formatBuyer", () => {
+  it("joins name and email", () => {
+    expect(formatBuyer("Ada", "ada@example.test")).toBe("Ada · ada@example.test");
+  });
+
+  it("drops a missing or blank name instead of rendering a dash", () => {
+    expect(formatBuyer(null, "ada@example.test")).toBe("ada@example.test");
+    expect(formatBuyer("  ", "ada@example.test")).toBe("ada@example.test");
+  });
+
+  it("falls back to a dash when both are missing", () => {
+    expect(formatBuyer(null, null)).toBe("—");
   });
 });

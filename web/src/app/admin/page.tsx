@@ -4,7 +4,7 @@ import { TopNav } from "@/components/TopNav";
 import { listAdminArtists, listAdminImages } from "@/lib/api";
 
 export const metadata: Metadata = {
-  title: "Admin — Wander",
+  title: "Admin",
   robots: { index: false, follow: false },
 };
 

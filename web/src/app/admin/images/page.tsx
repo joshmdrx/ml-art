@@ -5,7 +5,7 @@ import { AdminImageRow } from "@/components/admin/AdminImageRow";
 import { listAdminImages } from "@/lib/api";
 
 export const metadata: Metadata = {
-  title: "Admin · Images — Wander",
+  title: "Admin · Images",
   robots: { index: false, follow: false },
 };
 

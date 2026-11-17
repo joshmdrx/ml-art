@@ -4,7 +4,7 @@ import { TopNav } from "@/components/TopNav";
 import { getAdminStats, type WeeklyFunnel } from "@/lib/api";
 
 export const metadata: Metadata = {
-  title: "Admin · Stats — Wander",
+  title: "Admin · Stats",
   robots: { index: false, follow: false },
 };
 

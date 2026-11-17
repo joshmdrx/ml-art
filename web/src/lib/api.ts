@@ -1016,7 +1016,11 @@ export interface AdminOrderDetail {
   amount_cents_gbp: number;
   commission_cents_gbp: number;
   payout_cents_gbp: number | null;
+  /** Null until the charge settles and `charge.updated` backfills it. */
+  stripe_fee_cents_gbp: number | null;
   stripe_payment_intent_id: string | null;
+  /** Test- or live-mode dashboard link, chosen by the API's key. */
+  stripe_dashboard_url: string | null;
   refund_reason: string | null;
   tracking_carrier: string | null;
   tracking_number: string | null;
@@ -1253,7 +1257,7 @@ export async function removeArtworkFromCollection(
 // them without dragging `apiFetch`'s server-only Clerk import into
 // the client bundle. Re-exported here for backward compatibility
 // with existing callers (artworks/[id]/page.tsx, format.test.ts).
-export { formatDimensions, formatPrice, formatMoney } from "@/lib/format";
+export { formatDimensions, formatPrice, formatMoney, formatBuyer } from "@/lib/format";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Studio (authed; artist-only)

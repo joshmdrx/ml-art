@@ -3,7 +3,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
 import { MarkShippedForm } from "@/components/studio/MarkShippedForm";
-import { getStudioOrder, formatMoney } from "@/lib/api";
+import { getStudioOrder, formatMoney, formatBuyer } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
 
 export const metadata: Metadata = { title: "Order" };
@@ -87,7 +87,7 @@ export default async function StudioOrderPage({ params }: { params: Params }) {
         </address>
         {order.buyer_email && (
           <p className="mt-2 text-xs text-muted">
-            Buyer: {order.buyer_name} · {order.buyer_email}
+            Buyer: {formatBuyer(order.buyer_name, order.buyer_email)}
           </p>
         )}
       </section>

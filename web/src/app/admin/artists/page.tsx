@@ -6,7 +6,7 @@ import { AdminArtistRow } from "@/components/admin/AdminArtistRow";
 import { listAdminArtists } from "@/lib/api";
 
 export const metadata: Metadata = {
-  title: "Admin · Artists — Wander",
+  title: "Admin · Artists",
   robots: { index: false, follow: false },
 };
 
