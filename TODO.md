@@ -11,6 +11,19 @@ if the item was dropped, with a one-line reason.
 
 ## Now (active build)
 
+### `T-090` Limited editions + checkout holds + sold-out auto-refund + UK-only shipping — built, not yet deployed
+
+Design + reasoning: `decisions.md` 2026-11-19.
+
+- ✅ `0034_artwork_editions.sql` — `artworks.edition_size`, `editions_sold_offline`; `orders.hold_expires_at`
+- ✅ `crate::stock` — row-locked copy counting + derived sold-out
+- ✅ Checkout holds a copy (31 min session + 10 min grace); same buyer reuses or replaces their session (old one expired first — fixes the changed-address resubmit 500)
+- ✅ Payment webhook re-checks under the lock; unfulfillable → order `cancelled` + refund before commit + `BuyerSoldOut` email; `checkout.session.expired` releases holds
+- ✅ Studio editor: Original / Limited edition, sold-elsewhere count, shipping weight (kg); ships-from fixed to GB — **artists could not set weight or ships-from at all before this, so nothing was buyable without a DB edit**
+- ✅ Artwork page "Limited edition of 50 · 12 left"; buy form UK-only; checkout refusals (sold out / on hold / UK-only) reach the buyer
+- ⏳ **Prod rollout, in order:** apply `0034` via psql → deploy api → deploy web → add `checkout.session.expired` to the platform webhook endpoint (`scripts/stripe-webhooks-setup.sh` has it for new endpoints; existing ones need it added in the dashboard)
+- Not covered: holds aren't shown on the artwork page (a held last copy still shows Buy, and checkout explains); async payment methods (`checkout.session.async_payment_*`) aren't handled — card / wallets / Klarna complete synchronously.
+
 ### `T-089` Uploads lifecycle deletes artist artwork images after 90 days — launch blocker, fix built, not yet applied
 
 The uploads-bucket lifecycle rule (`expire-orphan-anchors`, `filter {}`)

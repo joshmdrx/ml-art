@@ -9,10 +9,17 @@
 //! the client to redirect to.
 //!
 //! The order is written *before* the Stripe call so `checkout.session.
-//! completed` (M-03) can map the session back to it. Double-submit is
-//! idempotent: a `pending` order for the same (buyer, artwork) < 30 min
-//! old is reused rather than duplicated (Stripe-side key on the order id
-//! is the second guard).
+//! completed` (M-03) can map the session back to it.
+//!
+//! T-090 — the pending order **holds a copy** (see `crate::stock`) until
+//! its Checkout Session expires (`CHECKOUT_WINDOW`, set explicitly on the
+//! session) plus `HOLD_GRACE`. [`reserve`] takes the artwork's row lock,
+//! so two buyers can't both claim the last copy of an original or an
+//! edition; the loser gets a 409. The same buyer coming back reuses their
+//! hold: same address → the same session (identical Stripe request,
+//! idempotency-keyed on order + expiry); new address → the old session is
+//! expired first (never left payable alongside the new one) and a fresh
+//! one opened on the same order. Shipping is UK-only for v1.
 //!
 //! Sellable = published + available + priced (GBP) + has dimensions,
 //! weight, and ships-from country + the artist has completed Stripe
@@ -36,6 +43,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::extractors::AuthedUser;
+use crate::stock;
 use crate::AppState;
 
 /// Wander's commission, in basis points of the gross sale price. 15%
@@ -96,7 +104,9 @@ pub async fn create_checkout(
     let client = StripeClient::from_config(state.cfg.stripe_secret_key.as_deref())
         .ok_or_else(|| ApiError::ServiceUnavailable("stripe not configured".into()))?;
 
-    validate_address(&req.shipping_address)?;
+    let address = normalize_address(req.shipping_address)?;
+    let shipping_json = serde_json::to_value(&address)
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("serialise shipping: {e}")))?;
 
     // Pull the artwork + its artist's payout state in one shot.
     let row: SellableRow = sqlx::query_as(
@@ -126,51 +136,73 @@ pub async fn create_checkout(
     let (amount_cents, account_id) = check_sellable(&row, user.id)?;
     let commission_cents = amount_cents * COMMISSION_BPS / 10_000;
 
-    // Idempotency: reuse a fresh pending order for this (buyer, artwork)
-    // rather than spawning a duplicate on a double-click.
-    let existing: Option<(Uuid,)> = sqlx::query_as(
-        r#"
-        SELECT id FROM orders
-        WHERE buyer_user_id = $1 AND artwork_id = $2 AND status = 'pending'
-          AND created_at > now() - interval '30 minutes'
-        ORDER BY created_at DESC
-        LIMIT 1
-        "#,
+    let reservation = reserve(
+        &state.pool,
+        artwork_id,
+        user.id,
+        row.artist_id,
+        &shipping_json,
+        amount_cents,
+        commission_cents,
     )
-    .bind(user.id)
-    .bind(artwork_id)
-    .fetch_optional(&state.pool)
     .await?;
 
-    let shipping_json = serde_json::to_value(&req.shipping_address)
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("serialise shipping: {e}")))?;
-
-    let order_id = match existing {
-        Some((id,)) => id,
-        None => {
-            sqlx::query_scalar(
+    let (order_id, expires_at, amount_cents, commission_cents) = match reservation {
+        Reservation::Reuse(h) => (h.order_id, h.expires_at, h.amount_cents, h.commission_cents),
+        Reservation::New(h) => (h.order_id, h.expires_at, h.amount_cents, h.commission_cents),
+        Reservation::Replace { hold, old_session } => {
+            // The buyer came back with a different address (or their
+            // session is about to lapse). Their old session must not stay
+            // payable alongside the new one, or they could pay twice.
+            if let Some(old) = old_session.as_deref() {
+                let status = client.checkout_session_status(old).await.map_err(|e| {
+                    ApiError::Internal(anyhow::anyhow!("stripe session lookup: {e}"))
+                })?;
+                match status.as_str() {
+                    "complete" => {
+                        return Err(ApiError::Conflict(
+                            "You've already paid for this work — it's in your orders.".into(),
+                        ))
+                    }
+                    "open" => client.expire_checkout_session(old).await.map_err(|e| {
+                        ApiError::Internal(anyhow::anyhow!("stripe session expire: {e}"))
+                    })?,
+                    _ => {}
+                }
+            }
+            let expires_at = Utc::now() + stock::CHECKOUT_WINDOW;
+            let updated = sqlx::query(
                 r#"
-            INSERT INTO orders (
-                buyer_user_id, artwork_id, artist_id,
-                amount_cents_gbp, commission_cents_gbp,
-                status, shipping_address
+                UPDATE orders SET
+                    shipping_address = $2,
+                    hold_expires_at = $3,
+                    stripe_checkout_session_id = NULL,
+                    updated_at = now()
+                WHERE id = $1 AND status = 'pending'
+                "#,
             )
-            VALUES ($1, $2, $3, $4, $5, 'pending', $6)
-            RETURNING id
-            "#,
-            )
-            .bind(user.id)
-            .bind(artwork_id)
-            .bind(row.artist_id)
-            .bind(amount_cents)
-            .bind(commission_cents)
+            .bind(hold.order_id)
             .bind(&shipping_json)
-            .fetch_one(&state.pool)
+            .bind(expires_at + stock::HOLD_GRACE)
+            .execute(&state.pool)
             .await?
+            .rows_affected();
+            if updated == 0 {
+                return Err(ApiError::Conflict(
+                    "This order just completed — check your orders.".into(),
+                ));
+            }
+            (
+                hold.order_id,
+                expires_at,
+                hold.amount_cents,
+                hold.commission_cents,
+            )
         }
     };
 
-    // Open the hosted Checkout Session for this order.
+    // Open the hosted Checkout Session for this order. Same order + expiry
+    // = same idempotency key, so a resubmit gets the session it already has.
     let order_ref = order_id.to_string();
     let success_url = format!(
         "{}/orders/{}?checkout=success",
@@ -180,7 +212,6 @@ pub async fn create_checkout(
         "{}/artworks/{}?checkout=cancelled",
         state.cfg.web_base_url, artwork_id
     );
-    let addr = &req.shipping_address;
     let session = client
         .create_checkout_session(&CheckoutSessionRequest {
             client_reference_id: &order_ref,
@@ -192,17 +223,35 @@ pub async fn create_checkout(
             success_url: &success_url,
             cancel_url: &cancel_url,
             shipping: StripeShipping {
-                name: &addr.name,
-                line1: &addr.line1,
-                line2: addr.line2.as_deref(),
-                city: &addr.city,
-                postal_code: &addr.postal_code,
-                country: &addr.country,
+                name: &address.name,
+                line1: &address.line1,
+                line2: address.line2.as_deref(),
+                city: &address.city,
+                postal_code: &address.postal_code,
+                country: &address.country,
             },
             customer_email: Some(&user.email),
+            expires_at_unix: expires_at.timestamp(),
         })
-        .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("stripe checkout create: {e}")))?;
+        .await;
+
+    let session = match session {
+        Ok(s) => s,
+        Err(e) => {
+            // Don't leave a copy reserved behind a session that never
+            // opened — release the hold so other buyers aren't blocked.
+            sqlx::query(
+                "UPDATE orders SET status = 'cancelled', updated_at = now() \
+                 WHERE id = $1 AND status = 'pending' AND stripe_checkout_session_id IS NULL",
+            )
+            .bind(order_id)
+            .execute(&state.pool)
+            .await?;
+            return Err(ApiError::Internal(anyhow::anyhow!(
+                "stripe checkout create: {e}"
+            )));
+        }
+    };
 
     // Record the session id so the webhook can match it back to the order.
     sqlx::query(
@@ -221,6 +270,143 @@ pub async fn create_checkout(
         checkout_url,
         order_id,
     }))
+}
+
+/// A buyer's live claim on one copy: their pending order, the moment its
+/// Checkout Session expires, and the price locked in when it was made.
+#[derive(Debug)]
+pub struct Hold {
+    pub order_id: Uuid,
+    pub expires_at: DateTime<Utc>,
+    pub amount_cents: i64,
+    pub commission_cents: i64,
+}
+
+/// What [`reserve`] decided for this checkout attempt.
+#[derive(Debug)]
+pub enum Reservation {
+    /// No live hold for this buyer: a new pending order now holds a copy.
+    New(Hold),
+    /// Same buyer, same address, session still comfortably open: reopen
+    /// that session (an identical Stripe request replays it).
+    Reuse(Hold),
+    /// Same buyer with a live hold but a new address (or a session about
+    /// to lapse): keep the order and its copy, replace the session.
+    Replace {
+        hold: Hold,
+        old_session: Option<String>,
+    },
+}
+
+#[derive(FromRow)]
+struct HoldRow {
+    id: Uuid,
+    stripe_checkout_session_id: Option<String>,
+    shipping_address: serde_json::Value,
+    hold_expires_at: DateTime<Utc>,
+    amount_cents_gbp: i64,
+    commission_cents_gbp: i64,
+}
+
+/// T-090 — claim a copy for this checkout, atomically. Locks the artwork
+/// row, then either finds this buyer's live hold or — if a copy is free
+/// once other buyers' holds are counted — inserts a pending order holding
+/// one until `CHECKOUT_WINDOW + HOLD_GRACE` from now. Sold out → 409; last
+/// copy on someone else's hold → 409 saying when it might free up.
+///
+/// Public so the hold rules are integration-testable without Stripe.
+pub async fn reserve(
+    pool: &sqlx::PgPool,
+    artwork_id: Uuid,
+    buyer_id: Uuid,
+    artist_id: Uuid,
+    shipping_json: &serde_json::Value,
+    amount_cents: i64,
+    commission_cents: i64,
+) -> Result<Reservation, ApiError> {
+    let mut tx = pool.begin().await?;
+    let stock = stock::lock(&mut tx, artwork_id, Some(buyer_id), None)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+
+    let mine: Option<HoldRow> = sqlx::query_as(
+        r#"
+        SELECT id, stripe_checkout_session_id, shipping_address, hold_expires_at,
+               amount_cents_gbp, commission_cents_gbp
+        FROM orders
+        WHERE buyer_user_id = $1 AND artwork_id = $2
+          AND status = 'pending' AND hold_expires_at > now()
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(buyer_id)
+    .bind(artwork_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let now = Utc::now();
+    let reservation = match mine {
+        Some(h) => {
+            let hold = Hold {
+                order_id: h.id,
+                expires_at: h.hold_expires_at - stock::HOLD_GRACE,
+                amount_cents: h.amount_cents_gbp,
+                commission_cents: h.commission_cents_gbp,
+            };
+            let same_address = &h.shipping_address == shipping_json;
+            let comfortably_open = hold.expires_at > now + chrono::Duration::minutes(5);
+            if same_address && comfortably_open && h.stripe_checkout_session_id.is_some() {
+                Reservation::Reuse(hold)
+            } else {
+                Reservation::Replace {
+                    hold,
+                    old_session: h.stripe_checkout_session_id,
+                }
+            }
+        }
+        None => {
+            if stock.remaining() == 0 {
+                return Err(ApiError::Conflict("This work has sold out.".into()));
+            }
+            if stock.free_now() == 0 {
+                return Err(ApiError::Conflict(
+                    "Another collector is checking out the last copy. If they don't \
+                     complete, it'll be available again within the hour."
+                        .into(),
+                ));
+            }
+            let expires_at = now + stock::CHECKOUT_WINDOW;
+            let order_id: Uuid = sqlx::query_scalar(
+                r#"
+                INSERT INTO orders (
+                    buyer_user_id, artwork_id, artist_id,
+                    amount_cents_gbp, commission_cents_gbp,
+                    status, shipping_address, hold_expires_at
+                )
+                VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7)
+                RETURNING id
+                "#,
+            )
+            .bind(buyer_id)
+            .bind(artwork_id)
+            .bind(artist_id)
+            .bind(amount_cents)
+            .bind(commission_cents)
+            .bind(shipping_json)
+            .bind(expires_at + stock::HOLD_GRACE)
+            .fetch_one(&mut *tx)
+            .await?;
+            Reservation::New(Hold {
+                order_id,
+                expires_at,
+                amount_cents,
+                commission_cents,
+            })
+        }
+    };
+    tx.commit().await?;
+    Ok(reservation)
 }
 
 // ─────────────────────────────── Order list ───────────────────────────────
@@ -441,7 +627,34 @@ fn validate_address(a: &ShippingAddress) -> Result<(), ApiError> {
             "shipping country: must be a 2-letter ISO code".into(),
         ));
     }
+    // T-090 — UK-only v1. Prices include shipping and there's no customs
+    // or international-rate handling, so artists would be shipping abroad
+    // at their own cost. (GB covers England, Scotland, Wales + Northern
+    // Ireland; the Channel Islands and Isle of Man have their own codes.)
+    if !a.country.trim().eq_ignore_ascii_case("GB") {
+        return Err(ApiError::BadRequest(
+            "We can only ship within the UK for now.".into(),
+        ));
+    }
     Ok(())
+}
+
+/// Validate, then trim + canonicalise so the stored address (and the
+/// "is this the same address as your open checkout?" comparison) doesn't
+/// depend on stray whitespace or case.
+fn normalize_address(a: ShippingAddress) -> Result<ShippingAddress, ApiError> {
+    validate_address(&a)?;
+    Ok(ShippingAddress {
+        name: a.name.trim().to_string(),
+        line1: a.line1.trim().to_string(),
+        line2: a
+            .line2
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty()),
+        city: a.city.trim().to_string(),
+        postal_code: a.postal_code.trim().to_uppercase(),
+        country: "GB".to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -535,6 +748,25 @@ mod tests {
         let mut a = addr();
         a.line1 = "  ".into();
         assert!(validate_address(&a).is_err());
+    }
+
+    #[test]
+    fn non_uk_country_rejected() {
+        let mut a = addr();
+        a.country = "FR".into();
+        assert!(validate_address(&a).is_err());
+    }
+
+    #[test]
+    fn address_is_normalised() {
+        let mut a = addr();
+        a.country = "gb".into();
+        a.postal_code = " ec1a 1bb ".into();
+        a.line2 = Some("  ".into());
+        let n = normalize_address(a).unwrap();
+        assert_eq!(n.country, "GB");
+        assert_eq!(n.postal_code, "EC1A 1BB");
+        assert_eq!(n.line2, None);
     }
 
     #[test]

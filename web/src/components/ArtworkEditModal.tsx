@@ -338,6 +338,21 @@ function ArtworkForm({
   );
   const [dimsError, setDimsError] = useState<string | null>(null);
 
+  // M-05 / T-090 — selling: shipping weight + original vs limited edition.
+  const [weightKg, setWeightKg] = useState(
+    detail?.weight_grams != null ? String(detail.weight_grams / 1000) : "",
+  );
+  const [isEdition, setIsEdition] = useState(detail?.edition_size != null);
+  const [editionSize, setEditionSize] = useState(
+    detail?.edition_size != null ? String(detail.edition_size) : "",
+  );
+  const [soldOffline, setSoldOffline] = useState(
+    String(detail?.editions_sold_offline ?? 0),
+  );
+  const soldOnline = detail?.editions_sold_online ?? 0;
+  const [weightError, setWeightError] = useState<string | null>(null);
+  const [editionError, setEditionError] = useState<string | null>(null);
+
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -394,9 +409,61 @@ function ArtworkForm({
     return { value: dims, error: null };
   }
 
-  function buildBody(parsedPrice: { amount_minor: number; currency: string } | null) {
+  /**
+   * Validate the selling fields, mirroring the API's checks. Returns the
+   * patch fragment, or `null` after setting a field error.
+   */
+  function buildSelling(): {
+    weight_grams: number | null;
+    edition_size: number | null;
+    editions_sold_offline?: number;
+  } | null {
+    let weight_grams: number | null = null;
+    const w = weightKg.trim();
+    if (w !== "") {
+      const kg = Number(w);
+      if (!Number.isFinite(kg) || kg <= 0) {
+        setWeightError("Enter the packed weight in kg, e.g. 2.5.");
+        return null;
+      }
+      if (kg > 200) {
+        setWeightError("200 kg is the most we can list — arrange heavier works with buyers directly.");
+        return null;
+      }
+      weight_grams = Math.max(1, Math.round(kg * 1000));
+    }
+    if (!isEdition) return { weight_grams, edition_size: null };
+
+    const size = Number(editionSize.trim());
+    if (!Number.isInteger(size) || size < 2 || size > 10000) {
+      setEditionError("Edition size must be a whole number from 2 to 10,000.");
+      return null;
+    }
+    const offline = soldOffline.trim() === "" ? 0 : Number(soldOffline.trim());
+    if (!Number.isInteger(offline) || offline < 0) {
+      setEditionError("Copies sold elsewhere must be a whole number.");
+      return null;
+    }
+    if (offline + soldOnline > size) {
+      setEditionError(
+        soldOnline > 0
+          ? `That's more than the edition — ${soldOnline} already sold on Wander.`
+          : "Copies sold elsewhere can't be more than the edition size.",
+      );
+      return null;
+    }
+    return { weight_grams, edition_size: size, editions_sold_offline: offline };
+  }
+
+  function buildBody(
+    parsedPrice: { amount_minor: number; currency: string } | null,
+    selling: ReturnType<typeof buildSelling>,
+  ) {
     const dims = buildDimensions();
     return {
+      ...(selling ?? {}),
+      // UK-only shipping for v1 — every listing ships from the UK.
+      ships_from_country: "GB",
       title: title.trim() || null,
       description: description.trim() || null,
       medium: medium.trim() || null,
@@ -433,6 +500,8 @@ function ArtworkForm({
     setError(null);
     setDimsError(null);
     setYearError(null);
+    setWeightError(null);
+    setEditionError(null);
 
     const parsedPrice = tryParsePrice();
     if (parsedPrice === undefined) {
@@ -458,6 +527,10 @@ function ArtworkForm({
       setDimsError(dims.error);
       return;
     }
+
+    // Selling fields only exist once the artwork does (edit mode).
+    const selling = isCreate ? null : buildSelling();
+    if (!isCreate && selling === null) return;
 
     // T-070 + T-073 — soft nudge when publishing a work that still
     // has no dimensions OR no category. Buyers can't filter by size
@@ -521,9 +594,14 @@ function ArtworkForm({
             dimensions: dims.value ?? null,
             external_url: normalizeWebsiteUrl(externalUrl),
             images: [],
+            weight_grams: null,
+            ships_from_country: null,
+            edition_size: null,
+            editions_sold_offline: 0,
+            editions_sold_online: 0,
           });
         } else {
-          const updated = await patchArtwork(detail!.id, buildBody(parsedPrice));
+          const updated = await patchArtwork(detail!.id, buildBody(parsedPrice, selling));
           toast.success("Saved");
           // closeAfter=true → parent closes the modal. T-071 default
           // for edit flow.
@@ -731,14 +809,115 @@ function ArtworkForm({
             onChange={(e) => setAvailability(e.target.value)}
             className="w-full bg-background border border-border px-3 py-2 text-sm focus:outline-none focus:border-foreground"
           >
-            {AVAILABILITY_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
+            {AVAILABILITY_OPTIONS.map((o) =>
+              // T-090 — an edition's sold-out state is worked out from the
+              // copies sold, so it isn't something to pick by hand.
+              isEdition && o.value === "sold" ? (
+                <option key={o.value} value={o.value} disabled>
+                  Sold out (automatic)
+                </option>
+              ) : (
+                <option key={o.value} value={o.value}>
+                  {isEdition && o.value === "available" ? "On sale" : o.label}
+                </option>
+              ),
+            )}
           </select>
         </Field>
       </div>
+
+      {!isCreate && (
+        <fieldset className="space-y-4 border-t border-border pt-4">
+          <legend className="text-sm font-medium">Selling on Wander</legend>
+          <p className="text-xs text-muted">
+            The Buy button appears once the work has a price, dimensions and a
+            shipping weight, and you&apos;ve set up payouts. We ship within the
+            UK only for now.
+          </p>
+
+          <Field label="Edition">
+            <div className="flex flex-wrap items-center gap-4 text-sm">
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="edition-kind"
+                  checked={!isEdition}
+                  onChange={() => {
+                    setIsEdition(false);
+                    setEditionError(null);
+                  }}
+                />
+                Original (one of a kind)
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="edition-kind"
+                  checked={isEdition}
+                  onChange={() => setIsEdition(true)}
+                />
+                Limited edition
+              </label>
+            </div>
+          </Field>
+
+          {isEdition && (
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Edition size" hint="Total copies, e.g. 50.">
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  value={editionSize}
+                  onChange={(e) => {
+                    setEditionSize(e.target.value);
+                    if (editionError) setEditionError(null);
+                  }}
+                  className="w-full bg-background border border-border px-3 py-2 text-sm focus:outline-none focus:border-foreground"
+                />
+              </Field>
+              <Field
+                label="Sold elsewhere"
+                hint={`At fairs, galleries, your own site.${soldOnline > 0 ? ` ${soldOnline} sold on Wander.` : ""}`}
+              >
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  value={soldOffline}
+                  onChange={(e) => {
+                    setSoldOffline(e.target.value);
+                    if (editionError) setEditionError(null);
+                  }}
+                  className="w-full bg-background border border-border px-3 py-2 text-sm focus:outline-none focus:border-foreground"
+                />
+              </Field>
+            </div>
+          )}
+          <FieldError message={editionError} />
+          {!isEdition && (
+            <p className="text-xs text-muted">
+              Sold it somewhere else? Set Availability to Sold.
+            </p>
+          )}
+
+          <Field
+            label="Shipping weight (kg)"
+            hint="Packed, ready to post. Ships from the UK."
+          >
+            <input
+              type="number"
+              inputMode="decimal"
+              value={weightKg}
+              onChange={(e) => {
+                setWeightKg(e.target.value);
+                if (weightError) setWeightError(null);
+              }}
+              placeholder="e.g. 2.5"
+              className="w-full bg-background border border-border px-3 py-2 text-sm focus:outline-none focus:border-foreground"
+            />
+            <FieldError message={weightError} />
+          </Field>
+        </fieldset>
+      )}
 
       <Field
         label="External URL"

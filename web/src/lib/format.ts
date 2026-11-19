@@ -74,3 +74,20 @@ export function formatBuyer(
   const parts = [name?.trim(), email?.trim()].filter(Boolean);
   return parts.length ? parts.join(" · ") : "—";
 }
+
+/**
+ * T-090 — the "Edition" line on an artwork page: "Limited edition of 50 ·
+ * 12 left", "… · last one", "… · sold out". Null for a one-off original
+ * (no line), so existing pages read exactly as before.
+ */
+export function formatEdition(
+  editionSize: number | null | undefined,
+  remaining: number | null | undefined
+): string | null {
+  if (editionSize == null) return null;
+  const base = `Limited edition of ${editionSize.toLocaleString("en-GB")}`;
+  if (remaining == null) return base;
+  if (remaining <= 0) return `${base} · sold out`;
+  if (remaining === 1) return `${base} · last one`;
+  return `${base} · ${remaining.toLocaleString("en-GB")} left`;
+}

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { formatPrice, formatDimensions, formatMoney, formatBuyer } from "@/lib/api";
+import {
+  formatPrice,
+  formatDimensions,
+  formatMoney,
+  formatBuyer,
+  formatEdition,
+} from "@/lib/api";
 
 describe("formatPrice", () => {
   it("formats USD with $ and no decimals", () => {
@@ -93,5 +99,21 @@ describe("formatBuyer", () => {
 
   it("falls back to a dash when both are missing", () => {
     expect(formatBuyer(null, null)).toBe("—");
+  });
+});
+
+describe("formatEdition", () => {
+  it("is null for a one-off original", () => {
+    expect(formatEdition(null, null)).toBeNull();
+  });
+
+  it("shows copies left, the last one, and sold out", () => {
+    expect(formatEdition(50, 12)).toBe("Limited edition of 50 · 12 left");
+    expect(formatEdition(50, 1)).toBe("Limited edition of 50 · last one");
+    expect(formatEdition(50, 0)).toBe("Limited edition of 50 · sold out");
+  });
+
+  it("groups large editions", () => {
+    expect(formatEdition(1000, 999)).toBe("Limited edition of 1,000 · 999 left");
   });
 });

@@ -50,6 +50,9 @@ pub enum OrderNotifyKind {
     BuyerRefunded,
     /// Artist — an order was refunded + pulled back.
     ArtistRefunded,
+    /// Buyer — their payment arrived after the last copy sold (or the
+    /// work was withdrawn), so it was refunded automatically (T-090).
+    BuyerSoldOut,
 }
 
 /// Every kind of background work the system can enqueue. Tagged by
@@ -1098,6 +1101,18 @@ mod order_handlers {
                     return Ok(());
                 };
                 let (subject, body) = templates::order_refunded_artist(title);
+                deps.emails.send(to, &subject, &body, None).await?;
+            }
+            OrderNotifyKind::BuyerSoldOut => {
+                let Some(to) = ctx.buyer_email.as_deref() else {
+                    return Ok(());
+                };
+                let (subject, body) = templates::order_sold_out_refund(
+                    &artwork_url,
+                    title,
+                    &ctx.artist_name,
+                    ctx.amount_cents_gbp,
+                );
                 deps.emails.send(to, &subject, &body, None).await?;
             }
         }

@@ -160,6 +160,13 @@ pub struct ArtworkFull {
     /// country + the artist has completed Stripe onboarding. Drives the
     /// Buy button; the checkout endpoint re-checks server-side.
     pub purchasable: bool,
+    /// T-090 — `None` = one-off original; `Some(n)` = limited edition of n.
+    #[serde(default)]
+    pub edition_size: Option<i32>,
+    /// T-090 — editions only: copies not yet sold (online or offline).
+    /// Doesn't subtract copies on hold in someone's open checkout.
+    #[serde(default)]
+    pub editions_remaining: Option<i64>,
     pub artist: ArtworkArtist,
     pub images: Vec<ArtworkImage>,
 }

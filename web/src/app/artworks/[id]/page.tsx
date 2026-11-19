@@ -13,6 +13,7 @@ import {
   getArtwork,
   getSimilarArtworks,
   formatPrice,
+  formatEdition,
   formatDimensions,
 } from "@/lib/api";
 import { reportError } from "@/lib/reportError";
@@ -60,7 +61,11 @@ export default async function ArtworkPage({ params }: { params: Params }) {
 
   const price = formatPrice(artwork.price_cents, artwork.currency);
   const dims = formatDimensions(artwork.dimensions);
-  const availabilityLabel = labelForAvailability(artwork.availability);
+  const availabilityLabel =
+    artwork.edition_size != null && artwork.availability === "sold"
+      ? "Sold out"
+      : labelForAvailability(artwork.availability);
+  const edition = formatEdition(artwork.edition_size, artwork.editions_remaining);
 
   return (
     <>
@@ -109,6 +114,7 @@ export default async function ArtworkPage({ params }: { params: Params }) {
                 return v ? <Row label="Medium" value={v} /> : null;
               })()}
               {dims && <Row label="Dimensions" value={dims} />}
+              {edition && <Row label="Edition" value={edition} />}
               <Row
                 label="Availability"
                 value={availabilityLabel}

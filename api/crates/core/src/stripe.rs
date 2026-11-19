@@ -314,12 +314,42 @@ impl StripeClient {
         req: &CheckoutSessionRequest<'_>,
     ) -> Result<CheckoutSession, StripeError> {
         let params = checkout_session_params(req);
+        // Keyed on order + expiry: an identical retry (double-click,
+        // back-button resubmit) gets the same session back, while a new
+        // session for the same order (address changed, old one expired)
+        // gets a new key instead of an idempotency-mismatch error.
         self.post_form(
             "/v1/checkout/sessions",
             &params,
-            Some(&format!("checkout:{}", req.client_reference_id)),
+            Some(&format!(
+                "checkout:{}:{}",
+                req.client_reference_id, req.expires_at_unix
+            )),
         )
         .await
+    }
+
+    /// T-090 — a Checkout Session's `status`: `open`, `complete` or
+    /// `expired`. Used before replacing a buyer's session, so we never
+    /// orphan one they've already paid.
+    pub async fn checkout_session_status(&self, session_id: &str) -> Result<String, StripeError> {
+        let s: SessionStatus = self
+            .get(&format!("/v1/checkout/sessions/{session_id}"))
+            .await?;
+        Ok(s.status.unwrap_or_default())
+    }
+
+    /// T-090 — expire an open Checkout Session so it can no longer be
+    /// paid (its replacement carries the buyer's new address).
+    pub async fn expire_checkout_session(&self, session_id: &str) -> Result<(), StripeError> {
+        let _: SessionStatus = self
+            .post_form(
+                &format!("/v1/checkout/sessions/{session_id}/expire"),
+                &[],
+                None,
+            )
+            .await?;
+        Ok(())
     }
 
     /// M-08 — refund a marketplace order's charge. `reverse_transfer`
@@ -464,6 +494,9 @@ fn checkout_session_params(req: &CheckoutSessionRequest<'_>) -> Vec<(&'static st
             req.destination_account.to_string(),
         ),
         ("metadata[order_id]", req.client_reference_id.to_string()),
+        // T-090 — the session (and so the buyer's hold on a copy) lapses
+        // at a fixed time we chose and stored on the order.
+        ("expires_at", req.expires_at_unix.to_string()),
     ];
     // Prefill the buyer's email (we already have it from Clerk) so
     // Checkout doesn't make them type it again; they can still edit it.
@@ -498,6 +531,11 @@ fn checkout_session_params(req: &CheckoutSessionRequest<'_>) -> Vec<(&'static st
     ));
 
     params
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct SessionStatus {
+    status: Option<String>,
 }
 
 /// The slice of a Connect account `GET /v1/accounts/{id}` we read.
@@ -539,6 +577,10 @@ pub struct CheckoutSessionRequest<'a> {
     pub shipping: StripeShipping<'a>,
     /// The signed-in buyer's email, prefilled on the Checkout page.
     pub customer_email: Option<&'a str>,
+    /// T-090 — when the session expires (unix seconds). Stripe requires
+    /// 30 min – 24 h from creation. Part of the idempotency key, so a
+    /// retry with the same order + expiry returns the same session.
+    pub expires_at_unix: i64,
 }
 
 /// A refund (`re_*`). Returned by [`StripeClient::create_refund`].
@@ -583,6 +625,7 @@ mod tests {
                 country: "GB",
             },
             customer_email: email,
+            expires_at_unix: 1_900_000_000,
         }
     }
 
@@ -613,6 +656,7 @@ mod tests {
     fn checkout_params_prefill_buyer_email() {
         let params = checkout_session_params(&checkout_req(Some("buyer@example.test")));
         assert_eq!(param(&params, "customer_email"), Some("buyer@example.test"));
+        assert_eq!(param(&params, "expires_at"), Some("1900000000"));
         assert_eq!(
             param(&params, "payment_intent_data[application_fee_amount]"),
             Some("1500")

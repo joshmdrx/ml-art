@@ -17,6 +17,46 @@ Format:
 
 ---
 
+## 2026-11-19 — T-090: limited editions + checkout holds + auto-refund on oversell
+**Context:** Every artwork was implicitly a one-off original: the first
+paid order marked it `sold`. Nothing stopped two buyers paying for the
+same work — checkout only de-duplicated the *same* buyer, Stripe
+Checkout Sessions stayed payable for 24 h, and a second payment just
+logged "possible double sale". Artists also wanted to sell prints, which
+the model couldn't express.
+**Decided:**
+- **Stock model.** `artworks.edition_size` (NULL = original, else 2–10,000)
+  + `editions_sold_offline`. Capacity `COALESCE(edition_size, 1)`; sold =
+  live orders (paid/shipped/delivered/disputed) + offline. `availability`
+  stays the one public truth — for a work on sale it's derived (`sold` =
+  sold out). Prints are listed as their own artwork (own size, weight,
+  price), not as a variant of the original.
+- **Holds.** Checkout locks the artwork row (`crate::stock::lock`), and a
+  pending order holds a copy until its Checkout Session expires (31 min,
+  set explicitly) + 10 min grace for the webhook. Last copy on someone
+  else's hold → 409 with a "try again within the hour" message.
+- **Payment-time re-check.** `checkout.session.completed` re-counts under
+  the same lock; if the work sold out, was withdrawn, unpublished or
+  deleted, the order is `cancelled` (`refund_reason = sold_out`) and the
+  payment is **refunded before the transaction commits** (idempotent on
+  the order, so a failed refund rolls back and Stripe's retry tries again).
+  The buyer gets an apology email; the artist gets nothing (no sale).
+- **No edition numbers on orders.** Artists number physical prints; with
+  offline sales in the mix, a number Wander assigned would often be wrong.
+- **UK-only shipping** for v1 (address must be GB; ships-from GB).
+**Alternatives:** (1) *Authorise now, capture after the artist confirms
+availability* (manual capture) — removes oversell entirely but adds an
+artist step to every sale and a 7-day auth window to manage. Holds +
+auto-refund make the race rare and self-healing instead. (2) *Open
+(unlimited) editions* — deferred; a large edition size covers it, and
+"limited" is the better pitch. (3) *A separate editions/variants table*
+— needed only if one listing sells several formats; not yet.
+**Why:** Smallest model that makes the bad outcome (two people paying for
+one original) both unlikely and automatically repaired, while letting
+artists sell prints. Originals behave exactly as before.
+**Reversibility:** Medium. Columns are additive; dropping editions later
+means migrating edition rows back to originals.
+
 ## 2026-11-17 — T-089: uploads-bucket retention via object tags, not a separate prefix or bucket
 **Context:** The uploads bucket's lifecycle rule expired every object
 after 90 days (`filter {}`), written when the bucket only held

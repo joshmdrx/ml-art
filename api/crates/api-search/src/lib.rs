@@ -20,6 +20,7 @@ pub mod search;
 pub mod search_map;
 mod serde_helpers;
 pub mod series;
+pub mod stock;
 pub mod studio;
 pub mod testfixtures;
 pub mod uploads;

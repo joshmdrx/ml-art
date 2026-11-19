@@ -202,6 +202,10 @@ export interface ArtworkFull {
    * (available + priced + shippable + artist onboarded to Stripe).
    * Drives the Buy button; the checkout endpoint re-checks server-side. */
   purchasable: boolean;
+  /** T-090 — null = one-off original; n = limited edition of n. */
+  edition_size: number | null;
+  /** T-090 — editions only: copies not yet sold (null for originals). */
+  editions_remaining: number | null;
   artist: ArtworkArtist;
   images: ArtworkImage[];
 }
@@ -312,6 +316,16 @@ export interface StudioArtworkDetail extends StudioArtworkSummary {
   dimensions: Dimensions | null;
   external_url: string | null;
   images: StudioImage[];
+  /** M-05 — packed shipping weight; required before the Buy button shows. */
+  weight_grams: number | null;
+  /** M-05 — ISO alpha-2; UK-only ("GB") for v1. */
+  ships_from_country: string | null;
+  /** T-090 — null = one-off original; n = limited edition of n. */
+  edition_size: number | null;
+  /** T-090 — copies the artist sold outside Wander. */
+  editions_sold_offline: number;
+  /** T-090 — copies sold through Wander (read-only). */
+  editions_sold_online: number;
 }
 
 export interface StudioImage {
@@ -440,6 +454,14 @@ export interface PatchArtworkBody {
    * value sets, omitted leaves alone. Must be a series the calling
    * artist owns; otherwise the server returns 400. */
   series_id?: string | null;
+  /** M-05 — grams; `null` clears. */
+  weight_grams?: number | null;
+  /** M-05 — UK-only for v1: "GB" or `null`. */
+  ships_from_country?: string | null;
+  /** T-090 — `null` = original; 2–10,000 = limited edition. */
+  edition_size?: number | null;
+  /** T-090 — editions only; copies sold outside Wander. */
+  editions_sold_offline?: number;
 }
 
 export interface SearchParams {
@@ -805,9 +827,34 @@ export async function createCheckout(
   );
   if (!res.ok) {
     const text = await res.text().catch(() => "");
+    // 400 / 409 are the API refusing *this* checkout for a reason the
+    // buyer should read (sold out, last copy on hold, UK-only, already
+    // paid). Carry its message; anything else is an unexpected failure.
+    if (res.status === 400 || res.status === 409) {
+      throw new CheckoutRefusedError(problemDetail(text) ?? "This work can't be bought right now.");
+    }
     throw new Error(`checkout ${res.status}: ${text || res.statusText}`);
   }
   return (await res.json()) as CheckoutResponse;
+}
+
+/** T-090 — the API declined a checkout with a buyer-facing reason. */
+export class CheckoutRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CheckoutRefusedError";
+  }
+}
+
+/** The human part of an API problem+json `detail` ("conflict: Sold out." → "Sold out."). */
+function problemDetail(body: string): string | null {
+  try {
+    const detail = (JSON.parse(body) as { detail?: unknown }).detail;
+    if (typeof detail !== "string" || !detail.trim()) return null;
+    return detail.replace(/^(conflict|bad request):\s*/i, "");
+  } catch {
+    return null;
+  }
 }
 
 export type OrderStatus =
@@ -1257,7 +1304,13 @@ export async function removeArtworkFromCollection(
 // them without dragging `apiFetch`'s server-only Clerk import into
 // the client bundle. Re-exported here for backward compatibility
 // with existing callers (artworks/[id]/page.tsx, format.test.ts).
-export { formatDimensions, formatPrice, formatMoney, formatBuyer } from "@/lib/format";
+export {
+  formatDimensions,
+  formatPrice,
+  formatMoney,
+  formatBuyer,
+  formatEdition,
+} from "@/lib/format";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Studio (authed; artist-only)

@@ -170,6 +170,9 @@ live Stripe test-mode loop (`stripe listen` + a Connect account that's
 | Admin: order detail shows the Stripe fee line + mode-correct "Open in Stripe" link (M-08) | — | ⏳ fold into `56-admin-refund`: assert "Stripe fee (Wander)" row ("Pending" when null) and the dashboard link has `/test/` under a test key. URL choice unit-tested in `admin::orders`. |
 | Studio: mark order shipped (M-06) | [`53-studio-mark-shipped`](../e2e/tests/53-studio-mark-shipped-artist-signed-in.spec.ts) | ✅ seeds a paid order via fixture, fills tracking, asserts the success toast. |
 | Admin: refund an order + dispute banner (M-08) | [`56-admin-refund`](../e2e/tests/56-admin-refund-admin-signed-in.spec.ts) | ⏳ refund flow written (reason picker → confirm → success toast), skipped behind `STRIPE_E2E` — refund calls Stripe on a real charge (`STRIPE_E2E_ORDER_ID`). List/detail/gates Tier-1 tested in `admin_orders_test`. |
+| Studio: Selling section — original vs limited edition, sold-elsewhere count, shipping weight (T-090) | — | ⏳ API Tier-1 tested in `editions_test` (fields, guards, sold-out derivation). E2E: open `/studio?id=<seeded>`, pick Limited edition, set 5 + 2 sold elsewhere + 1.5 kg, save → toast; reopen shows the values; sold-elsewhere > size shows the FieldError. |
+| Artwork page shows "Limited edition of N · X left" / "Sold out" (T-090) | — | ⏳ assert the Edition row for an edition fixture; originals show no row. `editions_remaining` Tier-1 tested in `editions_test`. |
+| Buy form: UK-only note; sold-out / on-hold refusal shown inline (T-090) | — | ⏳ refusal needs a held or sold-out work — fixture an edition at capacity, submit, assert "sold out" in the form alert. Hold + refusal rules Tier-1 tested via `orders::reserve` in `editions_test`. |
 | Buyer order history `/orders` (M-11) | [`54-buyer-orders`](../e2e/tests/54-buyer-orders-signed-in.spec.ts) | ✅ seeds an order for the signed-in buyer, asserts it lists with a link. |
 
 ## OG cards + metadata (T-051)

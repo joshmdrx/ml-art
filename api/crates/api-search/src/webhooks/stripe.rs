@@ -22,7 +22,11 @@
 //!   - `account.updated` — Connect KYC → `artists.stripe_*` flags (the
 //!     async half of M-01's onboarding);
 //!   - `checkout.session.completed` — order `pending → paid`, artist
-//!     payout set, Stripe fee backfilled if already settled (M-04);
+//!     payout set, Stripe fee backfilled if already settled (M-04); or,
+//!     if the work sold out / was withdrawn meanwhile, the payment is
+//!     refunded and the order cancelled (T-090);
+//!   - `checkout.session.expired` — order `pending → cancelled`, releasing
+//!     its hold on a copy (T-090);
 //!   - `charge.updated` — backfills the Stripe fee once the charge's balance
 //!     transaction is attached (usually after checkout completes);
 //!   - `charge.dispute.created` — order `→ disputed`;
@@ -45,6 +49,7 @@ use sqlx::{Postgres, Transaction};
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::stock;
 use crate::AppState;
 
 /// The header Stripe signs each delivery with.
@@ -158,6 +163,34 @@ pub async fn handle(
 
     let dispatched = dispatch(&mut tx, &event).await?;
 
+    // T-090 — refund a payment we can't honour while still inside the
+    // transaction. Refunds are idempotency-keyed on the order, so if the
+    // refund succeeds but the commit fails, Stripe's retry re-runs this
+    // harmlessly; if the refund fails we error, roll back, and Stripe
+    // retries the whole event later.
+    if let Some((order_id, payment_intent)) = &dispatched.refund {
+        match StripeClient::from_config(state.cfg.stripe_secret_key.as_deref()) {
+            Some(client) => {
+                client
+                    .create_refund(payment_intent, *order_id)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(%order_id, error = %e, "sold-out auto-refund failed — Stripe will retry the event");
+                        ApiError::Internal(anyhow::anyhow!("auto-refund: {e}"))
+                    })?;
+                tracing::info!(%order_id, "sold-out payment refunded");
+            }
+            None if !state.cfg.env.is_dev() => {
+                return Err(ApiError::ServiceUnavailable(
+                    "stripe not configured — can't refund a sold-out payment".into(),
+                ));
+            }
+            None => {
+                tracing::warn!(%order_id, "STRIPE_SECRET_KEY unset (dev) — skipping sold-out auto-refund");
+            }
+        }
+    }
+
     // Backfill the affected order onto the event row for later forensics
     // ("which refund/dispute touched this order?").
     if let Some(order_id) = dispatched.order_id {
@@ -246,6 +279,7 @@ fn notify_key(kind: OrderNotifyKind) -> &'static str {
         OrderNotifyKind::BuyerShipped => "buyer_shipped",
         OrderNotifyKind::BuyerRefunded => "buyer_refunded",
         OrderNotifyKind::ArtistRefunded => "artist_refunded",
+        OrderNotifyKind::BuyerSoldOut => "buyer_sold_out",
     }
 }
 
@@ -261,6 +295,10 @@ struct Dispatched {
     /// fee for, post-commit. Only set for a checkout that actually
     /// transitioned an order (and carried a payment intent).
     fee_backfill: Option<(Uuid, String)>,
+    /// T-090 — `(order_id, payment_intent)` of a payment that can't be
+    /// fulfilled (sold out meanwhile). Refunded *before* the transaction
+    /// commits, so a failed refund rolls back and Stripe retries the event.
+    refund: Option<(Uuid, String)>,
 }
 
 async fn dispatch(
@@ -269,6 +307,7 @@ async fn dispatch(
 ) -> Result<Dispatched, ApiError> {
     let obj = &event.data.object;
     let mut fee_backfill: Option<(Uuid, String)> = None;
+    let mut refund: Option<(Uuid, String)> = None;
     // Each arm returns the order it touched + the notifications that state
     // change warrants. Notifications only fire when a row actually
     // transitioned (order_id is Some), so a replay/no-op doesn't email.
@@ -278,19 +317,36 @@ async fn dispatch(
             (None, vec![])
         }
         "checkout.session.completed" => match checkout_completed(tx, obj).await? {
-            Some((id, payment_intent)) => {
+            Some(CheckoutOutcome::Paid {
+                order_id,
+                payment_intent,
+            }) => {
                 // The fee backfill needs the payment intent; if it's absent
                 // (rare) we skip it — payout is already set in-transaction.
                 if let Some(pi) = payment_intent {
-                    fee_backfill = Some((id, pi));
+                    fee_backfill = Some((order_id, pi));
                 }
                 (
-                    Some(id),
+                    Some(order_id),
                     vec![OrderNotifyKind::BuyerPaid, OrderNotifyKind::ArtistSale],
                 )
             }
+            Some(CheckoutOutcome::SoldOut {
+                order_id,
+                payment_intent,
+            }) => {
+                match payment_intent {
+                    Some(pi) => refund = Some((order_id, pi)),
+                    None => tracing::error!(
+                        %order_id,
+                        "sold-out payment has no payment intent — refund it by hand in Stripe"
+                    ),
+                }
+                (Some(order_id), vec![OrderNotifyKind::BuyerSoldOut])
+            }
             None => (None, vec![]),
         },
+        "checkout.session.expired" => (checkout_expired(tx, obj).await?, vec![]),
         "charge.updated" => {
             // On current Stripe API versions the charge's balance
             // transaction — the only source of Stripe's exact fee — is
@@ -335,6 +391,7 @@ async fn dispatch(
                 status: "ignored",
                 notifications: vec![],
                 fee_backfill: None,
+                refund: None,
             });
         }
     };
@@ -343,6 +400,7 @@ async fn dispatch(
         status: "processed",
         notifications,
         fee_backfill,
+        refund,
     })
 }
 
@@ -386,78 +444,122 @@ async fn account_updated(
     Ok(())
 }
 
-/// `checkout.session.completed` — the buyer paid. Advance the matching
-/// `pending` order to `paid`, capture the payment-intent id (the truth
-/// for later refund + reconciliation), and set the artist payout.
+/// `checkout.session.completed` — the buyer paid. Decides, under the
+/// artwork's row lock (`crate::stock`), whether the sale can stand:
 ///
-/// Payout is `amount - commission`: for our destination charge that's
-/// exactly what Stripe transfers to the artist's connected account, and
-/// since the platform (not the connected account) bears Stripe's
-/// processing fee, payout doesn't subtract it. Deterministic, so it's set
-/// here in-transaction — the artist's figure never waits on a network
-/// call. Stripe's *own* fee (Wander's cost) is backfilled post-commit by
-/// the caller via [`StripeClient::retrieve_charge_fee_cents`].
+/// - **Fulfillable** (still published + on sale, a copy left once every
+///   other live order is counted): `pending → paid`, artist payout set,
+///   artwork marked sold out if this was the last copy.
+/// - **Not fulfillable** (sold out meanwhile, withdrawn, unpublished,
+///   deleted — T-090): the order is `cancelled` with refund reason
+///   `sold_out`, and the caller refunds the payment *before committing*,
+///   so a failed refund rolls back and Stripe's retry tries again.
 ///
 /// Guarded on `status = 'pending'` so a replayed/late event can't drag a
-/// shipped order back. Returns the touched order id + its payment intent
-/// (for the fee backfill), or `None` when nothing transitioned.
+/// shipped order back. `None` when nothing transitioned.
 async fn checkout_completed(
     tx: &mut Transaction<'_, Postgres>,
     obj: &serde_json::Value,
-) -> Result<Option<(Uuid, Option<String>)>, ApiError> {
+) -> Result<Option<CheckoutOutcome>, ApiError> {
     let Some(session_id) = obj.get("id").and_then(|v| v.as_str()) else {
         return Ok(None);
     };
-    let payment_intent = obj.get("payment_intent").and_then(|v| v.as_str());
+    let payment_intent = obj
+        .get("payment_intent")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
 
-    let row: Option<(Uuid,)> = sqlx::query_as(
+    let order: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT id, artwork_id FROM orders \
+         WHERE stripe_checkout_session_id = $1 AND status = 'pending' FOR UPDATE",
+    )
+    .bind(session_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((order_id, artwork_id)) = order else {
+        return Ok(None);
+    };
+
+    let fulfil = stock::lock(tx, artwork_id, None, Some(order_id))
+        .await?
+        .is_some_and(|s| s.can_fulfil());
+
+    if fulfil {
+        sqlx::query(
+            r#"
+            UPDATE orders SET
+                status = 'paid',
+                stripe_payment_intent_id = COALESCE($2, stripe_payment_intent_id),
+                payout_cents_gbp = amount_cents_gbp - commission_cents_gbp,
+                updated_at = now()
+            WHERE id = $1
+            "#,
+        )
+        .bind(order_id)
+        .bind(payment_intent.as_deref())
+        .execute(&mut **tx)
+        .await?;
+        stock::sync_availability(tx, artwork_id).await?;
+        return Ok(Some(CheckoutOutcome::Paid {
+            order_id,
+            payment_intent,
+        }));
+    }
+
+    tracing::warn!(%order_id, %artwork_id, "payment for a work that can't be fulfilled — auto-refunding");
+    sqlx::query(
         r#"
         UPDATE orders SET
-            status = 'paid',
+            status = 'cancelled',
+            refund_reason = 'sold_out',
+            refunded_at = now(),
             stripe_payment_intent_id = COALESCE($2, stripe_payment_intent_id),
-            payout_cents_gbp = amount_cents_gbp - commission_cents_gbp,
             updated_at = now()
+        WHERE id = $1
+        "#,
+    )
+    .bind(order_id)
+    .bind(payment_intent.as_deref())
+    .execute(&mut **tx)
+    .await?;
+    Ok(Some(CheckoutOutcome::SoldOut {
+        order_id,
+        payment_intent,
+    }))
+}
+
+enum CheckoutOutcome {
+    Paid {
+        order_id: Uuid,
+        payment_intent: Option<String>,
+    },
+    SoldOut {
+        order_id: Uuid,
+        payment_intent: Option<String>,
+    },
+}
+
+/// `checkout.session.expired` — the buyer never paid; Stripe closed the
+/// session. Release the order's hold by cancelling it (holds also lapse
+/// on their own clock, so this is tidy-up, not correctness).
+async fn checkout_expired(
+    tx: &mut Transaction<'_, Postgres>,
+    obj: &serde_json::Value,
+) -> Result<Option<Uuid>, ApiError> {
+    let Some(session_id) = obj.get("id").and_then(|v| v.as_str()) else {
+        return Ok(None);
+    };
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        r#"
+        UPDATE orders SET status = 'cancelled', updated_at = now()
         WHERE stripe_checkout_session_id = $1 AND status = 'pending'
         RETURNING id
         "#,
     )
     .bind(session_id)
-    .bind(payment_intent)
     .fetch_optional(&mut **tx)
     .await?;
-
-    if let Some((order_id,)) = row {
-        mark_artwork_sold(tx, order_id).await?;
-    }
-    Ok(row.map(|(id,)| (id, payment_intent.map(str::to_string))))
-}
-
-/// A listing is a single original: once paid, take it off sale in the same
-/// transaction as the order flip. Without this nothing ever marked a work
-/// sold, so a second buyer could pay for the same piece (found 2026-11-15).
-///
-/// If the work was *already* sold — two checkouts completing for the same
-/// piece — this order still stands (the buyer has paid) but it's a double
-/// sale an admin must refund; log loudly so it surfaces in the error alarms.
-async fn mark_artwork_sold(
-    tx: &mut Transaction<'_, Postgres>,
-    order_id: Uuid,
-) -> Result<(), ApiError> {
-    let flipped = sqlx::query(
-        r#"
-        UPDATE artworks SET availability = 'sold', updated_at = now()
-        WHERE id = (SELECT artwork_id FROM orders WHERE id = $1)
-          AND availability <> 'sold'
-        "#,
-    )
-    .bind(order_id)
-    .execute(&mut **tx)
-    .await?
-    .rows_affected();
-    if flipped == 0 {
-        tracing::error!(%order_id, "artwork already sold when this order was paid — possible double sale; refund one");
-    }
-    Ok(())
+    Ok(row.map(|(id,)| id))
 }
 
 /// `charge.dispute.created` — a chargeback was filed. Move the order to
@@ -509,7 +611,8 @@ async fn fee_pending_order(
 
 /// `charge.refunded` — a refund settled. Confirms the admin-initiated
 /// refund from M-08 (or a full refund made in the Stripe dashboard).
-/// Idempotent: skips orders already `refunded`.
+/// Idempotent: skips orders already `refunded`, and `cancelled` ones —
+/// those were auto-refunded as sold out (T-090) and already emailed.
 async fn charge_refunded(
     tx: &mut Transaction<'_, Postgres>,
     obj: &serde_json::Value,
@@ -517,37 +620,23 @@ async fn charge_refunded(
     let Some(payment_intent) = obj.get("payment_intent").and_then(|v| v.as_str()) else {
         return Ok(None);
     };
-    let row: Option<(Uuid,)> = sqlx::query_as(
+    let row: Option<(Uuid, Uuid)> = sqlx::query_as(
         r#"
         UPDATE orders SET status = 'refunded', refunded_at = now(), updated_at = now()
-        WHERE stripe_payment_intent_id = $1 AND status <> 'refunded'
-        RETURNING id
+        WHERE stripe_payment_intent_id = $1 AND status NOT IN ('refunded', 'cancelled')
+        RETURNING id, artwork_id
         "#,
     )
     .bind(payment_intent)
     .fetch_optional(&mut **tx)
     .await?;
 
-    if let Some((order_id,)) = row {
-        // Put the work back on sale — unless another live order (a
-        // double sale) still holds it, or the artist had marked it
-        // something other than sold in the meantime.
-        sqlx::query(
-            r#"
-            UPDATE artworks SET availability = 'available', updated_at = now()
-            WHERE id = (SELECT artwork_id FROM orders WHERE id = $1)
-              AND availability = 'sold'
-              AND NOT EXISTS (
-                  SELECT 1 FROM orders o
-                  WHERE o.artwork_id = artworks.id
-                    AND o.id <> $1
-                    AND o.status IN ('paid', 'shipped', 'delivered')
-              )
-            "#,
-        )
-        .bind(order_id)
-        .execute(&mut **tx)
-        .await?;
+    if let Some((_, artwork_id)) = row {
+        // The refunded order no longer holds a copy: put the work back on
+        // sale if that frees one (an edition with copies left, or an
+        // original no other live order still holds).
+        stock::lock(tx, artwork_id, None, None).await?;
+        stock::sync_availability(tx, artwork_id).await?;
     }
-    Ok(row.map(|(id,)| id))
+    Ok(row.map(|(id, _)| id))
 }

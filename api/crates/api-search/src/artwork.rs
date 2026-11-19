@@ -48,6 +48,14 @@ pub async fn detail(
             a.external_url, a.published_at,
             ar.id AS artist_id, ar.slug AS artist_slug,
             ar.display_name AS artist_name, ar.location AS artist_location,
+            a.edition_size,
+            CASE WHEN a.edition_size IS NULL THEN NULL ELSE GREATEST(
+                a.edition_size - a.editions_sold_offline
+                - (SELECT count(*) FROM orders o
+                   WHERE o.artwork_id = a.id
+                     AND o.status IN ('paid', 'shipped', 'delivered', 'disputed')),
+                0)
+            END AS editions_remaining,
             (a.availability = 'available'
              AND a.price_gbp_cents IS NOT NULL
              AND a.dimensions IS NOT NULL
@@ -69,6 +77,14 @@ pub async fn detail(
             a.external_url, a.published_at,
             ar.id AS artist_id, ar.slug AS artist_slug,
             ar.display_name AS artist_name, ar.location AS artist_location,
+            a.edition_size,
+            CASE WHEN a.edition_size IS NULL THEN NULL ELSE GREATEST(
+                a.edition_size - a.editions_sold_offline
+                - (SELECT count(*) FROM orders o
+                   WHERE o.artwork_id = a.id
+                     AND o.status IN ('paid', 'shipped', 'delivered', 'disputed')),
+                0)
+            END AS editions_remaining,
             (a.availability = 'available'
              AND a.price_gbp_cents IS NOT NULL
              AND a.dimensions IS NOT NULL
@@ -238,6 +254,8 @@ struct ArtworkRow {
     external_url: Option<String>,
     published_at: Option<DateTime<Utc>>,
     purchasable: bool,
+    edition_size: Option<i32>,
+    editions_remaining: Option<i64>,
     artist_id: Uuid,
     artist_slug: String,
     artist_name: String,
@@ -260,6 +278,8 @@ impl ArtworkRow {
             external_url: self.external_url,
             published_at: self.published_at,
             purchasable: self.purchasable,
+            edition_size: self.edition_size,
+            editions_remaining: self.editions_remaining,
             artist: ArtworkArtist {
                 id: self.artist_id,
                 slug: self.artist_slug,

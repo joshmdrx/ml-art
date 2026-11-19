@@ -94,6 +94,17 @@ pub struct StudioArtworkDetail {
     pub dimensions: Option<serde_json::Value>,
     pub external_url: Option<String>,
     pub images: Vec<StudioImage>,
+    /// Marketplace shipping (M-05). Both are required before Buy shows.
+    pub weight_grams: Option<i32>,
+    /// ISO-3166 alpha-2. UK-only for v1, so `GB` once set.
+    pub ships_from_country: Option<String>,
+    /// T-090 — `None` = one-off original; `Some(n)` = limited edition of n.
+    pub edition_size: Option<i32>,
+    /// T-090 — copies the artist sold outside Wander.
+    pub editions_sold_offline: i32,
+    /// T-090 — copies sold through Wander (paid / shipped / delivered /
+    /// disputed orders). Read-only; shown next to the offline count.
+    pub editions_sold_online: i64,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -311,7 +322,13 @@ pub async fn detail(
             a.price_cents, a.currency, a.availability,
             a.description, a.year_created, a.dimensions, a.external_url,
             a.series_id,
-            a.created_at, a.updated_at, a.published_at
+            a.created_at, a.updated_at, a.published_at,
+            a.weight_grams, a.ships_from_country,
+            a.edition_size, a.editions_sold_offline,
+            (SELECT count(*) FROM orders o
+             WHERE o.artwork_id = a.id
+               AND o.status IN ('paid', 'shipped', 'delivered', 'disputed')
+            ) AS editions_sold_online
         FROM artworks a
         WHERE a.id = $1
           AND a.artist_id = $2
@@ -403,7 +420,35 @@ pub struct PatchArtwork {
         deserialize_with = "crate::serde_helpers::deserialize_double_option"
     )]
     pub series_id: Option<Option<Uuid>>,
+    /// M-05 — shipping weight in grams (packed). `null` clears.
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_double_option"
+    )]
+    pub weight_grams: Option<Option<i32>>,
+    /// M-05 — where the work ships from, ISO alpha-2. UK-only for v1, so
+    /// only `GB` is accepted. `null` clears.
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_double_option"
+    )]
+    pub ships_from_country: Option<Option<String>>,
+    /// T-090 — `null` makes the work a one-off original; a number makes
+    /// it a limited edition of that many (2–10,000).
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_double_option"
+    )]
+    pub edition_size: Option<Option<i32>>,
+    /// T-090 — copies sold outside Wander. Editions only.
+    #[serde(default)]
+    pub editions_sold_offline: Option<i32>,
 }
+
+/// Packed weight bounds for shipping (grams). 200 kg is a crate, not a
+/// parcel — anything heavier needs arranging with the artist directly.
+const MAX_WEIGHT_GRAMS: i32 = 200_000;
+const MAX_EDITION_SIZE: i32 = 10_000;
 
 pub async fn patch(
     State(state): State<Arc<AppState>>,
@@ -459,6 +504,41 @@ pub async fn patch(
         _ => None,
     };
 
+    // M-05 / T-090 — marketplace fields.
+    if let Some(Some(w)) = body.weight_grams {
+        if !(1..=MAX_WEIGHT_GRAMS).contains(&w) {
+            return Err(ApiError::BadRequest(format!(
+                "weight_grams: must be between 1 and {MAX_WEIGHT_GRAMS}"
+            )));
+        }
+    }
+    let ships_from = match &body.ships_from_country {
+        Some(Some(c)) => {
+            let c = c.trim().to_ascii_uppercase();
+            if c != "GB" {
+                return Err(ApiError::BadRequest(
+                    "ships_from_country: only GB (the UK) is supported for now".into(),
+                ));
+            }
+            Some(c)
+        }
+        _ => None,
+    };
+    if let Some(Some(n)) = body.edition_size {
+        if !(2..=MAX_EDITION_SIZE).contains(&n) {
+            return Err(ApiError::BadRequest(format!(
+                "edition_size: must be between 2 and {MAX_EDITION_SIZE} (leave empty for an original)"
+            )));
+        }
+    }
+    if let Some(n) = body.editions_sold_offline {
+        if n < 0 {
+            return Err(ApiError::BadRequest(
+                "editions_sold_offline: can't be negative".into(),
+            ));
+        }
+    }
+
     // T-058 — series_id: validate ownership before the UPDATE (so a
     // bad id 400s up front rather than violating the FK at write time).
     if let Some(Some(series_id)) = body.series_id {
@@ -479,6 +559,14 @@ pub async fn patch(
     // Bool-flag-per-Option<Option<_>> pattern lets the caller explicitly
     // set a field to NULL by passing JSON `null`, vs not touching it by
     // omitting the key. Same shape as `me/collections::patch`.
+    // T-090 — the update runs under the artwork's row lock so edition
+    // changes can be checked against copies already sold (and can't race a
+    // checkout reserving one).
+    let mut tx = state.pool.begin().await?;
+    if crate::stock::lock(&mut tx, id, None, None).await?.is_none() {
+        return Err(ApiError::NotFound);
+    }
+
     let row: Option<ArtworkRow> = sqlx::query_as(
         r#"
         UPDATE artworks SET
@@ -494,6 +582,15 @@ pub async fn patch(
             external_url    = CASE WHEN $19::boolean THEN $20 ELSE external_url END,
             status          = COALESCE($21, status),
             series_id       = CASE WHEN $22::boolean THEN $23::uuid ELSE series_id END,
+            weight_grams    = CASE WHEN $24::boolean THEN $25::int ELSE weight_grams END,
+            ships_from_country = CASE WHEN $26::boolean THEN $27 ELSE ships_from_country END,
+            edition_size    = CASE WHEN $28::boolean THEN $29::int ELSE edition_size END,
+            -- An original has no offline edition count; switching back to
+            -- one clears it (the CHECK would reject a leftover count).
+            editions_sold_offline = CASE
+                WHEN $28::boolean AND $29::int IS NULL THEN 0
+                ELSE COALESCE($30::int, editions_sold_offline)
+            END,
             published_at    = CASE
                                   WHEN $21 = 'published' AND published_at IS NULL
                                   THEN now()
@@ -535,10 +632,41 @@ pub async fn patch(
     .bind(body.status.as_deref())
     .bind(body.series_id.is_some())
     .bind(body.series_id.flatten())
-    .fetch_optional(&state.pool)
-    .await?;
+    .bind(body.weight_grams.is_some())
+    .bind(body.weight_grams.flatten())
+    .bind(body.ships_from_country.is_some())
+    .bind(ships_from)
+    .bind(body.edition_size.is_some())
+    .bind(body.edition_size.flatten())
+    .bind(body.editions_sold_offline)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(edition_check_violation)?;
 
     let row = row.ok_or(ApiError::NotFound)?;
+
+    // T-090 — an edition can't shrink below what's already sold.
+    let stock = crate::stock::lock(&mut tx, id, None, None)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    if stock.sold() > stock.capacity() {
+        return Err(ApiError::BadRequest(format!(
+            "You've already sold {} {} — the edition can't be smaller than that.",
+            stock.sold(),
+            if stock.sold() == 1 { "copy" } else { "copies" },
+        )));
+    }
+    // Editions derive sold-out from the counts; originals keep whatever
+    // availability the artist chose (they mark an outside sale as Sold).
+    if stock.edition_size.is_some() {
+        crate::stock::sync_availability(&mut tx, id).await?;
+    }
+    let availability: String =
+        sqlx::query_scalar("SELECT availability FROM artworks WHERE id = $1")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+    tx.commit().await?;
 
     // T-080 — recompute price_gbp_cents when price OR currency
     // changed. Reads the row's now-current values + fx_rates in a
@@ -564,7 +692,22 @@ pub async fn patch(
         .await?;
     }
 
-    Ok(Json(row.into_summary()))
+    let mut summary = row.into_summary();
+    summary.availability = availability;
+    Ok(Json(summary))
+}
+
+/// T-090 — turn the "offline sales exceed the edition" CHECK into a 400
+/// the artist can act on, instead of a 500.
+fn edition_check_violation(e: sqlx::Error) -> ApiError {
+    if let sqlx::Error::Database(db) = &e {
+        if db.constraint() == Some("artworks_offline_within_edition") {
+            return ApiError::BadRequest(
+                "Copies sold elsewhere can't be more than the edition size.".into(),
+            );
+        }
+    }
+    e.into()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -938,6 +1081,11 @@ struct ArtworkDetailRow {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     published_at: Option<DateTime<Utc>>,
+    weight_grams: Option<i32>,
+    ships_from_country: Option<String>,
+    edition_size: Option<i32>,
+    editions_sold_offline: i32,
+    editions_sold_online: i64,
 }
 
 impl ArtworkDetailRow {
@@ -966,6 +1114,11 @@ impl ArtworkDetailRow {
             dimensions: self.dimensions,
             external_url: self.external_url,
             images,
+            weight_grams: self.weight_grams,
+            ships_from_country: self.ships_from_country,
+            edition_size: self.edition_size,
+            editions_sold_offline: self.editions_sold_offline,
+            editions_sold_online: self.editions_sold_online,
         }
     }
 }

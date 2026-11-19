@@ -31,7 +31,6 @@ export function BuyForm({
   const [line2, setLine2] = useState("");
   const [city, setCity] = useState("");
   const [postalCode, setPostalCode] = useState("");
-  const [country, setCountry] = useState("GB");
   const [errors, setErrors] = useState<Errors>({});
   const [isPending, startTransition] = useTransition();
 
@@ -41,8 +40,6 @@ export function BuyForm({
     if (!line1.trim()) e.line1 = "Address line 1 is required.";
     if (!city.trim()) e.city = "City is required.";
     if (!postalCode.trim()) e.postal_code = "Postcode is required.";
-    if (country.trim().length !== 2)
-      e.country = "Use a 2-letter country code (e.g. GB).";
     return e;
   }
 
@@ -60,14 +57,20 @@ export function BuyForm({
       line2: line2.trim() || undefined,
       city: city.trim(),
       postal_code: postalCode.trim(),
-      country: country.trim().toUpperCase(),
+      // T-090 — UK-only shipping for v1 (the API enforces it too).
+      country: "GB",
     };
 
     startTransition(async () => {
       try {
-        const { checkout_url } = await startCheckout(artworkId, shipping);
+        const result = await startCheckout(artworkId, shipping);
+        if (!result.ok) {
+          // Sold out, last copy on someone else's hold, already paid…
+          setErrors({ form: result.message });
+          return;
+        }
         // Hand off to Stripe's hosted checkout.
-        window.location.href = checkout_url;
+        window.location.href = result.checkout_url;
       } catch (err) {
         setErrors({
           form: toUserMessage(
@@ -91,15 +94,9 @@ export function BuyForm({
         <Field label="City" autoComplete="shipping address-level2" value={city} onChange={setCity} error={errors.city} />
         <Field label="Postcode" autoComplete="shipping postal-code" value={postalCode} onChange={setPostalCode} error={errors.postal_code} />
       </div>
-      <Field
-        label="Country"
-        autoComplete="shipping country"
-        value={country}
-        onChange={setCountry}
-        error={errors.country}
-        helper="2-letter ISO code, e.g. GB"
-        maxLength={2}
-      />
+      <p className="text-xs text-muted">
+        Country: United Kingdom. We can only ship within the UK for now.
+      </p>
 
       {errors.form && (
         <p className="text-sm text-foreground bg-background border border-border p-3">

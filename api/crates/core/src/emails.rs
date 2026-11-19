@@ -572,6 +572,32 @@ pub mod templates {
         (subject, body)
     }
 
+    /// Buyer — their payment landed after the last copy sold, or the
+    /// artist withdrew the work, so it was refunded automatically (T-090,
+    /// `BuyerSoldOut`). No artist email: there was never a sale for them.
+    pub fn order_sold_out_refund(
+        artwork_url: &str,
+        artwork_title: Option<&str>,
+        artist_name: &str,
+        amount_cents: i64,
+    ) -> (String, String) {
+        let title = artwork_title.unwrap_or("this work");
+        let subject = format!("Sorry — {title} is no longer available");
+        let body = format!(
+            r#"<div style="font-family: -apple-system, system-ui, sans-serif; max-width: 560px; margin: 0 auto;">
+  <p>We're sorry — by the time your payment for <strong>{title}</strong> by {artist} went through, it was no longer available, so we couldn't complete your order.</p>
+  <p>We've refunded you in full:</p>
+  <p style="font-size: 16px; margin: 12px 0;"><strong>{amount}</strong></p>
+  <p style="font-size: 13px; color: #666;">It can take a few business days to appear on your statement, depending on your bank. You can still <a href="{url}">follow the artist's work on Wander</a>.</p>
+</div>"#,
+            title = escape_html(title),
+            artist = escape_html(artist_name),
+            amount = format_gbp(amount_cents),
+            url = escape_html(artwork_url),
+        );
+        (subject, body)
+    }
+
     /// Artist — an order was refunded + pulled back (M-07, `ArtistRefunded`).
     pub fn order_refunded_artist(artwork_title: Option<&str>) -> (String, String) {
         let title = artwork_title.unwrap_or("one of your works");
