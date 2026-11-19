@@ -11,7 +11,7 @@ if the item was dropped, with a one-line reason.
 
 ## Now (active build)
 
-### `T-090` Limited editions + checkout holds + sold-out auto-refund + UK-only shipping — built, not yet deployed
+### `T-090` Limited editions + checkout holds + sold-out auto-refund + UK-only shipping — deployed 2026-11-19
 
 Design + reasoning: `decisions.md` 2026-11-19.
 
@@ -21,10 +21,10 @@ Design + reasoning: `decisions.md` 2026-11-19.
 - ✅ Payment webhook re-checks under the lock; unfulfillable → order `cancelled` + refund before commit + `BuyerSoldOut` email; `checkout.session.expired` releases holds
 - ✅ Studio editor: Original / Limited edition, sold-elsewhere count, shipping weight (kg); ships-from fixed to GB — **artists could not set weight or ships-from at all before this, so nothing was buyable without a DB edit**
 - ✅ Artwork page "Limited edition of 50 · 12 left"; buy form UK-only; checkout refusals (sold out / on hold / UK-only) reach the buyer
-- ⏳ **Prod rollout, in order:** apply `0034` via psql → deploy api → deploy web → add `checkout.session.expired` to the platform webhook endpoint (`scripts/stripe-webhooks-setup.sh` has it for new endpoints; existing ones need it added in the dashboard)
+- ✅ Prod rollout 2026-11-19: `0034` applied via psql → api + web deployed (smoke 17/17) → `checkout.session.expired` added to the test-mode platform webhook endpoint. **When creating live-mode endpoints, use `scripts/stripe-webhooks-setup.sh` (already includes it).**
 - Not covered: holds aren't shown on the artwork page (a held last copy still shows Buy, and checkout explains); async payment methods (`checkout.session.async_payment_*`) aren't handled — card / wallets / Klarna complete synchronously.
 
-### `T-089` Uploads lifecycle deletes artist artwork images after 90 days — launch blocker, fix built, not yet applied
+### `T-089` Uploads lifecycle deletes artist artwork images after 90 days — launch blocker — applied + deployed 2026-11-18
 
 The uploads-bucket lifecycle rule (`expire-orphan-anchors`, `filter {}`)
 expired **every** object after 90 days, but since T-012 Phase 1 artist
