@@ -24,7 +24,7 @@ Design + reasoning: `decisions.md` 2026-11-19.
 - ✅ Prod rollout 2026-11-19: `0034` applied via psql → api + web deployed (smoke 17/17) → `checkout.session.expired` added to the test-mode platform webhook endpoint. **When creating live-mode endpoints, use `scripts/stripe-webhooks-setup.sh` (already includes it).**
 - Not covered: holds aren't shown on the artwork page (a held last copy still shows Buy, and checkout explains); async payment methods (`checkout.session.async_payment_*`) aren't handled — card / wallets / Klarna complete synchronously.
 
-### `T-089` Uploads lifecycle deletes artist artwork images after 90 days — launch blocker — applied + deployed 2026-11-18
+### `T-089` Uploads lifecycle deletes artist artwork images after 90 days — launch blocker — terraform applied + api deployed + backfill run
 
 The uploads-bucket lifecycle rule (`expire-orphan-anchors`, `filter {}`)
 expired **every** object after 90 days, but since T-012 Phase 1 artist
