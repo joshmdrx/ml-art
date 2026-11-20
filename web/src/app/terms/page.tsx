@@ -28,8 +28,15 @@ export default function TermsPage() {
           <p>
             Anything you upload to Wander — images, descriptions,
             prices, studio details — is yours. We don&apos;t claim
-            ownership and we don&apos;t take a cut of anything that
-            happens after a buyer finds you.
+            ownership. Listing is free, and we don&apos;t take a cut of
+            enquiries or of any sale you arrange yourself.
+          </p>
+
+          <p>
+            If you choose to sell through Wander&apos;s checkout, Wander
+            takes a 15% commission on the sale price of each order paid
+            through it, and card processing fees are deducted before
+            your payout. Payments and payouts are handled by Stripe.
           </p>
 
           <p>

@@ -78,12 +78,28 @@ export default function PrivacyPage() {
             of the exchange are stored on the platform.
           </p>
 
+          <h2 className="font-serif text-2xl pt-4">If you buy or sell through Wander</h2>
+
+          <p>
+            When you buy, we store your name, email, shipping address,
+            and the order. We share your name, email, and shipping
+            address with the artist so they can send you the work.
+            Card details go to Stripe, our payment processor — we
+            never see or store your full card number.
+          </p>
+
+          <p>
+            When you sell, Stripe collects the identity and bank details
+            it needs to pay you out. We store your Stripe account
+            reference, whether payouts are enabled, and your orders.
+          </p>
+
           <h2 className="font-serif text-2xl pt-4">Service providers</h2>
 
           <p>
             To run the platform we use third-party service providers
-            for things like authentication, transactional email,
-            hosting, map tiles, and error monitoring. They process
+            for things like authentication, payments, transactional
+            email, hosting, map tiles, and error monitoring. They process
             data on our behalf under standard data-processing terms
             and only for the purpose of running the service. We
             don&apos;t share data with anyone for advertising or
