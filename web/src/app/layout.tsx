@@ -29,7 +29,7 @@ export const metadata: Metadata = {
     template: "%s — Wander",
   },
   description:
-    "A discovery platform for independent contemporary artists. No marketplace. No commissions. Just better search.",
+    "Find independent contemporary art you can see in person. Search by image, mood or phrase, and find the studios and galleries near you.",
   icons: {
     icon: [
       { url: "/favicon.ico", sizes: "any" },
@@ -43,7 +43,7 @@ export const metadata: Metadata = {
     url: "https://wander.gallery",
     title: "Wander — discover independent contemporary artists",
     description:
-      "A discovery platform for independent contemporary artists. No marketplace. No commissions. Just better search.",
+      "Find independent contemporary art you can see in person. Search by image, mood or phrase, and find the studios and galleries near you.",
     images: [
       {
         url: "/og.png",
@@ -57,7 +57,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "Wander — discover independent contemporary artists",
     description:
-      "A discovery platform for independent contemporary artists. No marketplace. No commissions. Just better search.",
+      "Find independent contemporary art you can see in person. Search by image, mood or phrase, and find the studios and galleries near you.",
     images: ["/og.png"],
   },
 };

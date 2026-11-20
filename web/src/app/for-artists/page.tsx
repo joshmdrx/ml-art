@@ -5,7 +5,7 @@ import { TopNav } from "@/components/TopNav";
 export const metadata: Metadata = {
   title: "For artists",
   description:
-    "A free studio on Wander. No marketplace, no commissions, no algorithm pushing you down the feed.",
+    "A free studio on Wander. Get found by image, mood and place, take enquiries direct, or sell through Wander if you'd like.",
 };
 
 export default function ForArtistsPage() {
@@ -52,14 +52,21 @@ export default function ForArtistsPage() {
               Inquiries forwarded straight to your inbox — we don&apos;t
               sit in the middle of the conversation
             </li>
+            <li>
+              Optional direct sales: buyers check out on Wander, Stripe
+              handles payment and pays you out. We take 15% of sales
+              made through Wander, and card fees come out before your
+              payout.
+            </li>
           </ul>
 
           <h2 className="font-serif text-2xl pt-4">What we don&apos;t do</h2>
 
           <ul className="list-disc list-outside ml-6 space-y-2">
             <li>
-              Take a commission on anything. We aren&apos;t a
-              marketplace.
+              Charge you to list, or take a cut of a sale you arrange
+              yourself. Our commission only applies when a buyer checks
+              out on Wander.
             </li>
             <li>Rank your work by how much it might sell for.</li>
             <li>
@@ -93,7 +100,26 @@ export default function ForArtistsPage() {
               Drop in a studio location if you&apos;d like to be on the
               map.
             </li>
+            <li>
+              If you want to sell on Wander, set up payouts in your
+              studio settings. Otherwise, skip it — enquiries work
+              without it.
+            </li>
           </ol>
+
+          <p>
+            Rather not set it up yourself? We can put together a
+            private example page from your current website for you to
+            look at first. Nothing goes public unless you say yes —
+            email{" "}
+            <a
+              href="mailto:info@wander.gallery"
+              className="underline hover:text-foreground"
+            >
+              info@wander.gallery
+            </a>
+            .
+          </p>
 
           <p className="pt-2">
             Onboarding is one-at-a-time right now while we get the

@@ -5,7 +5,7 @@ import { TopNav } from "@/components/TopNav";
 export const metadata: Metadata = {
   title: "About",
   description:
-    "Wander is a discovery platform for independent contemporary artists. No marketplace. No commissions. Just better search.",
+    "Wander helps you find independent contemporary art you can see in person: search by image, mood or phrase, and find studios and galleries on the map.",
 };
 
 export default function AboutPage() {
@@ -31,10 +31,10 @@ export default function AboutPage() {
           </p>
 
           <p>
-            Wander is the opposite shape. We don&apos;t sell anything. We
-            don&apos;t take a commission. We just help people who care
-            about art find artists who deserve more attention — and let
-            them get in touch directly.
+            Wander is the opposite shape. We help people who care about
+            art find artists and spaces that deserve more attention —
+            ideally somewhere they can go and see the work in person —
+            and let them get in touch directly.
           </p>
 
           <h2 className="font-serif text-2xl pt-4">What&apos;s different</h2>
@@ -54,15 +54,19 @@ export default function AboutPage() {
           </p>
 
           <p>
-            <strong>Map mode.</strong> See where artists work. Find a
-            studio you could actually visit.
+            <strong>Map mode.</strong> See where artists work and where
+            their work is showing. Find a studio or gallery you could
+            actually visit.
           </p>
 
           <h2 className="font-serif text-2xl pt-4">For artists</h2>
 
           <p>
-            A studio on Wander is free and stays free. We don&apos;t
-            take a cut of anything that happens after a buyer finds you.{" "}
+            A studio on Wander is free and stays free. Enquiries go
+            straight to you, and we never take a cut of a sale you
+            arrange yourself. If you&apos;d like buyers to check out on
+            Wander instead, you can turn on direct sales: we take 15% of
+            sales made through Wander, and nothing on anything else.{" "}
             <Link
               href="/for-artists"
               className="underline hover:text-foreground"
