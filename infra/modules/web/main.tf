@@ -343,6 +343,18 @@ resource "aws_wafv2_regex_pattern_set" "web_blocked_bots" {
   regular_expression {
     regex_string = "bytespider"
   }
+  # T-092 (2026-11-20): SEO / brand-monitoring crawlers ignoring the
+  # /search Disallow — ~2.9k of ~5k allowed web requests over 2 days,
+  # enough to stop Neon ever scaling to zero.
+  regular_expression {
+    regex_string = "serankingbacklinksbot"
+  }
+  regular_expression {
+    regex_string = "riverbot"
+  }
+  regular_expression {
+    regex_string = "awariobot"
+  }
 }
 
 # HTTP-library user-agents. The web tier serves browsers; scripted

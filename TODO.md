@@ -11,6 +11,15 @@ if the item was dropped, with a one-line reason.
 
 ## Now (active build)
 
+### `T-092` Neon compute never scales to zero — crawlers ignoring robots.txt on `/search`
+
+Free plan runs out mid-month: 100 CU-h vs ~180 CU-h for 0.25 CU running 24/7. 2026-11-17→19: api Lambda busy in 88% of 5-min windows (~5k req/day, 98% from the web SSR), driven by `/search` crawls — 1,603 hits / 1,512 distinct URLs in 2 days despite `Disallow: /search`.
+
+- ✅ WAF `web_blocked_bots` += `serankingbacklinksbot`, `riverbot`, `awariobot` (~2.9k of the allowed requests)
+- ⏳ `terraform apply -target=module.web.aws_wafv2_regex_pattern_set.web_blocked_bots`
+- ⏳ Neon console: cap autoscaling at 0.25–0.5 CU (search bursts were scaling to 2 CU)
+- Not covered: scrapers with spoofed browser UAs (one US IP 1.2k hits, one UA IP 580). Options if they persist: per-IP rate limit scoped to `/search`, or cache the read-only API (`/v1/modifiers`, `/v1/neighborhoods`, `/v1/search/map/cities`) at CloudFront. With real traffic the DB won't idle anyway — the Neon paid plan is the real fix.
+
 ### `T-090` Limited editions + checkout holds + sold-out auto-refund + UK-only shipping — deployed 2026-11-19
 
 Design + reasoning: `decisions.md` 2026-11-19.
