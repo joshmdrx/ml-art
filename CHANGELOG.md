@@ -3,6 +3,19 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-11-20 — T-091: Site copy matches the live marketplace
+
+The About page, For artists page and site-wide description still said "No
+marketplace. No commissions." after direct sales (15%) went live. Now they
+say listing is free, enquiries and self-arranged sales are never charged,
+and the 15% applies only to sales through Wander's checkout. For artists
+also mentions the private example page offer (T-086).
+
+Terms and Privacy got minimal factual corrections in a separate commit (the
+commission sentence; what buyers and sellers share, Stripe as processor).
+They are not the solicitor-drafted marketplace and buyer terms: M-09 is
+still open (`plans/marketplace-legal.md`).
+
 ## 2026-07-01 — Studio + artwork UX polish
 
 Four adjacent improvements on the studio + artwork-detail surfaces
