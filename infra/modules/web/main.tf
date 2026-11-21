@@ -614,6 +614,66 @@ resource "aws_wafv2_web_acl" "web" {
     }
   }
 
+  # T-092 (2026-11-21): the crawlers still on /search spoof a Chrome UA
+  # from residential-proxy pools (one fingerprint: 646 requests from 638
+  # IPs in 16h), so neither the UA lists nor the per-IP rate limit catch
+  # them — and they kept Neon awake 24/7. They don't send Fetch Metadata
+  # headers; every current browser sends `Sec-Fetch-Mode` on navigations
+  # and fetches (Chrome/Edge 2019+, Firefox 2021+, Safari 16.4+), and
+  # Next.js client navigations are fetches. /search is robots-disallowed,
+  # so search engines lose nothing. scripts/smoke-prod.sh sends it too.
+  rule {
+    name     = "SearchRequiresFetchMetadata"
+    priority = 5
+
+    action {
+      block {}
+    }
+
+    statement {
+      and_statement {
+        statement {
+          byte_match_statement {
+            search_string         = "/search"
+            positional_constraint = "STARTS_WITH"
+            field_to_match {
+              uri_path {}
+            }
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+        statement {
+          not_statement {
+            statement {
+              size_constraint_statement {
+                comparison_operator = "GT"
+                size                = 0
+                field_to_match {
+                  single_header {
+                    name = "sec-fetch-mode"
+                  }
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-web-search-fetch-metadata"
+      sampled_requests_enabled   = true
+    }
+  }
+
   visibility_config {
     cloudwatch_metrics_enabled = true
     metric_name                = "${var.name_prefix}-web"

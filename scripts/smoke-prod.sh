@@ -90,6 +90,7 @@ check() {
   http_code=$(curl -sS -L -m "$TIMEOUT_S" -X "$method" \
     -o "$body_file" -w "%{http_code}" \
     -H "user-agent: ml-art-smoke/1" \
+    -H "sec-fetch-mode: navigate" \
     "$url" 2>/dev/null || echo "000")
   end_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
   elapsed_ms=$((end_ms - start_ms))
