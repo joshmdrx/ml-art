@@ -375,6 +375,34 @@ resource "aws_wafv2_regex_pattern_set" "web_scraper_tools" {
   }
 }
 
+# Meta's network, for BlockMetaUndeclaredCrawler (T-092). Only the range
+# the crawler was seen on; Meta's full list is AS32934 if it moves.
+resource "aws_wafv2_ip_set" "meta_crawler_networks" {
+  provider = aws.us_east_1
+
+  name               = "${var.name_prefix}-web-meta-networks"
+  description        = "Meta AS32934 IPv6 range used by a spoofed-Chrome crawler - T-092, 2026-11"
+  scope              = "CLOUDFRONT"
+  ip_address_version = "IPV6"
+  addresses          = ["2a03:2880::/32"]
+}
+
+# User-agents Meta's legitimate fetchers declare: link previews
+# (facebookexternalhit, facebot, facebookcatalog), WhatsApp previews and
+# the meta-external* agents. Requests from Meta's network with any of
+# these are let through; everything else from there is blocked.
+resource "aws_wafv2_regex_pattern_set" "meta_declared_agents" {
+  provider = aws.us_east_1
+
+  name        = "${var.name_prefix}-web-meta-declared-agents"
+  description = "UAs that Meta link-preview fetchers declare - exempt from the Meta crawler block - T-092"
+  scope       = "CLOUDFRONT"
+
+  regular_expression {
+    regex_string = "facebookexternalhit|facebot|facebookcatalog|meta-external|whatsapp"
+  }
+}
+
 resource "aws_wafv2_web_acl" "web" {
   provider = aws.us_east_1
 
@@ -670,6 +698,55 @@ resource "aws_wafv2_web_acl" "web" {
     visibility_config {
       cloudwatch_metrics_enabled = true
       metric_name                = "${var.name_prefix}-web-search-fetch-metadata"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # T-092 (2026-11-24): a crawler on Meta's own network (2a03:2880::/32)
+  # sending a spoofed Chrome UA walked every /artworks page — ~1.9k page
+  # loads in two days, two thirds of what was left keeping Neon awake.
+  # Meta's honest agents (link previews for Facebook / Instagram /
+  # WhatsApp shares) say who they are, so only block Meta-network
+  # requests that DON'T.
+  rule {
+    name     = "BlockMetaUndeclaredCrawler"
+    priority = 6
+
+    action {
+      block {}
+    }
+
+    statement {
+      and_statement {
+        statement {
+          ip_set_reference_statement {
+            arn = aws_wafv2_ip_set.meta_crawler_networks.arn
+          }
+        }
+        statement {
+          not_statement {
+            statement {
+              regex_pattern_set_reference_statement {
+                arn = aws_wafv2_regex_pattern_set.meta_declared_agents.arn
+                field_to_match {
+                  single_header {
+                    name = "user-agent"
+                  }
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "LOWERCASE"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-web-meta-undeclared"
       sampled_requests_enabled   = true
     }
   }
