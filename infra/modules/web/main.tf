@@ -355,6 +355,13 @@ resource "aws_wafv2_regex_pattern_set" "web_blocked_bots" {
   regular_expression {
     regex_string = "awariobot"
   }
+  # T-092 (2026-11-26): Meta's AI-training crawler. Declared honestly
+  # but ~24k JS-rendered page loads in 2 days (incl. the disallowed
+  # /search), keeping Neon awake ~90%. Link previews use
+  # facebookexternalhit, which stays allowed.
+  regular_expression {
+    regex_string = "meta-externalagent"
+  }
 }
 
 # HTTP-library user-agents. The web tier serves browsers; scripted
@@ -389,8 +396,10 @@ resource "aws_wafv2_ip_set" "meta_crawler_networks" {
 
 # User-agents Meta's legitimate fetchers declare: link previews
 # (facebookexternalhit, facebot, facebookcatalog), WhatsApp previews and
-# the meta-external* agents. Requests from Meta's network with any of
-# these are let through; everything else from there is blocked.
+# meta-externalfetcher (user-initiated fetches). Requests from Meta's
+# network with any of these are let through; everything else from there
+# is blocked. meta-externalagent (AI training crawler) is deliberately
+# not here — it's in web_blocked_bots.
 resource "aws_wafv2_regex_pattern_set" "meta_declared_agents" {
   provider = aws.us_east_1
 
@@ -399,7 +408,7 @@ resource "aws_wafv2_regex_pattern_set" "meta_declared_agents" {
   scope       = "CLOUDFRONT"
 
   regular_expression {
-    regex_string = "facebookexternalhit|facebot|facebookcatalog|meta-external|whatsapp"
+    regex_string = "facebookexternalhit|facebot|facebookcatalog|meta-externalfetcher|whatsapp"
   }
 }
 
