@@ -3,6 +3,14 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-11-26 — T-093: Keep firewall logs for 30 days
+
+The web and API WAF log groups kept 3 days, too short to see who visits
+after an outreach email (Saturday's sends were gone by Tuesday). Both now
+keep 30 days. Applied to prod with a targeted `terraform apply` on the two
+log groups only; the rest of the pending plan (alarm thresholds, Stripe SSM
+parameters, Lambda description) was left untouched.
+
 ## 2026-11-20 — T-091: Site copy matches the live marketplace
 
 The About page, For artists page and site-wide description still said "No
