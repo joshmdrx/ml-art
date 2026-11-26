@@ -8,9 +8,9 @@ import { reportError } from "@/lib/reportError";
 
 /**
  * T-086 — `/preview/[token]`: a private example page Wander built for
- * a gallery or studio after they asked for one. The token is the only
- * credential. From here they can claim the page (sign in, it becomes
- * theirs, still unpublished) or remove it.
+ * a gallery or studio (decisions.md 2026-11-15, 2026-11-26). The
+ * token is the only credential. From here they can claim the page
+ * (sign in, it becomes theirs, still unpublished) or remove it.
  *
  * Never indexed: `robots` metadata here plus a `/preview` disallow in
  * `app/robots.ts`. Artworks render without links because their public
@@ -81,8 +81,9 @@ export default async function PreviewPage({ params }: { params: Params }) {
             An example Wander page for {artist.display_name}
           </h2>
           <p className="mt-3 text-sm leading-relaxed">
-            We put this together from your public website because you
-            asked to see one. It isn&apos;t listed anywhere: only people
+            We put this together from your public website to show you
+            what a Wander page could look like. It isn&apos;t listed
+            anywhere: only people
             with this link can open it, and the link stops working on{" "}
             {expires}. Listing on Wander is always free.
           </p>

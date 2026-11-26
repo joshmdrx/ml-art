@@ -1849,3 +1849,17 @@ Two distinct failures, only loosely related to the bill:
 
 **Reversibility:** High. No schema change; one endpoint and two guards.
 
+
+---
+
+## 2026-11-26 — Build example drafts before a yes, for the first follow-up wave
+
+**Context:** Wave 1 outreach (23 London galleries and studios, 21–27 Nov) has had no replies. The 15 Nov decision allows a draft only after the organisation agrees. The first follow-up is more likely to land with a page to look at than with an offer to build one.
+
+**Decided:** For the 10 wave-1 venues getting a follow-up, build drafts before they reply: Jealous, APT, Cell Project Space, Koppel Project, Hannah Barry, Kingsgate, Bow Arts (Nunnery), Thames-Side, Studio Voltaire, Print Club London. Each `prebuilt_consent_note` says truthfully that no consent was given yet and the draft was built ahead of the follow-up. The drafts use only what's on the venue's own public site for its current or recent show (titles, artists, short descriptions, a few press images), with credits. Everything else in T-086 stays: private token link, noindex, no public listing, one-click remove, and nothing goes live unless they claim and publish. A draft whose venue doesn't reply within 30 days of the follow-up, or that says no, gets taken down.
+
+**Alternatives:** One shared example page built from demo content, plus an offer to build theirs on request. This keeps the consent rule but gives each venue a less concrete reason to reply.
+
+**Why:** Josh's call after zero wave-1 replies. A page built from a venue's own show is the strongest single thing we can put in front of them, and the remove link keeps the downside small.
+
+**Reversibility:** High. Take down the drafts. Later waves go back to consent-first unless this works noticeably better.
