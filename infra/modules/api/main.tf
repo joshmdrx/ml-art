@@ -465,7 +465,7 @@ resource "aws_wafv2_web_acl" "api" {
 resource "aws_cloudwatch_log_group" "waf_api" {
   provider          = aws.us_east_1
   name              = "aws-waf-logs-${var.name_prefix}-api"
-  retention_in_days = 3
+  retention_in_days = 30
 }
 
 resource "aws_wafv2_web_acl_logging_configuration" "api" {

@@ -775,12 +775,12 @@ resource "aws_wafv2_web_acl" "web" {
 # session; adopted into TF here so a fresh apply keeps it. The
 # `aws-waf-logs-` prefix on the log-group name is REQUIRED by WAF.
 #
-# Retention is 3 days — these logs are for incident triage, not audit.
-# Bump if you start using them for analytics.
+# Retention is 30 days (T-093): long enough to see who visits after an
+# outreach email goes out, not just for incident triage.
 resource "aws_cloudwatch_log_group" "waf_web" {
   provider          = aws.us_east_1
   name              = "aws-waf-logs-${var.name_prefix}-web"
-  retention_in_days = 3
+  retention_in_days = 30
 }
 
 resource "aws_wafv2_web_acl_logging_configuration" "web" {
