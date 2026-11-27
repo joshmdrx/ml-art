@@ -3,6 +3,24 @@
 Engineering-facing log of what shipped, in date order. Strategic / architectural
 rationale lives in `decisions.md`.
 
+## 2026-11-27 — T-094: CI green again on main
+
+Two checks had been failing on main and on every PR:
+
+- **`api` / integration tests.** `series_test.rs` predated the
+  `blue-period` series that T-069 added to the shared seed fixture for E2E
+  spec 42, so three tests saw an extra series (and "Blue Period" collided
+  on its first create). The tests now compare exact slug sets that include
+  the seeded series, and the collision test also checks that a seeded slug
+  409s.
+- **`e2e`.** `bitnami/minio:latest` no longer exists, and neither do
+  `minio/minio` or `minio/mc` (MinIO Inc. stopped publishing images). CI now
+  runs the community fork `pgsty/minio`, pinned by tag and digest, through
+  `docker run`, because service containers can't take the `server /data`
+  command. Bucket setup now matches `minio_init` in
+  `docker-compose.dev.yml`: `uploads` is publicly readable as well as
+  `artworks`, where the old bitnami setup kept it private.
+
 ## 2026-11-20 — T-091: Site copy matches the live marketplace
 
 The About page, For artists page and site-wide description still said "No
