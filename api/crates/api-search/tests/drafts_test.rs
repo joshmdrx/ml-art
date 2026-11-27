@@ -327,6 +327,65 @@ async fn preview_link_shows_draft_including_draft_artworks(pool: PgPool) {
     assert_eq!(stored, ml_art_core::preview_token::hash(&token));
 }
 
+async fn insert_artwork_with_status(
+    pool: &PgPool,
+    artist_id: &str,
+    title: &str,
+    status: &str,
+) -> String {
+    sqlx::query_scalar::<_, uuid::Uuid>(
+        "INSERT INTO artworks (artist_id, title, status, description) \
+         VALUES ($1::uuid, $2, $3, 'From the show.') RETURNING id",
+    )
+    .bind(artist_id)
+    .bind(title)
+    .bind(status)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+    .to_string()
+}
+
+#[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
+async fn preview_link_opens_the_drafts_own_artworks_only(pool: PgPool) {
+    let (id, _) = create_draft(&pool, "Jealous Gallery").await;
+    let (other, _) = create_draft(&pool, "Print Club").await;
+    let draft_work = insert_artwork_with_status(&pool, &id, "Clearance Sale", "draft").await;
+    let archived = insert_artwork_with_status(&pool, &id, "Old Stock", "archived").await;
+    let not_theirs = insert_artwork_with_status(&pool, &other, "Big Cader Idris", "draft").await;
+    let token = mint_link(&pool, &id).await;
+
+    let (status, bytes) = get_status(
+        app_with_test_auth(pool.clone()),
+        &format!("/v1/preview/{token}/artworks/{draft_work}"),
+    )
+    .await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&bytes));
+    let v = json(&bytes);
+    assert_eq!(v["title"], "Clearance Sale");
+    assert_eq!(v["description"], "From the show.");
+    assert_eq!(v["artist"]["display_name"], "Jealous Gallery");
+
+    // Another draft's work, an archived work, a bad token: all 404.
+    let unknown = "0".repeat(64);
+    for path in [
+        format!("/v1/preview/{token}/artworks/{not_theirs}"),
+        format!("/v1/preview/{token}/artworks/{archived}"),
+        format!("/v1/preview/{unknown}/artworks/{draft_work}"),
+    ] {
+        let (status, _) = get_status(app_with_test_auth(pool.clone()), &path).await;
+        assert_eq!(status, 404, "{path}");
+    }
+
+    // And the public route still hides the draft work.
+    let (status, _) = get_status(
+        app_with_test_auth(pool.clone()),
+        &format!("/v1/artworks/{draft_work}"),
+    )
+    .await;
+    assert_eq!(status, 404);
+}
+
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
 async fn reminting_a_link_revokes_the_old_one(pool: PgPool) {
     let (id, _) = create_draft(&pool, "Print Club").await;

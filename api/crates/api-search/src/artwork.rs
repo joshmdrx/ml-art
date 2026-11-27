@@ -8,6 +8,7 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
+use ml_art_core::db::Pool;
 use ml_art_core::{
     auth::OptionalAnonId,
     error::ApiError,
@@ -16,7 +17,7 @@ use ml_art_core::{
     models::{ArtworkArtist, ArtworkFull, ArtworkImage, ArtworkSummary, Paginated},
 };
 use serde::Deserialize;
-use sqlx::FromRow;
+use sqlx::{postgres::PgArguments, Arguments, FromRow};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -39,89 +40,14 @@ pub async fn detail(
     headers: HeaderMap,
 ) -> Result<Json<ArtworkFull>, ApiError> {
     let is_admin = auth.as_ref().is_some_and(|AuthedUser(u)| u.is_admin);
-    let detail_sql: &str = if is_admin {
-        r#"
-        SELECT
-            a.id, a.title, a.description, a.year_created,
-            a.medium, a.medium_category, a.dimensions,
-            a.price_cents, a.currency, a.availability,
-            a.external_url, a.published_at,
-            ar.id AS artist_id, ar.slug AS artist_slug,
-            ar.display_name AS artist_name, ar.location AS artist_location,
-            a.edition_size,
-            CASE WHEN a.edition_size IS NULL THEN NULL ELSE GREATEST(
-                a.edition_size - a.editions_sold_offline
-                - (SELECT count(*) FROM orders o
-                   WHERE o.artwork_id = a.id
-                     AND o.status IN ('paid', 'shipped', 'delivered', 'disputed')),
-                0)
-            END AS editions_remaining,
-            (a.availability = 'available'
-             AND a.price_gbp_cents IS NOT NULL
-             AND a.dimensions IS NOT NULL
-             AND a.weight_grams IS NOT NULL
-             AND a.ships_from_country IS NOT NULL
-             AND ar.stripe_charges_enabled) AS purchasable
-        FROM artworks a
-        JOIN artists ar ON ar.id = a.artist_id
-        WHERE a.id = $1
-          AND a.deleted_at IS NULL
-          AND ar.deleted_at IS NULL
-        "#
+    let scope = if is_admin {
+        DetailScope::Admin
     } else {
-        r#"
-        SELECT
-            a.id, a.title, a.description, a.year_created,
-            a.medium, a.medium_category, a.dimensions,
-            a.price_cents, a.currency, a.availability,
-            a.external_url, a.published_at,
-            ar.id AS artist_id, ar.slug AS artist_slug,
-            ar.display_name AS artist_name, ar.location AS artist_location,
-            a.edition_size,
-            CASE WHEN a.edition_size IS NULL THEN NULL ELSE GREATEST(
-                a.edition_size - a.editions_sold_offline
-                - (SELECT count(*) FROM orders o
-                   WHERE o.artwork_id = a.id
-                     AND o.status IN ('paid', 'shipped', 'delivered', 'disputed')),
-                0)
-            END AS editions_remaining,
-            (a.availability = 'available'
-             AND a.price_gbp_cents IS NOT NULL
-             AND a.dimensions IS NOT NULL
-             AND a.weight_grams IS NOT NULL
-             AND a.ships_from_country IS NOT NULL
-             AND ar.stripe_charges_enabled) AS purchasable
-        FROM artworks a
-        JOIN artists ar ON ar.id = a.artist_id
-        WHERE a.id = $1
-          AND a.deleted_at IS NULL
-          AND a.status = 'published'
-          AND ar.deleted_at IS NULL
-          AND ar.status = 'active'
-        "#
+        DetailScope::Public
     };
-    let row: Option<ArtworkRow> = sqlx::query_as(detail_sql)
-        .bind(id)
-        .fetch_optional(&state.pool)
-        .await?;
-
-    let Some(row) = row else {
-        return Err(ApiError::NotFound);
-    };
-
-    // Images for this artwork, ordered for display.
-    let images: Vec<ImageRow> = sqlx::query_as(
-        r#"
-        SELECT id, s3_key, width, height, is_primary, display_order
-        FROM artwork_images
-        WHERE artwork_id = $1
-          AND moderation_status = 'approved'
-        ORDER BY is_primary DESC, display_order ASC
-        "#,
-    )
-    .bind(id)
-    .fetch_all(&state.pool)
-    .await?;
+    let full = load_artwork_full(&state.pool, id, scope)
+        .await?
+        .ok_or(ApiError::NotFound)?;
 
     // T-050 — artwork_viewed. Best-effort enqueue; never blocks the response.
     events::emit(
@@ -136,7 +62,102 @@ pub async fn detail(
     )
     .await;
 
-    Ok(Json(row.into_full(images)))
+    Ok(Json(full))
+}
+
+/// Who is asking for an artwork's detail, which decides what they may see.
+pub(crate) enum DetailScope<'a> {
+    /// Published work by an active artist.
+    Public,
+    /// T-083 — anything not deleted, so admins can check drafts inline.
+    Admin,
+    /// T-086 — a private preview link: only this draft artist's work, in
+    /// the statuses the preview page itself lists.
+    Preview {
+        artist_id: Uuid,
+        statuses: &'a [&'a str],
+    },
+}
+
+/// Load one artwork as `ArtworkFull`, or `None` when it doesn't exist or
+/// the scope can't see it. Images are limited to moderation-approved ones.
+pub(crate) async fn load_artwork_full(
+    pool: &Pool,
+    id: Uuid,
+    scope: DetailScope<'_>,
+) -> Result<Option<ArtworkFull>, ApiError> {
+    let scope_clause = match scope {
+        DetailScope::Public => "AND a.status = 'published' AND ar.status = 'active'",
+        DetailScope::Admin => "",
+        DetailScope::Preview { .. } => "AND a.artist_id = $2 AND a.status = ANY($3)",
+    };
+    let sql = format!(
+        r#"
+        SELECT
+            a.id, a.title, a.description, a.year_created,
+            a.medium, a.medium_category, a.dimensions,
+            a.price_cents, a.currency, a.availability,
+            a.external_url, a.published_at,
+            ar.id AS artist_id, ar.slug AS artist_slug,
+            ar.display_name AS artist_name, ar.location AS artist_location,
+            a.edition_size,
+            CASE WHEN a.edition_size IS NULL THEN NULL ELSE GREATEST(
+                a.edition_size - a.editions_sold_offline
+                - (SELECT count(*) FROM orders o
+                   WHERE o.artwork_id = a.id
+                     AND o.status IN ('paid', 'shipped', 'delivered', 'disputed')),
+                0)
+            END AS editions_remaining,
+            (a.availability = 'available'
+             AND a.price_gbp_cents IS NOT NULL
+             AND a.dimensions IS NOT NULL
+             AND a.weight_grams IS NOT NULL
+             AND a.ships_from_country IS NOT NULL
+             AND ar.stripe_charges_enabled) AS purchasable
+        FROM artworks a
+        JOIN artists ar ON ar.id = a.artist_id
+        WHERE a.id = $1
+          AND a.deleted_at IS NULL
+          AND ar.deleted_at IS NULL
+          {scope_clause}
+        "#
+    );
+    let mut args = PgArguments::default();
+    args.add(id)
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("{e}")))?;
+    if let DetailScope::Preview {
+        artist_id,
+        statuses,
+    } = scope
+    {
+        args.add(artist_id)
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("{e}")))?;
+        args.add(statuses.to_vec())
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("{e}")))?;
+    }
+    let row: Option<ArtworkRow> =
+        sqlx::query_as_with::<_, ArtworkRow, _>(sqlx::AssertSqlSafe(sql), args)
+            .fetch_optional(pool)
+            .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    // Images for this artwork, ordered for display.
+    let images: Vec<ImageRow> = sqlx::query_as(
+        r#"
+        SELECT id, s3_key, width, height, is_primary, display_order
+        FROM artwork_images
+        WHERE artwork_id = $1
+          AND moderation_status = 'approved'
+        ORDER BY is_primary DESC, display_order ASC
+        "#,
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(Some(row.into_full(images)))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -213,7 +234,6 @@ pub async fn similar(
     let rows: Vec<SimilarRow> =
         sqlx::query_as_with::<_, SimilarRow, _>(sqlx::AssertSqlSafe(sql), {
             let mut a = sqlx::postgres::PgArguments::default();
-            use sqlx::Arguments;
             a.add(id)
                 .map_err(|e| ApiError::Internal(anyhow::anyhow!("{e}")))?;
             a.add(state.cfg.embedding_model_name.clone())
