@@ -9,6 +9,10 @@
 //!   6. public detail returns 404 for non-existent / empty / hidden series
 //!   7. public detail returns series + artist + artworks for a populated one
 //!   8. artwork PATCH integrates with series_id
+//!
+//! The shared `seed` fixture already gives Alice one populated series,
+//! `blue-period` (2 artworks), for E2E spec 42 (added in T-069). The
+//! list assertions below compare exact slug sets that include it.
 
 mod common;
 
@@ -27,6 +31,20 @@ const ALICE_USER: &str = "test-user_test_alice";
 const ALICE_ARTIST_ID: Uuid = Uuid::from_u128(0xaaa1_1111_1111_1111_1111_1111_1111_1111);
 const ARTWORK_1: Uuid = Uuid::from_u128(0xbbb1_1111_1111_1111_1111_1111_1111_1111);
 const ARTWORK_2: Uuid = Uuid::from_u128(0xbbb2_2222_2222_2222_2222_2222_2222_2222);
+/// Seeded by `fixtures/seed.sql`: Alice's series holding ARTWORK_1 + ARTWORK_2.
+const SEEDED_SERIES_SLUG: &str = "blue-period";
+
+/// Sorted `slug` values of a list response's `items`.
+fn slugs(body: &Value) -> Vec<String> {
+    let mut out: Vec<String> = body["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .map(|i| i["slug"].as_str().expect("slug").to_string())
+        .collect();
+    out.sort();
+    out
+}
 
 async fn send(
     app: Router,
@@ -83,8 +101,7 @@ async fn create_and_list_series(pool: PgPool) {
     let app = app_with_test_auth(pool);
     let (status, body) = send(app, "GET", "/v1/studio/series", Some(ALICE_USER), None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["items"].as_array().unwrap().len(), 1);
-    assert_eq!(body["items"][0]["slug"], "quiet-mornings");
+    assert_eq!(slugs(&body), [SEEDED_SERIES_SLUG, "quiet-mornings"]);
 }
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
@@ -95,12 +112,24 @@ async fn slug_collision_409(pool: PgPool) {
         "POST",
         "/v1/studio/series",
         Some(ALICE_USER),
-        Some(json!({ "title": "Blue Period" })),
+        Some(json!({ "title": "Rose Period" })),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
 
     // Same title → same slug → 409.
+    let app = app_with_test_auth(pool.clone());
+    let (status, _) = send(
+        app,
+        "POST",
+        "/v1/studio/series",
+        Some(ALICE_USER),
+        Some(json!({ "title": "Rose Period" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // A slug that came from the seed (not the API) collides too.
     let app = app_with_test_auth(pool);
     let (status, _) = send(
         app,
@@ -257,9 +286,13 @@ async fn public_list_hides_empty_series(pool: PgPool) {
     let app = app_with_test_auth(pool);
     let (status, body) = send(app, "GET", "/v1/artists/alice-test/series", None, None).await;
     assert_eq!(status, StatusCode::OK);
-    let items = body["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1, "empty series should be hidden");
-    assert_eq!(items[0]["slug"], "filled");
+    // `empty` is hidden; the seeded series keeps ARTWORK_2 after
+    // "Filled" takes ARTWORK_1, so it still shows.
+    assert_eq!(
+        slugs(&body),
+        [SEEDED_SERIES_SLUG, "filled"],
+        "empty series should be hidden"
+    );
 }
 
 #[sqlx::test(migrator = "MIGRATOR", fixtures("seed"))]
