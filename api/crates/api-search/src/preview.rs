@@ -4,6 +4,8 @@
 //! `/preview/<token>`. Holding the token is the whole credential:
 //!
 //!   - `GET  /v1/preview/:token`        — view the draft (no auth)
+//!   - `GET  /v1/preview/:token/artworks/:id` — one of the draft's works in
+//!     full, so the example page's artworks open like the live ones do
 //!   - `POST /v1/preview/:token/claim`  — link it to the signed-in user;
 //!     it stays `pending` (unpublished) until they publish it themselves.
 //!     Refused (403) for admin accounts, so checking a link can't claim it
@@ -21,6 +23,7 @@
 
 use crate::admin::drafts::{clear_editing_sessions, remove_draft, revoke_live_links};
 use crate::artist::{fetch_artist_row_by_id, load_profile, Profile, PREVIEW_ARTWORK_STATUSES};
+use crate::artwork::{load_artwork_full, DetailScope};
 use crate::extractors::AuthedUser;
 use crate::studio::me::StudioArtist;
 use crate::AppState;
@@ -34,7 +37,7 @@ use ml_art_core::{
     admin::{action, audit, target},
     db::Pool,
     error::ApiError,
-    models::{ArtistFull, ArtistLocation, ArtworkSummary},
+    models::{ArtistFull, ArtistLocation, ArtworkFull, ArtworkSummary},
     preview_token,
 };
 use serde::Serialize;
@@ -99,6 +102,28 @@ pub async fn view(
         locations,
         expires_at,
     }))
+}
+
+/// One artwork on the draft, in full. 404 unless the token is live and
+/// the artwork belongs to that draft and would show on its preview page.
+pub async fn artwork(
+    State(state): State<Arc<AppState>>,
+    Path((token, id)): Path<(String, Uuid)>,
+) -> Result<Json<ArtworkFull>, ApiError> {
+    let (_, artist_id, _) = resolve_live(&state.pool, &token)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let full = load_artwork_full(
+        &state.pool,
+        id,
+        DetailScope::Preview {
+            artist_id,
+            statuses: PREVIEW_ARTWORK_STATUSES,
+        },
+    )
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    Ok(Json(full))
 }
 
 pub async fn claim(

@@ -1,9 +1,12 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { auth } from "@clerk/nextjs/server";
+import Link from "next/link";
 import { TopNav } from "@/components/TopNav";
 import { PreviewActions } from "@/components/PreviewActions";
+import { PreviewGone } from "@/components/PreviewGone";
+import { ArtistLocationsMap } from "@/components/ArtistLocationsMap";
 import { getDraftPreview, getMe, type ArtworkSummary } from "@/lib/api";
+import { formatPrice } from "@/lib/format";
 import { reportError } from "@/lib/reportError";
 
 /**
@@ -13,9 +16,10 @@ import { reportError } from "@/lib/reportError";
  * (sign in, it becomes theirs, still unpublished) or remove it.
  *
  * Never indexed: `robots` metadata here plus a `/preview` disallow in
- * `app/robots.ts`. Artworks render without links because their public
- * pages don't exist yet; locations render as a plain list for the same
- * reason (the map's "see on full map" link would lead nowhere).
+ * `app/robots.ts`. Laid out like `/artists/[slug]` so it shows what the
+ * live page would be. Artworks open the private artwork page under this
+ * token (their public pages don't exist yet), and the map hides its
+ * "See on full map" link because a draft has no pins on the public map.
  */
 
 type Params = Promise<{ token: string }>;
@@ -37,29 +41,7 @@ export default async function PreviewPage({ params }: { params: Params }) {
     getMe().catch(() => null),
   ]);
 
-  if (!data) {
-    return (
-      <>
-        <TopNav />
-        <main className="flex-1 mx-auto w-full max-w-2xl px-6 py-20">
-          <h1 className="font-serif text-3xl tracking-tight">
-            This preview link no longer works
-          </h1>
-          <p className="mt-4 text-muted">
-            It may have expired, been replaced with a newer link, been
-            claimed, or been removed. If you were expecting to see a
-            draft page, reply to the email it came in and we&apos;ll
-            sort it out.
-          </p>
-          <p className="mt-8 text-sm">
-            <Link href="/" className="underline hover:no-underline">
-              Go to Wander
-            </Link>
-          </p>
-        </main>
-      </>
-    );
-  }
+  if (!data) return <PreviewGone />;
 
   const { artist, artworks, locations } = data;
   const expires = new Date(data.expires_at).toLocaleDateString("en-GB", {
@@ -71,7 +53,7 @@ export default async function PreviewPage({ params }: { params: Params }) {
   return (
     <>
       <TopNav />
-      <main className="flex-1 mx-auto w-full max-w-screen-2xl px-6 py-10 md:py-14">
+      <main className="flex-1 mx-auto w-full max-w-screen-2xl px-6 py-12 md:py-16">
         <section
           aria-label="About this preview"
           className="mb-12 max-w-3xl border border-foreground bg-surface p-5"
@@ -107,7 +89,7 @@ export default async function PreviewPage({ params }: { params: Params }) {
           />
         </section>
 
-        <header className="max-w-3xl mb-12">
+        <header className="max-w-3xl mb-12 md:mb-16">
           {artist.entity_type === "gallery" && (
             <p className="mb-2 inline-block text-xs uppercase tracking-wide text-muted border border-border px-2 py-0.5">
               Gallery
@@ -139,25 +121,14 @@ export default async function PreviewPage({ params }: { params: Params }) {
           )}
         </header>
 
-        {locations.length > 0 && (
-          <section className="max-w-2xl mb-12">
-            <h2 className="font-serif text-xl mb-3">Where to see the work</h2>
-            <ul className="space-y-2 text-sm">
-              {locations.map((l) => (
-                <li key={l.id}>
-                  <span className="font-medium">{l.name}</span>
-                  <span className="text-muted"> · {l.address}</span>
-                </li>
-              ))}
-            </ul>
-            <p className="mt-2 text-xs text-muted">
-              On the live page these appear on a map.
-            </p>
-          </section>
-        )}
+        <ArtistLocationsMap
+          locations={locations}
+          artistSlug={artist.slug}
+          showFullMapLink={false}
+        />
 
         {artist.artist_statement && (
-          <section className="max-w-2xl mb-12">
+          <section className="max-w-2xl mb-12 md:mb-16">
             <h2 className="font-serif text-xl mb-3">
               {artist.entity_type === "gallery" ? "Curatorial statement" : "Artist statement"}
             </h2>
@@ -172,7 +143,7 @@ export default async function PreviewPage({ params }: { params: Params }) {
           {artworks.length === 0 ? (
             <p className="text-muted text-sm">No works added to this example yet.</p>
           ) : (
-            <PreviewArtworkGrid items={artworks} />
+            <PreviewArtworkGrid items={artworks} token={token} />
           )}
         </section>
       </main>
@@ -180,29 +151,54 @@ export default async function PreviewPage({ params }: { params: Params }) {
   );
 }
 
-function PreviewArtworkGrid({ items }: { items: ArtworkSummary[] }) {
+/** Same look as `ArtworkGrid` / `ArtworkCard`, linking to the private
+ * artwork page instead of `/artworks/[id]`. No "more like this" tray:
+ * it searches published work, which a draft isn't part of. */
+function PreviewArtworkGrid({
+  items,
+  token,
+}: {
+  items: ArtworkSummary[];
+  token: string;
+}) {
   return (
-    <ul className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-      {items.map((a) => (
-        <li key={a.id}>
-          <div className="relative aspect-square bg-surface border border-border overflow-hidden">
-            {a.primary_image_url ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={a.primary_image_url}
-                alt={a.title ?? "Untitled"}
-                loading="lazy"
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center text-muted text-xs">
-                Image pending
-              </div>
-            )}
+    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 md:gap-8">
+      {items.map((a) => {
+        const href = `/preview/${token}/artworks/${a.id}`;
+        const title = a.title ?? "Untitled";
+        const price = formatPrice(a.price_cents, a.currency);
+        return (
+          <div key={a.id} className="group">
+            <Link
+              href={href}
+              aria-label={`${title} by ${a.artist_name}`}
+              className="block bg-surface border border-border overflow-hidden"
+            >
+              {a.primary_image_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={a.primary_image_url}
+                  alt={`${title} by ${a.artist_name}`}
+                  loading="lazy"
+                  className="w-full h-auto block transition-opacity group-hover:opacity-95"
+                />
+              ) : (
+                <div className="aspect-square bg-border" />
+              )}
+            </Link>
+            <div className="mt-2 px-0.5 min-w-0">
+              <p className="text-sm text-muted truncate">{a.artist_name}</p>
+              <Link
+                href={href}
+                className="text-sm font-serif hover:underline truncate block"
+              >
+                {title}
+              </Link>
+              {price && <div className="text-xs text-muted mt-0.5">{price}</div>}
+            </div>
           </div>
-          <p className="mt-2 font-serif text-sm line-clamp-1">{a.title ?? "Untitled"}</p>
-        </li>
-      ))}
-    </ul>
+        );
+      })}
+    </div>
   );
 }

@@ -371,6 +371,7 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         )
         .route("/v1/admin/drafts/:id/assign", post(admin::drafts::assign))
         .route("/v1/preview/:token", get(preview::view))
+        .route("/v1/preview/:token/artworks/:id", get(preview::artwork))
         .route("/v1/preview/:token/claim", post(preview::claim))
         .route("/v1/preview/:token/remove", post(preview::remove));
 

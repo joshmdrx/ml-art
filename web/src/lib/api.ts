@@ -2455,6 +2455,25 @@ export async function getDraftPreview(
   return (await res.json()) as DraftPreview;
 }
 
+/** One artwork on a draft, in full, through its private link. `null`
+ * for a dead link or an artwork that isn't on that draft. */
+export async function getDraftPreviewArtwork(
+  token: string,
+  id: string,
+  init?: RequestInit,
+): Promise<ArtworkFull | null> {
+  const res = await apiFetch(
+    `/v1/preview/${encodeURIComponent(token)}/artworks/${encodeURIComponent(id)}`,
+    init,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`preview artwork ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as ArtworkFull;
+}
+
 export type ClaimPreviewResult =
   | { ok: true; slug: string }
   | { ok: false; reason: "signed_out" | "admin" | "has_profile" | "gone" };
