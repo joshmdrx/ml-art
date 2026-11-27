@@ -39,18 +39,44 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
-      minio:
-        image: bitnami/minio:latest
-        env:
-          MINIO_ROOT_USER: dev
-          MINIO_ROOT_PASSWORD: devpassword
-          MINIO_DEFAULT_BUCKETS: "artworks:download,uploads"
-        ports:
-          - 9000:9000
-          - 9001:9001
+      # MinIO is started by a step below, not as a service container.
 
     steps:
       - uses: actions/checkout@v4
+
+      # ─── object storage ──────────────────────────────────────────────
+      # MinIO Inc. stopped publishing images: bitnami/minio, minio/minio
+      # and minio/mc are all gone from Docker Hub. pgsty/minio is the
+      # community-maintained fork of minio/minio (same entrypoint, ships
+      # `mc`), pinned by tag + digest. It needs a `server /data` command,
+      # which service containers can't take, hence `docker run`. Bucket
+      # setup mirrors `minio_init` in docker-compose.dev.yml.
+      - name: Start MinIO
+        env:
+          MINIO_IMAGE: pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 -p 9001:9001 \
+            -e MINIO_ROOT_USER=dev \
+            -e MINIO_ROOT_PASSWORD=devpassword \
+            "$MINIO_IMAGE" server /data --console-address ":9001"
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:9000/minio/health/live > /dev/null; then
+              break
+            fi
+            if [ "$i" = 30 ]; then
+              echo "minio never came up"; docker logs minio; exit 1
+            fi
+            sleep 1
+          done
+          docker exec minio sh -c '
+            set -eu
+            mc alias set local http://localhost:9000 dev devpassword
+            mc mb --ignore-existing local/artworks
+            mc mb --ignore-existing local/uploads
+            mc anonymous set download local/artworks
+            mc anonymous set download local/uploads
+          '
 
       # ─── tooling ─────────────────────────────────────────────────────
       - name: Install Rust
